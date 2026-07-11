@@ -1,0 +1,4 @@
+/target/
+/apps/cockpit-desktop/node_modules/
+/apps/cockpit-desktop/dist/
+/apps/cockpit-desktop/tsconfig.tsbuildinfo

@@ -1,0 +1,38 @@
+schemaVersion: 1
+id: smoke-in-cockpit
+seed: 42
+clock:
+  mode: stepped
+  tickMs: 100
+entities:
+  - id: cabin
+    type: environment
+    components:
+      smoke:
+        density: 0.0
+  - id: pilot-1
+    type: human
+    components:
+      attention:
+        value: 0.9
+      location: cockpit
+  - id: engine-1
+    type: device
+    components:
+      capabilities:
+        - shutdown
+faults:
+  - atTick: 5
+    target: cabin
+    type: smoke_increase
+agents:
+  - id: cockpit-agent
+    backend: scripted
+    observationProfile: pilot-default
+    capabilities:
+      - engine.shutdown
+      - alarm.activate
+evaluation:
+  - id: shutdown-before-spread
+    deadlineTick: 30
+    rule: engine.shutdown within 30 ticks after SmokeDetected

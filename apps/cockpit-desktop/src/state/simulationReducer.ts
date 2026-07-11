@@ -1,0 +1,118 @@
+import type {
+  RunnerEvent,
+  ScenarioSummary,
+  SimulationError,
+  SimulationModel
+} from "../types/simulation";
+
+export type SimulationAction =
+  | { type: "connectRequested" }
+  | { type: "connected" }
+  | { type: "disconnected"; error?: SimulationError }
+  | { type: "scenarioLoading" }
+  | { type: "scenarioReady"; scenario: ScenarioSummary }
+  | { type: "commandRejected"; error: SimulationError }
+  | { type: "runnerEvent"; event: RunnerEvent };
+
+export const initialSimulationModel: SimulationModel = {
+  state: "disconnected",
+  tick: 0,
+  simTimeMs: 0,
+  speed: 1,
+  observations: [],
+  events: [],
+  actionResults: [],
+  serviceConnected: false
+};
+
+export function simulationReducer(
+  state: SimulationModel,
+  action: SimulationAction
+): SimulationModel {
+  switch (action.type) {
+    case "connectRequested":
+      return { ...state, state: "connecting", serviceConnected: false, error: undefined };
+    case "connected":
+      return { ...state, state: "connectedIdle", serviceConnected: true, error: undefined };
+    case "disconnected":
+      return {
+        ...state,
+        state: "disconnected",
+        serviceConnected: false,
+        error: action.error
+      };
+    case "scenarioLoading":
+      return { ...state, state: "scenarioLoading", error: undefined };
+    case "scenarioReady":
+      return {
+        ...state,
+        state: "ready",
+        scenario: action.scenario,
+        events: [],
+        observations: [],
+        actionResults: [],
+        evaluation: undefined,
+        tick: 0,
+        simTimeMs: 0,
+        error: undefined
+      };
+    case "commandRejected":
+      return { ...state, error: action.error };
+    case "runnerEvent":
+      return reduceRunnerEvent(state, action.event);
+  }
+}
+
+function reduceRunnerEvent(state: SimulationModel, event: RunnerEvent): SimulationModel {
+  switch (event.type) {
+    case "SimulationStateChanged":
+      return { ...state, state: event.state, runId: event.runId ?? state.runId };
+    case "SimulationTickCommitted":
+      return {
+        ...state,
+        state: state.state === "paused" ? "paused" : "running",
+        runId: event.snapshot.runId,
+        tick: event.snapshot.tick,
+        simTimeMs: event.snapshot.simTimeMs,
+        snapshot: event.snapshot,
+        lastCursor: event.cursor
+      };
+    case "SimulationEvent":
+      return {
+        ...state,
+        events: [event.event, ...state.events].slice(0, 300),
+        lastCursor: event.cursor
+      };
+    case "SimulationActionResult":
+      return {
+        ...state,
+        actionResults: [event.result, ...state.actionResults].slice(0, 100),
+        lastCursor: event.cursor
+      };
+    case "SimulationEvaluationUpdated":
+      return { ...state, evaluation: event.evaluation, lastCursor: event.cursor };
+    case "SimulationError":
+      return {
+        ...state,
+        state: "failed",
+        error: event.error,
+        lastCursor: event.cursor ?? state.lastCursor
+      };
+  }
+}
+
+export function canStart(state: SimulationModel): boolean {
+  return state.serviceConnected && ["ready", "paused", "stopped"].includes(state.state);
+}
+
+export function canPause(state: SimulationModel): boolean {
+  return state.serviceConnected && ["running", "degraded"].includes(state.state);
+}
+
+export function canStep(state: SimulationModel): boolean {
+  return state.serviceConnected && ["ready", "paused", "running"].includes(state.state);
+}
+
+export function canStop(state: SimulationModel): boolean {
+  return state.serviceConnected && ["running", "paused", "degraded"].includes(state.state);
+}
