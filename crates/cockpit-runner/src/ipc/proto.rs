@@ -51,6 +51,11 @@ pub enum RunnerCommand {
         scenario_path: String,
         recording_path: String,
     },
+    #[serde(rename = "DiffRecordings")]
+    DiffRecordings {
+        source_recording_path: String,
+        candidate_recording_path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

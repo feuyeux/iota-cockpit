@@ -30,6 +30,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Local benchmark at 1,000 entities and 10,000 events/minute: p95 0.2942 ms, p99 0.3286 ms, peak 0.4204 ms, recording 168,805 bytes (Windows dev profile, 120 ticks, scenario hash `15dd2255dec80c92ec2f898d27808513123b9d483d72bdbd90f49ae47a602002`, seed 42).
 - Observation and tool trace data do not include Ground Truth smoke or fire fields.
 - Repeated runs and replay produce the same final snapshot hash.
+- Recording diff reports normalized first divergence across snapshot hashes, events, tool calls, action results, state diffs, and aggregate metrics; runner IPC exposes it as `DiffRecordings`.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.
 - Recording headers persist runtime contract, world-model, application, plugin, scenario, seed, and clock compatibility data.
 - Recording payloads redact nested API keys, tokens, prompts, passwords, secrets, and hidden-reasoning fields before content-addressed files are written.

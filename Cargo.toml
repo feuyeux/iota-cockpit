@@ -106,6 +106,10 @@ name = "scenario_limits"
 path = "tests/contract/scenario_limits.rs"
 
 [[test]]
+name = "recording_diff"
+path = "tests/contract/recording_diff.rs"
+
+[[test]]
 name = "runner_restart"
 path = "tests/contract/runner_restart.rs"
 

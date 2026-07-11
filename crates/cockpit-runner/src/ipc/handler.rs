@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_evaluation::evaluate_smoke_shutdown;
-use cockpit_recording::{Recording, RecordingStore, replay_recording};
+use cockpit_recording::{Recording, RecordingStore, diff_recordings, replay_recording};
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{Simulation, SimulationError, clock::RunStatus};
 use serde_json::{Value, json};
@@ -12,6 +12,21 @@ use super::proto::{
 };
 
 type HandlerResult = Result<Value, Box<IpcError>>;
+
+fn read_recording(path: &str) -> Result<Recording, Box<IpcError>> {
+    let bytes = fs::read(Path::new(path)).map_err(|error| {
+        Box::new(IpcError {
+            code: "RECORDING_READ_FAILED".to_string(),
+            message: error.to_string(),
+            details: None,
+            run_id: None,
+            tick: None,
+            correlation_id: "recording-diff".to_string(),
+        })
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| Box::new(RunnerHandler::serialization_error(error.to_string())))
+}
 
 pub struct RunnerHandler {
     session_token: String,
@@ -98,6 +113,10 @@ impl RunnerHandler {
                 scenario_path,
                 recording_path,
             } => self.start_replay(&scenario_path, &recording_path),
+            RunnerCommand::DiffRecordings {
+                source_recording_path,
+                candidate_recording_path,
+            } => self.diff_recordings(&source_recording_path, &candidate_recording_path),
         };
 
         match result {
@@ -474,6 +493,17 @@ impl RunnerHandler {
             "ticks": replay.ticks.len(),
             "finalSnapshotHash": replay.final_snapshot_hash()
         }))
+    }
+
+    fn diff_recordings(
+        &self,
+        source_recording_path: &str,
+        candidate_recording_path: &str,
+    ) -> HandlerResult {
+        let source = read_recording(source_recording_path)?;
+        let candidate = read_recording(candidate_recording_path)?;
+        serde_json::to_value(diff_recordings(&source, &candidate))
+            .map_err(|error| Box::new(Self::serialization_error(error.to_string())))
     }
 
     fn events_after(&self, cursor: Option<u64>) -> Vec<RunnerEvent> {

@@ -96,7 +96,7 @@ fn runner_step_emits_snapshot_trace_evaluation_and_cursored_events() {
 #[test]
 fn runner_replay_emits_real_snapshots_and_terminal_state() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario");
-    let recording = run_scripted_recording("source-run", scenario, 4).expect("recording");
+    let recording = run_scripted_recording("source-run", scenario, 10).expect("recording");
     let path = std::env::temp_dir().join(format!("cockpit-replay-{}.json", uuid::Uuid::new_v4()));
     std::fs::write(
         &path,
@@ -137,4 +137,54 @@ fn runner_replay_emits_real_snapshots_and_terminal_state() {
             && event.get("state") == Some(&Value::String("completed".to_string()))
     }));
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn runner_exposes_recording_diff_report() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario");
+    let recording = run_scripted_recording("source-run", scenario, 10).expect("recording");
+    let source =
+        std::env::temp_dir().join(format!("cockpit-diff-source-{}.json", uuid::Uuid::new_v4()));
+    let candidate = std::env::temp_dir().join(format!(
+        "cockpit-diff-candidate-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(
+        &source,
+        serde_json::to_vec(&recording).expect("source json"),
+    )
+    .expect("source file");
+    let mut changed = recording;
+    changed.ticks[5].events.clear();
+    std::fs::write(
+        &candidate,
+        serde_json::to_vec(&changed).expect("candidate json"),
+    )
+    .expect("candidate file");
+
+    let mut handler = RunnerHandler::new("session-1");
+    let response = handler.dispatch(request(RunnerCommand::DiffRecordings {
+        source_recording_path: source.to_string_lossy().to_string(),
+        candidate_recording_path: candidate.to_string_lossy().to_string(),
+    }));
+    assert!(response.ok, "{response:?}");
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .and_then(|report| report.get("equivalent"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .and_then(|report| report.get("firstDivergence"))
+            .and_then(|difference| difference.get("eventsMatch"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(candidate);
 }
