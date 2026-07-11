@@ -34,6 +34,7 @@ pub enum RunStatus {
     Running,
     Paused,
     Degraded,
+    Replaying,
     Completed,
     Stopped,
     Failed,

@@ -414,8 +414,51 @@ impl RunnerHandler {
         })?;
         let recording: Recording = serde_json::from_slice(&bytes)
             .map_err(|error| Box::new(Self::serialization_error(error.to_string())))?;
-        let replay = replay_recording("replay-run", scenario, &recording)
+        let replay = replay_recording("replay-run", scenario.clone(), &recording)
             .map_err(|error| Box::new(Self::simulation_error(error, None)))?;
+        let mut simulation = Simulation::new(replay.run_id.clone(), scenario);
+        simulation
+            .start()
+            .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
+        let actions_by_tick = recording.recorded_actions_by_tick();
+        self.events.clear();
+        self.next_cursor = 0;
+        self.emit(RunnerEvent::SimulationStateChanged {
+            cursor: 0,
+            state: RunStatus::Replaying,
+            run_id: Some(replay.run_id.clone()),
+        });
+        for source_tick in &recording.ticks {
+            let actions = actions_by_tick
+                .get(&source_tick.tick)
+                .cloned()
+                .unwrap_or_default();
+            let step = simulation
+                .step_with_recorded_actions(actions)
+                .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
+            let snapshot = simulation.snapshot.clone();
+            self.emit(RunnerEvent::SimulationTickCommitted {
+                cursor: 0,
+                snapshot,
+            });
+            for event in step.events {
+                self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
+            }
+            for trace in step.tool_calls {
+                self.emit(RunnerEvent::SimulationToolCall { cursor: 0, trace });
+            }
+            for result in step.action_results {
+                self.emit(RunnerEvent::SimulationActionResult { cursor: 0, result });
+            }
+        }
+        simulation.status = RunStatus::Completed;
+        self.simulation = Some(simulation);
+        self.recording = Some(replay.clone());
+        self.emit(RunnerEvent::SimulationStateChanged {
+            cursor: 0,
+            state: RunStatus::Completed,
+            run_id: Some(replay.run_id.clone()),
+        });
         Ok(json!({
             "runId": replay.run_id,
             "ticks": replay.ticks.len(),

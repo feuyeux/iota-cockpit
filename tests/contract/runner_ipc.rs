@@ -1,7 +1,9 @@
+use cockpit_recording::run_scripted_recording;
 use cockpit_runner::ipc::{
     RunnerHandler,
     proto::{IPC_VERSION, RunnerCommand, RunnerRequest},
 };
+use cockpit_scenario::load_scenario;
 use serde_json::Value;
 
 fn request(command: RunnerCommand) -> RunnerRequest {
@@ -89,4 +91,50 @@ fn runner_step_emits_snapshot_trace_evaluation_and_cursored_events() {
             .map(Vec::len),
         Some(0)
     );
+}
+
+#[test]
+fn runner_replay_emits_real_snapshots_and_terminal_state() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario");
+    let recording = run_scripted_recording("source-run", scenario, 4).expect("recording");
+    let path = std::env::temp_dir().join(format!("cockpit-replay-{}.json", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&recording).expect("recording json"),
+    )
+    .expect("recording file");
+
+    let mut handler = RunnerHandler::new("session-1");
+    let response = handler.dispatch(request(RunnerCommand::StartReplay {
+        scenario_path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+        recording_path: path.to_string_lossy().to_string(),
+    }));
+    assert!(response.ok, "{response:?}");
+    let events = handler.dispatch(request(RunnerCommand::GetSimulationEvents {
+        cursor: Some(0),
+    }));
+    let events = events
+        .result
+        .expect("event result")
+        .get("events")
+        .cloned()
+        .expect("events");
+    let events = events.as_array().expect("event array");
+    assert!(events.iter().any(|event| {
+        event.get("type") == Some(&Value::String("SimulationStateChanged".to_string()))
+            && event.get("state") == Some(&Value::String("replaying".to_string()))
+    }));
+    assert!(events.iter().any(|event| {
+        event.get("type") == Some(&Value::String("SimulationTickCommitted".to_string()))
+            && event
+                .get("snapshot")
+                .and_then(|snapshot| snapshot.get("tick"))
+                .and_then(Value::as_u64)
+                .is_some_and(|tick| tick > 0)
+    }));
+    assert!(events.iter().any(|event| {
+        event.get("type") == Some(&Value::String("SimulationStateChanged".to_string()))
+            && event.get("state") == Some(&Value::String("completed".to_string()))
+    }));
+    let _ = std::fs::remove_file(path);
 }

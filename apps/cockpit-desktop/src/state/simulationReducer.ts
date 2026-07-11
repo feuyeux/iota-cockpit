@@ -86,7 +86,7 @@ function reduceRunnerEvent(state: SimulationModel, event: RunnerEvent): Simulati
     case "SimulationTickCommitted":
       return {
         ...state,
-        state: state.state === "paused" ? "paused" : "running",
+        state: state.state === "paused" || state.state === "replaying" ? state.state : "running",
         runId: event.snapshot.runId,
         tick: event.snapshot.tick,
         simTimeMs: event.snapshot.simTimeMs,
