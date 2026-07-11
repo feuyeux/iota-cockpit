@@ -278,6 +278,18 @@ pub fn start_replay(
 }
 
 #[tauri::command]
+pub fn diff_recordings(
+    state: tauri::State<'_, RunnerState>,
+    source_recording_path: String,
+    candidate_recording_path: String,
+) -> Result<Value, String> {
+    state.dispatch(RunnerCommand::DiffRecordings {
+        source_recording_path,
+        candidate_recording_path,
+    })
+}
+
+#[tauri::command]
 pub fn get_simulation_events(
     state: tauri::State<'_, RunnerState>,
     cursor: Option<u64>,

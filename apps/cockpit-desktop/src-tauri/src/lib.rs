@@ -27,6 +27,7 @@ pub fn run() {
             runner_commands::cancel_agent_turn,
             runner_commands::set_approval_required,
             runner_commands::start_replay,
+            runner_commands::diff_recordings,
             runner_commands::get_simulation_events,
             runner_commands::get_simulation_snapshot,
         ])

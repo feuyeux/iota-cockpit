@@ -129,6 +129,35 @@ export interface EvaluationResult {
   explanation: string;
 }
 
+export interface RecordingMetrics {
+  ticks: number;
+  events: number;
+  toolCalls: number;
+  actionResults: number;
+  stateDiffs: number;
+}
+
+export interface ReplayTickDifference {
+  tick: number;
+  sourceSnapshotHash?: string;
+  candidateSnapshotHash?: string;
+  eventsMatch: boolean;
+  toolCallsMatch: boolean;
+  actionResultsMatch: boolean;
+  stateDiffsMatch: boolean;
+}
+
+export interface RecordingDiff {
+  equivalent: boolean;
+  sourceFinalSnapshotHash?: string;
+  candidateFinalSnapshotHash?: string;
+  sourceMetrics: RecordingMetrics;
+  candidateMetrics: RecordingMetrics;
+  firstDivergence?: ReplayTickDifference;
+  tickDifferences: ReplayTickDifference[];
+  truncated: boolean;
+}
+
 export interface ToolCallTrace {
   callId: string;
   toolName: string;
@@ -155,6 +184,7 @@ export interface SimulationModel {
   toolCalls: ToolCallTrace[];
   actionResults: ActionResult[];
   evaluation?: EvaluationResult;
+  replayDiff?: RecordingDiff;
   error?: SimulationError;
   serviceConnected: boolean;
   approvalRequired: boolean;

@@ -14,6 +14,7 @@ export type SimulationAction =
   | { type: "runCreating" }
   | { type: "scenarioReady"; scenario: ScenarioSummary; runId?: string }
   | { type: "approvalModeChanged"; required: boolean }
+  | { type: "replayDiffUpdated"; report: import("../types/simulation").RecordingDiff }
   | { type: "commandRejected"; error: SimulationError }
   | { type: "runnerEvent"; event: RunnerEvent };
 
@@ -69,6 +70,8 @@ export function simulationReducer(
       };
     case "approvalModeChanged":
       return { ...state, approvalRequired: action.required };
+    case "replayDiffUpdated":
+      return { ...state, replayDiff: action.report };
     case "commandRejected":
       return {
         ...state,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RunnerEvent, ScenarioSummary } from "./types/simulation";
+import type { RecordingDiff, RunnerEvent, ScenarioSummary } from "./types/simulation";
 
 function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -24,6 +24,7 @@ export interface RunnerClient {
   cancelAgentTurn(): Promise<void>;
   setApprovalRequired(required: boolean): Promise<void>;
   startReplay(scenarioPath: string, recordingPath: string): Promise<unknown>;
+  diffRecordings(sourceRecordingPath: string, candidateRecordingPath: string): Promise<RecordingDiff>;
   snapshot(cursor?: number): Promise<RunnerEvent[]>;
 }
 
@@ -77,6 +78,18 @@ export const runnerClient: RunnerClient = {
   },
   async startReplay(scenarioPath, recordingPath) {
     return invokeRunner("start_replay", { scenarioPath, recordingPath });
+  },
+  async diffRecordings(sourceRecordingPath, candidateRecordingPath) {
+    if (!isTauri()) {
+      return {
+        equivalent: sourceRecordingPath === candidateRecordingPath,
+        sourceMetrics: { ticks: 0, events: 0, toolCalls: 0, actionResults: 0, stateDiffs: 0 },
+        candidateMetrics: { ticks: 0, events: 0, toolCalls: 0, actionResults: 0, stateDiffs: 0 },
+        tickDifferences: [],
+        truncated: false
+      };
+    }
+    return invokeRunner("diff_recordings", { sourceRecordingPath, candidateRecordingPath });
   },
   async snapshot(cursor?: number) {
     return (await invokeRunner<RunnerEvent[]>("get_simulation_events", { cursor })) ?? [];

@@ -2,6 +2,7 @@ import { useEffect, useReducer } from "react";
 import { Activity, AlertTriangle, Gauge, Link, Link2Off } from "lucide-react";
 import { SimulationEvaluation } from "./components/SimulationEvaluation";
 import { SimulationRunControl } from "./components/SimulationRunControl";
+import { SimulationReplay } from "./components/SimulationReplay";
 import { SimulationTimeline } from "./components/SimulationTimeline";
 import { SimulationTrace } from "./components/SimulationTrace";
 import { SimulationWorldView } from "./components/SimulationWorldView";
@@ -108,6 +109,7 @@ export function App() {
       <div className="grid gap-4 px-4 pb-4 xl:grid-cols-2">
         <SimulationTimeline model={model} />
         <SimulationTrace model={model} dispatch={dispatch} />
+        <SimulationReplay model={model} dispatch={dispatch} />
       </div>
     </main>
   );

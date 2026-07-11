@@ -40,6 +40,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Loopback IPC rejects newline-delimited requests larger than 1 MiB with structured `PAYLOAD_TOO_LARGE`, without truncating input.
 - Loopback runner server preserves handler state across a client disconnect and cursor-based reconnect.
 - Tauri command host compiles and React/Vite typecheck and production build pass.
+- Desktop exposes recording replay and recording comparison controls, and presents equivalence or first-divergence tick evidence from runner diff reports.
 - iota-core ACP adapter compiles, applies the configured timeout/fallback policy, and prompt contract tests exclude Ground Truth fields.
 
 ## Commands
