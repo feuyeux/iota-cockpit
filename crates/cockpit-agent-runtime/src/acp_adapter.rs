@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::{
     iota_core_adapter::CockpitSkill,
     policy::{AgentRuntimePolicy, FallbackPolicy, TurnDisposition},
+    redact_json,
 };
 use cockpit_simulation_core::sensor::Observation;
 
@@ -115,7 +116,7 @@ impl IotaCoreAcpAdapter {
                     .events
                     .iter()
                     .filter_map(|event| serde_json::to_value(event).ok())
-                    .map(redact_runtime_event)
+                    .map(redact_json)
                     .collect();
                 Ok(AcpTurn {
                     backend: self.config.backend.clone(),
@@ -143,15 +144,4 @@ impl IotaCoreAcpAdapter {
             }
         }
     }
-}
-
-fn redact_runtime_event(mut event: Value) -> Value {
-    if let Some(object) = event.as_object_mut() {
-        for key in ["apiKey", "api_key", "token", "secret", "prompt"] {
-            if object.contains_key(key) {
-                object.insert(key.to_string(), Value::String("[REDACTED]".to_string()));
-            }
-        }
-    }
-    event
 }

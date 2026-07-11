@@ -193,3 +193,22 @@ fn iota_core_adapter_loads_cockpit_skill_from_public_registry() {
             .contains(&"simulation.request_action".to_string())
     );
 }
+
+#[test]
+fn tool_trace_redacts_nested_secret_arguments_before_recording() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("redaction-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    let (_, trace) = server.call(
+        &mut simulation,
+        request(
+            "redaction-run",
+            "cockpit-agent",
+            "simulation.unknown",
+            json!({ "nested": { "apiKey": "tool-secret" } }),
+        ),
+    );
+    assert_eq!(trace.arguments["nested"]["apiKey"], "[REDACTED]");
+    assert!(!trace.arguments.to_string().contains("tool-secret"));
+}

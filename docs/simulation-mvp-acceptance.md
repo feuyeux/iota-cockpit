@@ -35,6 +35,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.
 - Recording headers persist runtime contract, world-model, application, plugin, scenario, seed, and clock compatibility data.
 - Recording payloads redact nested API keys, tokens, prompts, passwords, secrets, and hidden-reasoning fields before content-addressed files are written.
+- MCP and ACP trace payloads recursively redact nested sensitive fields before they are emitted to the runner, desktop, or recording pipeline.
 - Runner IPC validates protocol version and session token, emits tagged events, and supports cursor reads.
 - Loopback IPC rejects newline-delimited requests larger than 1 MiB with structured `PAYLOAD_TOO_LARGE`, without truncating input.
 - Loopback runner server preserves handler state across a client disconnect and cursor-based reconnect.

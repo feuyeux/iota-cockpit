@@ -26,6 +26,7 @@ pub const TOOL_REQUEST_ACTION: &str = "simulation.request_action";
 pub const TOOL_GET_ACTION_RESULT: &str = "simulation.get_action_result";
 pub const TOOL_GET_RUN_STATUS: &str = "simulation.get_run_status";
 pub const MAX_TOOL_RESPONSE_BYTES: usize = 1_048_576;
+pub const REDACTED_SECRET: &str = "[REDACTED]";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,8 +256,8 @@ impl LocalMcpServer {
             agent_id: request.agent_id,
             tick: simulation.snapshot.tick,
             correlation_id: request.correlation_id,
-            arguments: request.arguments,
-            result: serde_json::to_value(&response).unwrap_or(Value::Null),
+            arguments: redact_json(request.arguments),
+            result: redact_json(serde_json::to_value(&response).unwrap_or(Value::Null)),
             side_effect,
             allowed,
         };
@@ -373,6 +374,51 @@ impl LocalMcpServer {
     }
 }
 
+pub fn redact_json(mut value: Value) -> Value {
+    redact_json_in_place(&mut value);
+    value
+}
+
+fn redact_json_in_place(value: &mut Value) {
+    match value {
+        Value::Array(values) => values.iter_mut().for_each(redact_json_in_place),
+        Value::Object(values) => {
+            for (key, value) in values {
+                if sensitive_key(key) {
+                    *value = Value::String(REDACTED_SECRET.to_string());
+                } else {
+                    redact_json_in_place(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "apikey"
+            | "token"
+            | "authorization"
+            | "password"
+            | "secret"
+            | "prompt"
+            | "reasoning"
+            | "hiddenreasoning"
+            | "chainofthought"
+    ) || normalized.ends_with("apikey")
+        || normalized.ends_with("token")
+        || normalized.ends_with("secret")
+        || normalized.ends_with("password")
+        || normalized.ends_with("prompt")
+}
+
 fn response_fits(result: &Value) -> bool {
     serde_json::to_vec(result)
         .map(|bytes| bytes.len() <= MAX_TOOL_RESPONSE_BYTES)
@@ -381,13 +427,26 @@ fn response_fits(result: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TOOL_RESPONSE_BYTES, response_fits};
+    use super::{MAX_TOOL_RESPONSE_BYTES, REDACTED_SECRET, redact_json, response_fits};
     use serde_json::json;
 
     #[test]
     fn tool_response_size_limit_rejects_oversized_values_without_truncation() {
         let value = json!({ "payload": "x".repeat(MAX_TOOL_RESPONSE_BYTES) });
         assert!(!response_fits(&value));
+    }
+
+    #[test]
+    fn trace_redaction_removes_nested_secret_values() {
+        let value = redact_json(json!({
+            "outer": {
+                "apiKey": "do-not-leak",
+                "nested": [{ "auth_token": "also-do-not-leak" }]
+            }
+        }));
+        assert_eq!(value["outer"]["apiKey"], REDACTED_SECRET);
+        assert_eq!(value["outer"]["nested"][0]["auth_token"], REDACTED_SECRET);
+        assert!(!value.to_string().contains("do-not-leak"));
     }
 }
 
