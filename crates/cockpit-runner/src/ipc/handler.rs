@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_evaluation::evaluate_smoke_shutdown;
-use cockpit_recording::{Recording, replay_recording};
+use cockpit_recording::{Recording, RecordingStore, replay_recording};
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{Simulation, SimulationError, clock::RunStatus};
 use serde_json::{Value, json};
@@ -21,6 +21,7 @@ pub struct RunnerHandler {
     agent: RuleAgent,
     events: Vec<RunnerEvent>,
     next_cursor: u64,
+    recording_store: Option<RecordingStore>,
 }
 
 impl RunnerHandler {
@@ -33,7 +34,18 @@ impl RunnerHandler {
             agent: RuleAgent::default(),
             events: Vec::new(),
             next_cursor: 0,
+            recording_store: None,
         }
+    }
+
+    pub fn new_persistent(
+        session_token: impl Into<String>,
+        database_path: &str,
+    ) -> Result<Self, String> {
+        let mut handler = Self::new(session_token);
+        handler.recording_store =
+            Some(RecordingStore::open(database_path).map_err(|error| error.to_string())?);
+        Ok(handler)
     }
 
     pub fn dispatch(&mut self, request: RunnerRequest) -> RunnerResponse {
@@ -56,6 +68,10 @@ impl RunnerHandler {
         let result = match request.command {
             RunnerCommand::ValidateScenario { path } => self.validate(&path),
             RunnerCommand::CreateSimulationRun { path } => self.create_run(&path),
+            RunnerCommand::ResumeSimulation {
+                scenario_path,
+                run_id,
+            } => self.resume_run(&scenario_path, &run_id),
             RunnerCommand::StartSimulation => self.start(),
             RunnerCommand::PauseSimulation => self.pause(),
             RunnerCommand::StepSimulation => self.step(),
@@ -127,6 +143,7 @@ impl RunnerHandler {
             state: RunStatus::Ready,
             run_id: Some(run_id.clone()),
         });
+        self.persist_recording()?;
         Ok(json!({
             "runId": run_id,
             "status": RunStatus::Ready,
@@ -153,6 +170,67 @@ impl RunnerHandler {
             run_id: Some(run_id.clone()),
         });
         Ok(json!({ "runId": run_id, "status": RunStatus::Running }))
+    }
+
+    fn resume_run(&mut self, scenario_path: &str, run_id: &str) -> HandlerResult {
+        let store = self.recording_store.as_ref().ok_or_else(|| {
+            Box::new(IpcError {
+                code: "RECORDING_STORE_UNAVAILABLE".to_string(),
+                message: "persistent recording store is not configured".to_string(),
+                details: None,
+                run_id: Some(run_id.to_string()),
+                tick: None,
+                correlation_id: "resume".to_string(),
+            })
+        })?;
+        let recording = store
+            .load(run_id)
+            .map_err(|error| Box::new(Self::serialization_error(error.to_string())))?;
+        let scenario = load_scenario(scenario_path)
+            .map_err(|error| Box::new(Self::simulation_error(error, None)))?;
+        let mut simulation = Simulation::new(run_id.to_string(), scenario.clone());
+        simulation
+            .start()
+            .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
+        let actions_by_tick = recording.recorded_actions_by_tick();
+        self.events.clear();
+        self.next_cursor = 0;
+        self.recording = Some(Recording::new(run_id.to_string(), &scenario));
+        for source_tick in &recording.ticks {
+            let actions = actions_by_tick
+                .get(&source_tick.tick)
+                .cloned()
+                .unwrap_or_default();
+            let step = simulation
+                .step_with_recorded_actions(actions)
+                .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
+            let snapshot = simulation.snapshot.clone();
+            if let Some(target) = self.recording.as_mut() {
+                target.push(step.clone());
+            }
+            self.emit(RunnerEvent::SimulationTickCommitted {
+                cursor: 0,
+                snapshot,
+            });
+            for event in step.events {
+                self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
+            }
+            for trace in step.tool_calls {
+                self.emit(RunnerEvent::SimulationToolCall { cursor: 0, trace });
+            }
+            for result in step.action_results {
+                self.emit(RunnerEvent::SimulationActionResult { cursor: 0, result });
+            }
+        }
+        self.simulation = Some(simulation);
+        self.server = LocalMcpServer::default();
+        self.agent = RuleAgent::default();
+        Ok(json!({
+            "runId": run_id,
+            "tick": self.simulation.as_ref().map(|value| value.snapshot.tick).unwrap_or(0),
+            "cursor": self.next_cursor,
+            "status": RunStatus::Paused
+        }))
     }
 
     fn pause(&mut self) -> HandlerResult {
@@ -196,6 +274,7 @@ impl RunnerHandler {
         if let Some(recording) = self.recording.as_mut() {
             recording.push(step.clone());
         }
+        self.persist_recording()?;
         self.emit(RunnerEvent::SimulationTickCommitted {
             cursor: 0,
             snapshot,
@@ -271,6 +350,19 @@ impl RunnerHandler {
 
     fn cancel_agent_turn(&mut self) -> HandlerResult {
         Ok(json!({ "cancelled": true }))
+    }
+
+    fn persist_recording(&mut self) -> HandlerResult {
+        let Some(recording) = self.recording.as_ref() else {
+            return Ok(Value::Null);
+        };
+        let Some(store) = self.recording_store.as_mut() else {
+            return Ok(Value::Null);
+        };
+        store
+            .save(recording)
+            .map_err(|error| Box::new(Self::serialization_error(error.to_string())))?;
+        Ok(Value::Null)
     }
 
     fn snapshot(&self) -> HandlerResult {

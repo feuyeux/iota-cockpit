@@ -16,6 +16,11 @@ pub enum RunnerCommand {
     ValidateScenario { path: String },
     #[serde(rename = "CreateSimulationRun")]
     CreateSimulationRun { path: String },
+    #[serde(rename = "ResumeSimulation")]
+    ResumeSimulation {
+        scenario_path: String,
+        run_id: String,
+    },
     #[serde(rename = "StartSimulation")]
     StartSimulation,
     #[serde(rename = "PauseSimulation")]

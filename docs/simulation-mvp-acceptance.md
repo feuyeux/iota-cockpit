@@ -23,6 +23,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Plugin manifests fail closed on hash/API/permission mismatch, and plugin StateDiffs cannot write outside the declared world scope.
 - Multiple agent grants use deterministic priority/agent ordering, with duplicate target actions rejected before commit.
 - Large recording payloads use content-addressed SHA-256 fanout files; SQLite retains the payload hash and size.
+- A new persistent runner handler can restore a recorded run after process restart and rebuild its snapshot/event cursor.
 - Observation and tool trace data do not include Ground Truth smoke or fire fields.
 - Repeated runs and replay produce the same final snapshot hash.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.

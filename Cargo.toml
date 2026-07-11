@@ -98,5 +98,9 @@ name = "payload_store"
 path = "tests/contract/payload_store.rs"
 
 [[test]]
+name = "runner_restart"
+path = "tests/contract/runner_restart.rs"
+
+[[test]]
 name = "rule_agent_smoke"
 path = "tests/integration/rule_agent_smoke.rs"
