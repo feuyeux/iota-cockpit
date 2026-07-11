@@ -1,4 +1,4 @@
 mod handler;
 pub mod proto;
 
-pub use handler::RunnerHandler;
+pub use handler::{MAX_EVENT_HISTORY, RunnerHandler};

@@ -1,6 +1,6 @@
 use cockpit_recording::run_scripted_recording;
 use cockpit_runner::ipc::{
-    RunnerHandler,
+    MAX_EVENT_HISTORY, RunnerHandler,
     proto::{IPC_VERSION, RunnerCommand, RunnerRequest},
 };
 use cockpit_scenario::load_scenario;
@@ -187,4 +187,40 @@ fn runner_exposes_recording_diff_report() {
     );
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(candidate);
+}
+
+#[test]
+fn runner_bounds_event_history_and_marks_stale_cursors_for_reset() {
+    let mut handler = RunnerHandler::new("session-1");
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    assert!(handler.dispatch(request(RunnerCommand::StartSimulation)).ok);
+    for _ in 0..(MAX_EVENT_HISTORY + 100) {
+        assert!(handler.dispatch(request(RunnerCommand::StepSimulation)).ok);
+    }
+    let response = handler.dispatch(request(RunnerCommand::GetSimulationEvents {
+        cursor: Some(0),
+    }));
+    assert!(response.ok, "{response:?}");
+    let result = response.result.expect("event result");
+    let events = result
+        .get("events")
+        .and_then(Value::as_array)
+        .expect("events");
+    assert!(events.len() <= MAX_EVENT_HISTORY);
+    assert_eq!(
+        result.get("resetRequired").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        result
+            .get("firstAvailableCursor")
+            .and_then(Value::as_u64)
+            .is_some_and(|cursor| cursor > 1)
+    );
 }

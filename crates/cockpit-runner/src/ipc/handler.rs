@@ -12,6 +12,7 @@ use super::proto::{
 };
 
 type HandlerResult = Result<Value, Box<IpcError>>;
+pub const MAX_EVENT_HISTORY: usize = 2_048;
 
 fn read_recording(path: &str) -> Result<Recording, Box<IpcError>> {
     let bytes = fs::read(Path::new(path)).map_err(|error| {
@@ -100,7 +101,9 @@ impl RunnerHandler {
             RunnerCommand::GetSimulationSnapshot => self.snapshot(),
             RunnerCommand::GetSimulationEvents { cursor } => Ok(json!({
                 "events": self.events_after(cursor),
-                "nextCursor": self.next_cursor
+                "nextCursor": self.next_cursor,
+                "firstAvailableCursor": self.events.first().map(RunnerEvent::cursor).unwrap_or(self.next_cursor),
+                "resetRequired": self.cursor_reset_required(cursor)
             })),
             RunnerCommand::GetAgentTrace => Ok(json!({
                 "events": self
@@ -515,6 +518,16 @@ impl RunnerHandler {
             .collect()
     }
 
+    fn cursor_reset_required(&self, cursor: Option<u64>) -> bool {
+        let Some(cursor) = cursor else {
+            return false;
+        };
+        let Some(first) = self.events.first().map(RunnerEvent::cursor) else {
+            return false;
+        };
+        cursor.saturating_add(1) < first
+    }
+
     fn emit(&mut self, event: RunnerEvent) {
         self.next_cursor += 1;
         let cursor = self.next_cursor;
@@ -546,6 +559,10 @@ impl RunnerHandler {
             }
         };
         self.events.push(event);
+        if self.events.len() > MAX_EVENT_HISTORY {
+            let excess = self.events.len() - MAX_EVENT_HISTORY;
+            self.events.drain(..excess);
+        }
     }
 
     fn error_response(
