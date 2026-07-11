@@ -11,10 +11,14 @@ use cockpit_simulation_core::{
 use serde::{Deserialize, Serialize};
 
 pub mod diff;
+pub mod queue;
 pub mod replay;
 pub mod store;
 
 pub use diff::{RecordingDiff, RecordingMetrics, TickDiff, diff_recordings};
+pub use queue::{
+    RecordingQueue, RecordingQueueHealth, RecordingQueueOutcome, RecordingQueuePolicy,
+};
 pub use replay::replay_recording;
 pub use store::{PayloadStore, RecordingStore, RecordingStoreError};
 

@@ -5,7 +5,10 @@ use cockpit_evaluation::evaluate_smoke_shutdown;
 use cockpit_plugin::{
     PluginExecutor, PluginFailure, PluginFailurePolicy, PluginHost, PluginPolicy, PluginTickOutcome,
 };
-use cockpit_recording::{Recording, RecordingStore, diff_recordings, replay_recording};
+use cockpit_recording::{
+    Recording, RecordingQueue, RecordingQueueOutcome, RecordingQueuePolicy, RecordingStore,
+    diff_recordings, replay_recording,
+};
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{
     PluginFailureRecord, Simulation, SimulationError, StateDiff, clock::RunStatus,
@@ -46,6 +49,7 @@ pub struct RunnerHandler {
     plugin_host: PluginHost,
     plugin_policy: PluginPolicy,
     plugin_executors: BTreeMap<String, Box<dyn PluginExecutor>>,
+    recording_queue: RecordingQueue,
 }
 
 impl RunnerHandler {
@@ -62,6 +66,7 @@ impl RunnerHandler {
             plugin_host: PluginHost::default(),
             plugin_policy: PluginPolicy::default(),
             plugin_executors: BTreeMap::new(),
+            recording_queue: RecordingQueue::new(256, RecordingQueuePolicy::FailRun),
         }
     }
 
@@ -201,6 +206,7 @@ impl RunnerHandler {
         self.agent = RuleAgent::default();
         self.plugin_host = PluginHost::default();
         self.plugin_executors.clear();
+        self.recording_queue = RecordingQueue::new(256, RecordingQueuePolicy::FailRun);
         self.emit(RunnerEvent::SimulationStateChanged {
             cursor: 0,
             state: RunStatus::Ready,
@@ -357,8 +363,35 @@ impl RunnerHandler {
         let tick = step.tick;
         let snapshot = simulation.snapshot.clone();
         let snapshot_hash = step.snapshot_hash.clone();
-        if let Some(recording) = self.recording.as_mut() {
-            recording.push(step.clone());
+        let queue_outcome = self.recording_queue.push(step.clone());
+        match queue_outcome {
+            RecordingQueueOutcome::Enqueued => {
+                for queued_step in self.recording_queue.drain() {
+                    if let Some(recording) = self.recording.as_mut() {
+                        recording.push(queued_step);
+                    }
+                }
+            }
+            RecordingQueueOutcome::Dropped => {}
+            RecordingQueueOutcome::Paused => simulation.status = RunStatus::Paused,
+            RecordingQueueOutcome::Failed => simulation.fail(),
+        }
+        if matches!(
+            queue_outcome,
+            RecordingQueueOutcome::Paused | RecordingQueueOutcome::Failed
+        ) {
+            let health = self.recording_queue.health();
+            self.emit(RunnerEvent::SimulationError {
+                cursor: 0,
+                error: IpcError {
+                    code: "RECORDING_QUEUE_OVERFLOW".to_string(),
+                    message: "recording queue reached its bounded capacity".to_string(),
+                    details: serde_json::to_value(health).ok(),
+                    run_id: Some(simulation.run_id().to_string()),
+                    tick: Some(tick),
+                    correlation_id: "recording-queue".to_string(),
+                },
+            });
         }
         self.persist_recording()?;
         self.emit(RunnerEvent::SimulationTickCommitted {
@@ -404,7 +437,8 @@ impl RunnerHandler {
             "runId": run_id,
             "tick": tick,
             "snapshotHash": snapshot_hash,
-            "status": status
+            "status": status,
+            "recordingQueue": self.recording_queue.health()
         }))
     }
 
