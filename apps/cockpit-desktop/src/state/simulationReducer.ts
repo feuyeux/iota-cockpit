@@ -10,7 +10,9 @@ export type SimulationAction =
   | { type: "connected" }
   | { type: "disconnected"; error?: SimulationError }
   | { type: "scenarioLoading" }
-  | { type: "scenarioReady"; scenario: ScenarioSummary }
+  | { type: "scenarioInvalid"; error: SimulationError }
+  | { type: "runCreating" }
+  | { type: "scenarioReady"; scenario: ScenarioSummary; runId?: string }
   | { type: "commandRejected"; error: SimulationError }
   | { type: "runnerEvent"; event: RunnerEvent };
 
@@ -21,6 +23,7 @@ export const initialSimulationModel: SimulationModel = {
   speed: 1,
   observations: [],
   events: [],
+  toolCalls: [],
   actionResults: [],
   serviceConnected: false
 };
@@ -43,21 +46,34 @@ export function simulationReducer(
       };
     case "scenarioLoading":
       return { ...state, state: "scenarioLoading", error: undefined };
+    case "scenarioInvalid":
+      return { ...state, state: "scenarioInvalid", error: action.error };
+    case "runCreating":
+      return { ...state, state: "runCreating", error: undefined };
     case "scenarioReady":
       return {
         ...state,
         state: "ready",
         scenario: action.scenario,
+        runId: action.runId ?? state.runId,
         events: [],
         observations: [],
         actionResults: [],
+        toolCalls: [],
         evaluation: undefined,
         tick: 0,
         simTimeMs: 0,
         error: undefined
       };
     case "commandRejected":
-      return { ...state, error: action.error };
+      return {
+        ...state,
+        state:
+          state.state === "scenarioLoading" || state.state === "runCreating"
+            ? "failed"
+            : state.state,
+        error: action.error
+      };
     case "runnerEvent":
       return reduceRunnerEvent(state, action.event);
   }
@@ -81,6 +97,12 @@ function reduceRunnerEvent(state: SimulationModel, event: RunnerEvent): Simulati
       return {
         ...state,
         events: [event.event, ...state.events].slice(0, 300),
+        lastCursor: event.cursor
+      };
+    case "SimulationToolCall":
+      return {
+        ...state,
+        toolCalls: [event.trace, ...state.toolCalls].slice(0, 100),
         lastCursor: event.cursor
       };
     case "SimulationActionResult":

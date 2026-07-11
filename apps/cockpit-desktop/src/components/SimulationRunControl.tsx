@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Pause, Play, SkipForward, Square, Upload } from "lucide-react";
 import { runnerClient } from "../runnerClient";
 import {
@@ -38,12 +39,43 @@ export function SimulationRunControl({ model, dispatch }: Props) {
     }
   }
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.target instanceof HTMLElement && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
+        return;
+      }
+      if (event.key === " " && canPause(model)) {
+        event.preventDefault();
+        void runCommand(runnerClient.pause);
+      } else if (event.key.toLowerCase() === "s" && canStep(model)) {
+        event.preventDefault();
+        void runCommand(runnerClient.step);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [model]);
+
   async function loadScenario() {
     dispatch({ type: "scenarioLoading" });
     const path = "scenarios/smoke-in-cockpit.yaml";
-    const scenario = await runnerClient.validateScenario(path);
-    await runnerClient.createRun(path);
-    dispatch({ type: "scenarioReady", scenario });
+    let scenario;
+    try {
+      scenario = await runnerClient.validateScenario(path);
+    } catch (error) {
+      dispatch({
+        type: "scenarioInvalid",
+        error: {
+          code: "SCENARIO_INVALID",
+          message: error instanceof Error ? error.message : "scenario validation failed",
+          correlationId: "desktop-scenario-validation"
+        }
+      });
+      return;
+    }
+    dispatch({ type: "runCreating" });
+    const runId = await runnerClient.createRun(path);
+    dispatch({ type: "scenarioReady", scenario, runId });
     await syncEvents();
   }
 

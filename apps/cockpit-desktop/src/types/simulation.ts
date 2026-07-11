@@ -3,11 +3,13 @@ export type RunState =
   | "connecting"
   | "connectedIdle"
   | "scenarioLoading"
+  | "scenarioInvalid"
   | "ready"
   | "runCreating"
   | "running"
   | "paused"
   | "degraded"
+  | "replaying"
   | "completed"
   | "stopped"
   | "failed";
@@ -77,7 +79,7 @@ export interface ActionResult {
     expiresAtTick: number;
     correlationId: string;
   };
-  status: "applied" | "rejected" | "superseded";
+  status: "pendingApproval" | "applied" | "rejected" | "superseded";
   errorCode?: string;
   runId: string;
   tick: number;
@@ -127,6 +129,19 @@ export interface EvaluationResult {
   explanation: string;
 }
 
+export interface ToolCallTrace {
+  callId: string;
+  toolName: string;
+  runId: string;
+  agentId: string;
+  tick: number;
+  correlationId: string;
+  arguments: unknown;
+  result: unknown;
+  sideEffect: boolean;
+  allowed: boolean;
+}
+
 export interface SimulationModel {
   state: RunState;
   scenario?: ScenarioSummary;
@@ -137,6 +152,7 @@ export interface SimulationModel {
   snapshot?: WorldSnapshot;
   observations: Observation[];
   events: SimulationEvent[];
+  toolCalls: ToolCallTrace[];
   actionResults: ActionResult[];
   evaluation?: EvaluationResult;
   error?: SimulationError;
@@ -148,6 +164,7 @@ export type RunnerEvent =
   | { type: "SimulationStateChanged"; state: RunState; runId?: string }
   | { type: "SimulationTickCommitted"; snapshot: WorldSnapshot; cursor: number }
   | { type: "SimulationEvent"; event: SimulationEvent; cursor: number }
+  | { type: "SimulationToolCall"; trace: ToolCallTrace; cursor: number }
   | { type: "SimulationActionResult"; result: ActionResult; cursor: number }
   | { type: "SimulationEvaluationUpdated"; evaluation: EvaluationResult; cursor: number }
   | { type: "SimulationError"; error: SimulationError; cursor?: number };

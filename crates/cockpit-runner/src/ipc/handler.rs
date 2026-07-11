@@ -81,6 +81,7 @@ impl RunnerHandler {
                 self.reject_action(&request_id, reason.as_deref())
             }
             RunnerCommand::CancelAgentTurn => self.cancel_agent_turn(),
+            RunnerCommand::SetApprovalRequired { required } => self.set_approval_required(required),
             RunnerCommand::GetSimulationSnapshot => self.snapshot(),
             RunnerCommand::GetSimulationEvents { cursor } => Ok(json!({
                 "events": self.events_after(cursor),
@@ -329,6 +330,10 @@ impl RunnerHandler {
         let result = self.server.approve_action(&mut simulation, request_id);
         self.simulation = Some(simulation);
         let result = result.map_err(|error| Box::new(Self::tool_error(error)))?;
+        self.emit(RunnerEvent::SimulationActionResult {
+            cursor: 0,
+            result: result.clone(),
+        });
         serde_json::to_value(result)
             .map_err(|error| Box::new(Self::serialization_error(error.to_string())))
     }
@@ -342,6 +347,10 @@ impl RunnerHandler {
             .server
             .reject_action(simulation, request_id, false)
             .map_err(|error| Box::new(Self::tool_error(error)))?;
+        self.emit(RunnerEvent::SimulationActionResult {
+            cursor: 0,
+            result: result.clone(),
+        });
         Ok(json!({
             "result": result,
             "reason": reason
@@ -349,7 +358,23 @@ impl RunnerHandler {
     }
 
     fn cancel_agent_turn(&mut self) -> HandlerResult {
-        Ok(json!({ "cancelled": true }))
+        let simulation = self
+            .simulation
+            .as_ref()
+            .ok_or_else(|| Box::new(Self::no_run_error()))?;
+        let results = self.server.cancel_pending_actions(simulation);
+        for result in &results {
+            self.emit(RunnerEvent::SimulationActionResult {
+                cursor: 0,
+                result: result.clone(),
+            });
+        }
+        Ok(json!({ "cancelled": true, "count": results.len() }))
+    }
+
+    fn set_approval_required(&mut self, required: bool) -> HandlerResult {
+        self.server.set_approval_required(required);
+        Ok(json!({ "approvalRequired": required }))
     }
 
     fn persist_recording(&mut self) -> HandlerResult {

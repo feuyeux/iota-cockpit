@@ -55,16 +55,27 @@ impl RunnerState {
             .transport
             .lock()
             .map_err(|_| "runner transport lock poisoned".to_string())?;
-        if matches!(&*transport, RunnerTransport::Process { .. }) {
+        if let RunnerTransport::Process { address, .. } = &*transport
+            && TcpStream::connect_timeout(address, Duration::from_millis(20)).is_ok()
+        {
             return Ok("process".to_string());
         }
+        *transport = Self::spawn_process(binary, address, &self.token)?;
+        Ok("process".to_string())
+    }
+
+    fn spawn_process(
+        binary: std::ffi::OsString,
+        address: SocketAddr,
+        token: &str,
+    ) -> Result<RunnerTransport, String> {
         let child = Command::new(binary)
             .args([
                 "serve",
                 "--bind",
                 &address.to_string(),
                 "--session-token",
-                &self.token,
+                token,
             ])
             .spawn()
             .map_err(|error| format!("failed to start cockpit-runner: {error}"))?;
@@ -75,8 +86,7 @@ impl RunnerState {
             let _ = child.kill();
             return Err("cockpit-runner did not accept loopback connections".to_string());
         }
-        *transport = RunnerTransport::Process { child, address };
-        Ok("process".to_string())
+        Ok(RunnerTransport::Process { child, address })
     }
 
     fn dispatch(&self, command: RunnerCommand) -> Result<Value, String> {
@@ -96,8 +106,26 @@ impl RunnerState {
             .lock()
             .map_err(|_| "runner transport lock poisoned".to_string())?;
         let response = match &mut *transport {
-            RunnerTransport::Embedded(handler) => handler.dispatch(request),
-            RunnerTransport::Process { address, .. } => request_process(*address, &request)?,
+            RunnerTransport::Embedded(handler) => return response_value(handler.dispatch(request)),
+            RunnerTransport::Process { address, .. } => request_process(*address, &request),
+        };
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let Some(binary) = std::env::var_os("COCKPIT_RUNNER_BIN") else {
+                    return Err(error);
+                };
+                let address: SocketAddr = "127.0.0.1:47701"
+                    .parse()
+                    .map_err(|parse_error| format!("invalid runner address: {parse_error}"))?;
+                *transport = Self::spawn_process(binary, address, &self.token)?;
+                match &mut *transport {
+                    RunnerTransport::Process { address, .. } => {
+                        request_process(*address, &request)?
+                    }
+                    RunnerTransport::Embedded(_) => unreachable!(),
+                }
+            }
         };
         response_value(response)
     }
@@ -189,6 +217,64 @@ pub fn step_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), Strin
 #[tauri::command]
 pub fn stop_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), String> {
     state.dispatch(RunnerCommand::StopSimulation).map(|_| ())
+}
+
+#[tauri::command]
+pub fn resume_simulation(
+    state: tauri::State<'_, RunnerState>,
+    scenario_path: String,
+    run_id: String,
+) -> Result<(), String> {
+    state
+        .dispatch(RunnerCommand::ResumeSimulation {
+            scenario_path,
+            run_id,
+        })
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub fn approve_action(
+    state: tauri::State<'_, RunnerState>,
+    request_id: String,
+) -> Result<Value, String> {
+    state.dispatch(RunnerCommand::ApproveAction { request_id })
+}
+
+#[tauri::command]
+pub fn reject_action(
+    state: tauri::State<'_, RunnerState>,
+    request_id: String,
+    reason: Option<String>,
+) -> Result<Value, String> {
+    state.dispatch(RunnerCommand::RejectAction { request_id, reason })
+}
+
+#[tauri::command]
+pub fn cancel_agent_turn(state: tauri::State<'_, RunnerState>) -> Result<(), String> {
+    state.dispatch(RunnerCommand::CancelAgentTurn).map(|_| ())
+}
+
+#[tauri::command]
+pub fn set_approval_required(
+    state: tauri::State<'_, RunnerState>,
+    required: bool,
+) -> Result<(), String> {
+    state
+        .dispatch(RunnerCommand::SetApprovalRequired { required })
+        .map(|_| ())
+}
+
+#[tauri::command]
+pub fn start_replay(
+    state: tauri::State<'_, RunnerState>,
+    scenario_path: String,
+    recording_path: String,
+) -> Result<Value, String> {
+    state.dispatch(RunnerCommand::StartReplay {
+        scenario_path,
+        recording_path,
+    })
 }
 
 #[tauri::command]

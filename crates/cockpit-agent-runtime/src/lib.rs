@@ -124,6 +124,26 @@ impl LocalMcpServer {
         Ok(result)
     }
 
+    pub fn cancel_pending_actions(&mut self, simulation: &Simulation) -> Vec<ActionResult> {
+        let pending = std::mem::take(&mut self.pending_actions);
+        pending
+            .into_values()
+            .map(|action| {
+                let result = ActionResult {
+                    request: action,
+                    status: ActionStatus::Rejected,
+                    error_code: Some(cockpit_simulation_core::ErrorCode::ActionCancelled),
+                    run_id: simulation.run_id().to_string(),
+                    tick: simulation.snapshot.tick,
+                    correlation_id: "agent-turn-cancelled".to_string(),
+                };
+                self.action_results
+                    .insert(result.request.request_id.clone(), result.clone());
+                result
+            })
+            .collect()
+    }
+
     pub fn tool_definitions() -> Vec<ToolDefinition> {
         vec![
             definition(

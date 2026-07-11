@@ -21,6 +21,12 @@ pub fn run() {
             runner_commands::pause_simulation,
             runner_commands::step_simulation,
             runner_commands::stop_simulation,
+            runner_commands::resume_simulation,
+            runner_commands::approve_action,
+            runner_commands::reject_action,
+            runner_commands::cancel_agent_turn,
+            runner_commands::set_approval_required,
+            runner_commands::start_replay,
             runner_commands::get_simulation_events,
             runner_commands::get_simulation_snapshot,
         ])

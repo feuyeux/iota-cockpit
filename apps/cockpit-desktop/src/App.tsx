@@ -36,6 +36,25 @@ export function App() {
     };
   }, []);
 
+  async function reconnect() {
+    dispatch({ type: "connectRequested" });
+    try {
+      await runnerClient.connect();
+      dispatch({ type: "connected" });
+      const events = await runnerClient.snapshot(model.lastCursor);
+      for (const event of events) dispatch({ type: "runnerEvent", event });
+    } catch (error) {
+      dispatch({
+        type: "disconnected",
+        error: {
+          code: "RUNNER_CONNECT_FAILED",
+          message: error instanceof Error ? error.message : "runner reconnect failed",
+          correlationId: "desktop-reconnect"
+        }
+      });
+    }
+  }
+
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="flex min-h-14 items-center justify-between border-b border-zinc-800 px-4">
@@ -55,6 +74,15 @@ export function App() {
             )}
             {model.state}
           </span>
+          {!model.serviceConnected ? (
+            <button
+              aria-label="Reconnect runner"
+              className="border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+              onClick={() => void reconnect()}
+            >
+              Reconnect
+            </button>
+          ) : null}
           <span className="flex items-center gap-2">
             <Gauge className="h-4 w-4 text-cyan-300" />
             tick {model.tick} / {model.simTimeMs}ms

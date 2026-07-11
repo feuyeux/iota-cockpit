@@ -38,6 +38,8 @@ pub enum RunnerCommand {
     },
     #[serde(rename = "CancelAgentTurn")]
     CancelAgentTurn,
+    #[serde(rename = "SetApprovalRequired")]
+    SetApprovalRequired { required: bool },
     #[serde(rename = "GetSimulationSnapshot")]
     GetSimulationSnapshot,
     #[serde(rename = "GetSimulationEvents")]

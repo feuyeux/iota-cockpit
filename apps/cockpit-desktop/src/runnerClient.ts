@@ -18,6 +18,12 @@ export interface RunnerClient {
   pause(): Promise<void>;
   step(): Promise<void>;
   stop(): Promise<void>;
+  resume(scenarioPath: string, runId: string): Promise<void>;
+  approveAction(requestId: string): Promise<unknown>;
+  rejectAction(requestId: string, reason?: string): Promise<unknown>;
+  cancelAgentTurn(): Promise<void>;
+  setApprovalRequired(required: boolean): Promise<void>;
+  startReplay(scenarioPath: string, recordingPath: string): Promise<unknown>;
   snapshot(cursor?: number): Promise<RunnerEvent[]>;
 }
 
@@ -53,6 +59,24 @@ export const runnerClient: RunnerClient = {
   },
   async stop() {
     await invokeRunner<void>("stop_simulation");
+  },
+  async resume(scenarioPath, runId) {
+    await invokeRunner<void>("resume_simulation", { scenarioPath, runId });
+  },
+  async approveAction(requestId) {
+    return invokeRunner("approve_action", { requestId });
+  },
+  async rejectAction(requestId, reason) {
+    return invokeRunner("reject_action", { requestId, reason });
+  },
+  async cancelAgentTurn() {
+    await invokeRunner<void>("cancel_agent_turn");
+  },
+  async setApprovalRequired(required) {
+    await invokeRunner<void>("set_approval_required", { required });
+  },
+  async startReplay(scenarioPath, recordingPath) {
+    return invokeRunner("start_replay", { scenarioPath, recordingPath });
   },
   async snapshot(cursor?: number) {
     return (await invokeRunner<RunnerEvent[]>("get_simulation_events", { cursor })) ?? [];
