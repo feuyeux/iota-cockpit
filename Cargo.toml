@@ -13,6 +13,7 @@ members = [
   "crates/cockpit-evaluation",
   "crates/cockpit-agent-runtime",
   "crates/cockpit-runner",
+  "crates/cockpit-plugin",
   "apps/cockpit-desktop/src-tauri",
 ]
 resolver = "3"
@@ -37,6 +38,7 @@ cockpit-recording = { path = "crates/cockpit-recording" }
 cockpit-evaluation = { path = "crates/cockpit-evaluation" }
 cockpit-agent-runtime = { path = "crates/cockpit-agent-runtime" }
 cockpit-runner = { path = "crates/cockpit-runner" }
+cockpit-plugin = { path = "crates/cockpit-plugin" }
 iota-core = { git = "https://github.com/feuyeux/iota-sympantos.git", rev = "4d8a72a0af4a156437f7a23cfacbb059f0ee62e3", package = "iota-core", default-features = false }
 
 [dependencies]
@@ -46,9 +48,11 @@ cockpit-recording.workspace = true
 cockpit-evaluation.workspace = true
 cockpit-agent-runtime.workspace = true
 cockpit-runner.workspace = true
+cockpit-plugin.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [[test]]
@@ -78,6 +82,10 @@ path = "tests/contract/acp_adapter.rs"
 [[test]]
 name = "runner_server"
 path = "tests/contract/runner_server.rs"
+
+[[test]]
+name = "plugin_host"
+path = "tests/contract/plugin_host.rs"
 
 [[test]]
 name = "rule_agent_smoke"

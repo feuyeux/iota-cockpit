@@ -20,6 +20,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Action Gateway applies engine shutdown and rejects an unknown agent identity.
 - Capability/version/expiry rejection is represented by a stable `ActionRejected` event and error code.
 - Approval-enabled mutation requests remain pending until an explicit approval decision and do not change the world beforehand.
+- Plugin manifests fail closed on hash/API/permission mismatch, and plugin StateDiffs cannot write outside the declared world scope.
 - Observation and tool trace data do not include Ground Truth smoke or fire fields.
 - Repeated runs and replay produce the same final snapshot hash.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.

@@ -520,6 +520,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-plugin"
+version = "0.1.0"
+dependencies = [
+ "cockpit-simulation-core",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cockpit-recording"
 version = "0.1.0"
 dependencies = [
@@ -1872,11 +1884,13 @@ version = "0.1.0"
 dependencies = [
  "cockpit-agent-runtime",
  "cockpit-evaluation",
+ "cockpit-plugin",
  "cockpit-recording",
  "cockpit-runner",
  "cockpit-scenario",
  "cockpit-simulation-core",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
