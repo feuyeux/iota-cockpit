@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     action::{
@@ -54,6 +55,18 @@ pub struct StepRecord {
     pub errors: Vec<String>,
     #[serde(default)]
     pub fallback: Option<String>,
+    #[serde(default)]
+    pub state_diffs: Vec<StateDiff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateDiff {
+    pub source_id: String,
+    pub entity_id: String,
+    pub component_path: String,
+    pub value: Value,
+    pub expected_state_version: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -145,12 +158,20 @@ impl Simulation {
         for action in agent.next_actions(&observation, self.snapshot.version) {
             self.submit_action(action);
         }
-        self.commit_step(observation)
+        self.commit_step(observation, Vec::new())
     }
 
     pub fn step_with_recorded_actions(
         &mut self,
         actions: Vec<ActionRequest>,
+    ) -> SimulationResult<StepRecord> {
+        self.step_with_recorded_inputs(actions, Vec::new())
+    }
+
+    pub fn step_with_recorded_inputs(
+        &mut self,
+        actions: Vec<ActionRequest>,
+        state_diffs: Vec<StateDiff>,
     ) -> SimulationResult<StepRecord> {
         let observation = Observation::from_snapshot(
             self.run_id(),
@@ -160,7 +181,7 @@ impl Simulation {
         for action in actions {
             self.submit_action(action);
         }
-        self.commit_step(observation)
+        self.commit_step(observation, state_diffs)
     }
 
     pub fn step_without_agent(&mut self) -> SimulationResult<StepRecord> {
@@ -169,7 +190,16 @@ impl Simulation {
             &self.scenario.agent.agent_id,
             &self.snapshot,
         );
-        self.commit_step(observation)
+        self.commit_step(observation, Vec::new())
+    }
+
+    pub fn step_with_state_diffs(&mut self, diffs: Vec<StateDiff>) -> SimulationResult<StepRecord> {
+        let observation = Observation::from_snapshot(
+            self.run_id(),
+            &self.scenario.agent.agent_id,
+            &self.snapshot,
+        );
+        self.commit_step(observation, diffs)
     }
 
     fn validate_action(&mut self, request: &ActionRequest) -> ActionResult {
@@ -227,7 +257,11 @@ impl Simulation {
         result
     }
 
-    fn commit_step(&mut self, mut observation: Observation) -> SimulationResult<StepRecord> {
+    fn commit_step(
+        &mut self,
+        mut observation: Observation,
+        state_diffs: Vec<StateDiff>,
+    ) -> SimulationResult<StepRecord> {
         if matches!(self.status, RunStatus::Ready | RunStatus::Paused) {
             self.status = RunStatus::Running;
         }
@@ -247,6 +281,7 @@ impl Simulation {
         self.apply_environment(&mut events);
         self.apply_human_influence(&mut events);
         self.apply_pending_actions(&mut events);
+        self.apply_state_diffs(&state_diffs, &mut events)?;
 
         let action_results = std::mem::take(&mut self.latest_results);
         for result in &action_results {
@@ -283,7 +318,55 @@ impl Simulation {
             tool_calls: Vec::new(),
             errors: Vec::new(),
             fallback: None,
+            state_diffs,
         })
+    }
+
+    fn apply_state_diffs(
+        &mut self,
+        diffs: &[StateDiff],
+        events: &mut Vec<EventEnvelope>,
+    ) -> SimulationResult<()> {
+        let mut diffs = diffs.to_vec();
+        diffs.sort_by(|left, right| {
+            left.entity_id
+                .cmp(&right.entity_id)
+                .then(left.component_path.cmp(&right.component_path))
+                .then(left.source_id.cmp(&right.source_id))
+        });
+        for diff in &diffs {
+            if diff.expected_state_version != self.snapshot.version {
+                return Err(SimulationError::InvalidScenario(
+                    "state diff version does not match the current snapshot".to_string(),
+                ));
+            }
+            validate_state_diff(diff)?;
+        }
+        for diff in diffs {
+            let value = diff.value.as_f64().expect("state diff value is validated");
+            match (diff.entity_id.as_str(), diff.component_path.as_str()) {
+                ("cabin", "environment.smokeDensity") => {
+                    self.snapshot.environment.smoke_density = value
+                }
+                ("cabin", "environment.visibility") => self.snapshot.environment.visibility = value,
+                ("cabin", "environment.temperatureC") => {
+                    self.snapshot.environment.temperature_c = value
+                }
+                ("pilot-1", "pilot.stress") => self.snapshot.pilot.stress = value,
+                ("pilot-1", "pilot.attention") => self.snapshot.pilot.attention = value,
+                ("engine-1", "engine.health") => self.snapshot.engine.health = value,
+                ("alarm-1", "alarm.active") => self.snapshot.alarm.active = value > 0.5,
+                _ => unreachable!("state diff is validated"),
+            }
+            events.push(self.event(
+                "StateDiffApplied",
+                &diff.source_id,
+                Some(&diff.entity_id),
+                Some(value),
+                "validated external state diff applied during tick commit",
+            ));
+        }
+        Ok(())
     }
 
     fn apply_fault(&mut self, fault: &Fault, events: &mut Vec<EventEnvelope>) {
@@ -466,4 +549,25 @@ impl Simulation {
             },
         }
     }
+}
+
+fn validate_state_diff(diff: &StateDiff) -> SimulationResult<()> {
+    let Some(value) = diff.value.as_f64() else {
+        return Err(SimulationError::InvalidScenario(
+            "state diff value must be numeric".to_string(),
+        ));
+    };
+    let valid = match (diff.entity_id.as_str(), diff.component_path.as_str()) {
+        ("cabin", "environment.smokeDensity") => (0.0..=3.0).contains(&value),
+        ("cabin", "environment.visibility")
+        | ("pilot-1", "pilot.stress")
+        | ("pilot-1", "pilot.attention")
+        | ("engine-1", "engine.health")
+        | ("alarm-1", "alarm.active") => (0.0..=1.0).contains(&value),
+        ("cabin", "environment.temperatureC") => (-80.0..=100.0).contains(&value),
+        _ => false,
+    };
+    valid.then_some(()).ok_or_else(|| {
+        SimulationError::InvalidScenario("state diff entity, path, or value is invalid".to_string())
+    })
 }

@@ -194,6 +194,7 @@ impl RunnerHandler {
             .start()
             .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
         let actions_by_tick = recording.recorded_actions_by_tick();
+        let state_diffs_by_tick = recording.recorded_state_diffs_by_tick();
         self.events.clear();
         self.next_cursor = 0;
         self.recording = Some(Recording::new(run_id.to_string(), &scenario));
@@ -202,8 +203,12 @@ impl RunnerHandler {
                 .get(&source_tick.tick)
                 .cloned()
                 .unwrap_or_default();
+            let state_diffs = state_diffs_by_tick
+                .get(&source_tick.tick)
+                .cloned()
+                .unwrap_or_default();
             let step = simulation
-                .step_with_recorded_actions(actions)
+                .step_with_recorded_inputs(actions, state_diffs)
                 .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
             let snapshot = simulation.snapshot.clone();
             if let Some(target) = self.recording.as_mut() {
@@ -421,6 +426,7 @@ impl RunnerHandler {
             .start()
             .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
         let actions_by_tick = recording.recorded_actions_by_tick();
+        let state_diffs_by_tick = recording.recorded_state_diffs_by_tick();
         self.events.clear();
         self.next_cursor = 0;
         self.emit(RunnerEvent::SimulationStateChanged {
@@ -433,8 +439,12 @@ impl RunnerHandler {
                 .get(&source_tick.tick)
                 .cloned()
                 .unwrap_or_default();
+            let state_diffs = state_diffs_by_tick
+                .get(&source_tick.tick)
+                .cloned()
+                .unwrap_or_default();
             let step = simulation
-                .step_with_recorded_actions(actions)
+                .step_with_recorded_inputs(actions, state_diffs)
                 .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
             let snapshot = simulation.snapshot.clone();
             self.emit(RunnerEvent::SimulationTickCommitted {

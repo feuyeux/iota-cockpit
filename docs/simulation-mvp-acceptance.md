@@ -22,6 +22,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Approval-enabled mutation requests remain pending until an explicit approval decision and do not change the world beforehand.
 - Plugin manifests fail closed on hash/API/permission mismatch, and plugin StateDiffs cannot write outside the declared world scope.
 - Plugin tick output is treated as untrusted: every StateDiff is validated, failures are recorded, and the default policy disables the failing plugin.
+- Validated external StateDiffs are applied only by the simulation tick commit, emit an audit event, are recorded per tick, and replay to the same snapshot hash.
 - Multiple agent grants use deterministic priority/agent ordering, with duplicate target actions rejected before commit.
 - Large recording payloads use content-addressed SHA-256 fanout files; SQLite retains the payload hash and size.
 - A new persistent runner handler can restore a recorded run after process restart and rebuild its snapshot/event cursor.

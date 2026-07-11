@@ -28,10 +28,15 @@ pub fn replay_recording(
     simulation.start()?;
     let mut replay = Recording::new(run_id, &scenario);
     let actions_by_tick = source.recorded_actions_by_tick();
+    let state_diffs_by_tick = source.recorded_state_diffs_by_tick();
 
     for tick in &source.ticks {
         let actions = actions_by_tick.get(&tick.tick).cloned().unwrap_or_default();
-        let step = simulation.step_with_recorded_actions(actions)?;
+        let state_diffs = state_diffs_by_tick
+            .get(&tick.tick)
+            .cloned()
+            .unwrap_or_default();
+        let step = simulation.step_with_recorded_inputs(actions, state_diffs)?;
         replay.push(step);
     }
     Ok(replay)

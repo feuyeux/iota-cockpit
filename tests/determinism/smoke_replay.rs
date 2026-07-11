@@ -1,6 +1,8 @@
 use cockpit_evaluation::evaluate_smoke_shutdown;
-use cockpit_recording::{replay_recording, run_scripted_recording};
+use cockpit_recording::{Recording, replay_recording, run_scripted_recording};
 use cockpit_scenario::load_scenario;
+use cockpit_simulation_core::{Simulation, StateDiff};
+use serde_json::json;
 
 #[test]
 fn smoke_scenario_records_replays_and_evaluates_deterministically() {
@@ -43,4 +45,35 @@ fn smoke_scenario_records_replays_and_evaluates_deterministically() {
         .expect("engine shutdown")
         .tick;
     assert!(shutdown_tick <= smoke_tick + deadline);
+}
+
+#[test]
+fn committed_state_diffs_are_audited_and_replayed_deterministically() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("state-diff-run", scenario.clone());
+    simulation.start().expect("run starts");
+    let diff = StateDiff {
+        source_id: "smoke-plugin".to_string(),
+        entity_id: "cabin".to_string(),
+        component_path: "environment.visibility".to_string(),
+        value: json!(0.4),
+        expected_state_version: 0,
+    };
+    let step = simulation
+        .step_with_state_diffs(vec![diff])
+        .expect("state diff commits");
+    assert_eq!(simulation.snapshot.environment.visibility, 0.4);
+    assert!(
+        step.events
+            .iter()
+            .any(|event| event.event_type == "StateDiffApplied")
+    );
+
+    let mut recording = Recording::new("state-diff-run", &scenario);
+    recording.push(step);
+    let replay = replay_recording("state-diff-replay", scenario, &recording).expect("replay");
+    assert_eq!(
+        recording.final_snapshot_hash(),
+        replay.final_snapshot_hash()
+    );
 }

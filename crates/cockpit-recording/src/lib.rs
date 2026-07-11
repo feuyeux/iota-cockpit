@@ -6,7 +6,7 @@ use cockpit_simulation_core::{
     action::{ActionRequest, ActionStatus},
     clock::ClockConfig,
     error::SimulationResult,
-    simulation::{Simulation, SimulationScenario, StepRecord},
+    simulation::{Simulation, SimulationScenario, StateDiff, StepRecord},
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,6 +72,13 @@ impl Recording {
             }
         }
         actions
+    }
+
+    pub fn recorded_state_diffs_by_tick(&self) -> BTreeMap<u64, Vec<StateDiff>> {
+        self.ticks
+            .iter()
+            .map(|tick| (tick.tick, tick.state_diffs.clone()))
+            .collect()
     }
 }
 
