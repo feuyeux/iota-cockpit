@@ -44,4 +44,4 @@ npm run dev -- --host 127.0.0.1 --port 15342
 
 Open <http://127.0.0.1:15342>.
 
-For the native Tauri host, use `npm run tauri:dev`; package with `npm run tauri:build`.
+For the native Tauri host, set `COCKPIT_RUNNER_BIN` to the `cockpit-runner` executable to launch the isolated loopback runner process, then use `npm run tauri:dev`; package with `npm run tauri:build`. Without that variable, development uses the embedded handler explicitly.

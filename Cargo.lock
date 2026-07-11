@@ -544,6 +544,7 @@ dependencies = [
  "cockpit-simulation-core",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

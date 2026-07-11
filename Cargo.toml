@@ -29,7 +29,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
-tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "net", "io-util"] }
 thiserror = "2"
 cockpit-simulation-core = { path = "crates/cockpit-simulation-core" }
 cockpit-scenario = { path = "crates/cockpit-scenario" }
@@ -74,6 +74,10 @@ path = "tests/contract/runtime_policy.rs"
 [[test]]
 name = "acp_adapter"
 path = "tests/contract/acp_adapter.rs"
+
+[[test]]
+name = "runner_server"
+path = "tests/contract/runner_server.rs"
 
 [[test]]
 name = "rule_agent_smoke"

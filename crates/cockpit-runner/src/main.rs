@@ -13,6 +13,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:47701")]
+        bind: String,
+        #[arg(long)]
+        session_token: String,
+    },
     Validate {
         scenario: PathBuf,
     },
@@ -23,9 +29,18 @@ enum Command {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Serve {
+            bind,
+            session_token,
+        } => {
+            cockpit_runner::server::serve(&bind, session_token)
+                .await
+                .with_context(|| format!("failed to serve runner on {bind}"))?;
+        }
         Command::Validate { scenario } => {
             let scenario = cockpit_scenario::load_scenario(&scenario)
                 .with_context(|| format!("failed to validate {}", scenario.display()))?;

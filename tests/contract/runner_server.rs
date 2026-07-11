@@ -1,0 +1,75 @@
+use cockpit_runner::{
+    ipc::proto::{IPC_VERSION, RunnerCommand, RunnerRequest},
+    server::serve_listener,
+};
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+
+async fn call(
+    write: &mut tokio::net::tcp::OwnedWriteHalf,
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::tcp::OwnedReadHalf>>,
+    command: RunnerCommand,
+) -> Value {
+    let request = RunnerRequest {
+        version: IPC_VERSION,
+        session_token: "server-test-token".to_string(),
+        correlation_id: "server-test-correlation".to_string(),
+        command,
+    };
+    let mut encoded = serde_json::to_vec(&request).expect("request serializes");
+    encoded.push(b'\n');
+    write.write_all(&encoded).await.expect("request writes");
+    let line = lines
+        .next_line()
+        .await
+        .expect("response reads")
+        .expect("response exists");
+    serde_json::from_str(&line).expect("response parses")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn loopback_server_preserves_state_across_reconnect() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener binds");
+    let address = listener.local_addr().expect("address exists");
+    let server = tokio::spawn(serve_listener(listener, "server-test-token"));
+
+    let stream = TcpStream::connect(address).await.expect("first connection");
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let created = call(
+        &mut write,
+        &mut lines,
+        RunnerCommand::CreateSimulationRun {
+            path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+        },
+    )
+    .await;
+    assert_eq!(created.get("ok").and_then(Value::as_bool), Some(true));
+    let stepped = call(&mut write, &mut lines, RunnerCommand::StepSimulation).await;
+    assert_eq!(stepped.get("ok").and_then(Value::as_bool), Some(true));
+    drop(write);
+    drop(lines);
+
+    let stream = TcpStream::connect(address).await.expect("reconnect");
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let events = call(
+        &mut write,
+        &mut lines,
+        RunnerCommand::GetSimulationEvents { cursor: Some(0) },
+    )
+    .await;
+    assert_eq!(events.get("ok").and_then(Value::as_bool), Some(true));
+    let event_list = events
+        .get("result")
+        .and_then(|result| result.get("events"))
+        .and_then(Value::as_array)
+        .expect("event list");
+    assert!(event_list.iter().any(|event| {
+        event.get("type") == Some(&Value::String("SimulationTickCommitted".to_string()))
+    }));
+    server.abort();
+}

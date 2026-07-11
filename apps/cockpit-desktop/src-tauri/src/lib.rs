@@ -4,8 +4,15 @@ use runner_commands::RunnerState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let token = format!(
+        "cockpit-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
     tauri::Builder::default()
-        .manage(RunnerState::new("cockpit-desktop-session"))
+        .manage(RunnerState::new(token))
         .invoke_handler(tauri::generate_handler![
             runner_commands::connect_runner,
             runner_commands::validate_scenario,

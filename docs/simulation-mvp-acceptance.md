@@ -22,6 +22,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Repeated runs and replay produce the same final snapshot hash.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.
 - Runner IPC validates protocol version and session token, emits tagged events, and supports cursor reads.
+- Loopback runner server preserves handler state across a client disconnect and cursor-based reconnect.
 - Tauri command host compiles and React/Vite typecheck and production build pass.
 - iota-core ACP adapter compiles, applies the configured timeout/fallback policy, and prompt contract tests exclude Ground Truth fields.
 
@@ -43,4 +44,5 @@ cd apps/cockpit-desktop && npm test && npm run build
 - Production iota-core git dependency manifest and CI on a clean machine.
 - SQLite content-addressed large-payload files and migration tooling.
 - Tauri packaged binary, reconnect behavior across process restart, and cross-platform packaging.
+- Tauri process transport with a separately packaged runner binary on every target OS.
 - 1000-entity / 10,000-event-per-minute performance target.

@@ -1,14 +1,33 @@
-use std::sync::Mutex;
+use std::{
+    io::{BufRead, BufReader, Write},
+    net::{SocketAddr, TcpStream},
+    process::{Child, Command},
+    sync::Mutex,
+    time::Duration,
+};
 
 use cockpit_runner::ipc::{
     RunnerHandler,
-    proto::{IPC_VERSION, RunnerCommand, RunnerEvent, RunnerRequest},
+    proto::{IPC_VERSION, RunnerCommand, RunnerEvent, RunnerRequest, RunnerResponse},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+enum RunnerTransport {
+    Embedded(Box<RunnerHandler>),
+    Process { child: Child, address: SocketAddr },
+}
+
+impl Drop for RunnerTransport {
+    fn drop(&mut self) {
+        if let Self::Process { child, .. } = self {
+            let _ = child.kill();
+        }
+    }
+}
+
 pub struct RunnerState {
-    handler: Mutex<RunnerHandler>,
+    transport: Mutex<RunnerTransport>,
     token: String,
     sequence: Mutex<u64>,
 }
@@ -17,10 +36,47 @@ impl RunnerState {
     pub fn new(token: impl Into<String>) -> Self {
         let token = token.into();
         Self {
-            handler: Mutex::new(RunnerHandler::new(token.clone())),
+            transport: Mutex::new(RunnerTransport::Embedded(Box::new(RunnerHandler::new(
+                token.clone(),
+            )))),
             token,
             sequence: Mutex::new(0),
         }
+    }
+
+    pub fn connect(&self) -> Result<String, String> {
+        let Some(binary) = std::env::var_os("COCKPIT_RUNNER_BIN") else {
+            return Ok("embedded".to_string());
+        };
+        let address: SocketAddr = "127.0.0.1:47701"
+            .parse()
+            .map_err(|error| format!("invalid runner address: {error}"))?;
+        let mut transport = self
+            .transport
+            .lock()
+            .map_err(|_| "runner transport lock poisoned".to_string())?;
+        if matches!(&*transport, RunnerTransport::Process { .. }) {
+            return Ok("process".to_string());
+        }
+        let child = Command::new(binary)
+            .args([
+                "serve",
+                "--bind",
+                &address.to_string(),
+                "--session-token",
+                &self.token,
+            ])
+            .spawn()
+            .map_err(|error| format!("failed to start cockpit-runner: {error}"))?;
+        let connected = (0..50)
+            .any(|_| TcpStream::connect_timeout(&address, Duration::from_millis(20)).is_ok());
+        if !connected {
+            let mut child = child;
+            let _ = child.kill();
+            return Err("cockpit-runner did not accept loopback connections".to_string());
+        }
+        *transport = RunnerTransport::Process { child, address };
+        Ok("process".to_string())
     }
 
     fn dispatch(&self, command: RunnerCommand) -> Result<Value, String> {
@@ -35,19 +91,45 @@ impl RunnerState {
             correlation_id: format!("desktop-{}", *sequence),
             command,
         };
-        let response = self
-            .handler
+        let mut transport = self
+            .transport
             .lock()
-            .map_err(|_| "runner lock poisoned".to_string())?
-            .dispatch(request);
-        if response.ok {
-            Ok(response.result.unwrap_or(Value::Null))
-        } else {
-            Err(response
-                .error
-                .map(|error| format!("{}: {}", error.code, error.message))
-                .unwrap_or_else(|| "runner command failed".to_string()))
-        }
+            .map_err(|_| "runner transport lock poisoned".to_string())?;
+        let response = match &mut *transport {
+            RunnerTransport::Embedded(handler) => handler.dispatch(request),
+            RunnerTransport::Process { address, .. } => request_process(*address, &request)?,
+        };
+        response_value(response)
+    }
+}
+
+fn request_process(address: SocketAddr, request: &RunnerRequest) -> Result<RunnerResponse, String> {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
+        .map_err(|error| format!("runner disconnected: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(2_000)))
+        .map_err(|error| error.to_string())?;
+    let mut encoded = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    encoded.push(b'\n');
+    stream
+        .write_all(&encoded)
+        .map_err(|error| error.to_string())?;
+    stream.flush().map_err(|error| error.to_string())?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .map_err(|error| format!("runner response failed: {error}"))?;
+    serde_json::from_str(&line).map_err(|error| format!("runner response invalid: {error}"))
+}
+
+fn response_value(response: RunnerResponse) -> Result<Value, String> {
+    if response.ok {
+        Ok(response.result.unwrap_or(Value::Null))
+    } else {
+        Err(response
+            .error
+            .map(|error| format!("{}: {}", error.code, error.message))
+            .unwrap_or_else(|| "runner command failed".to_string()))
     }
 }
 
@@ -63,8 +145,8 @@ pub struct ScenarioSummary {
 }
 
 #[tauri::command]
-pub fn connect_runner() -> Result<(), String> {
-    Ok(())
+pub fn connect_runner(state: tauri::State<'_, RunnerState>) -> Result<String, String> {
+    state.connect()
 }
 
 #[tauri::command]
