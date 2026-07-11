@@ -21,10 +21,11 @@ export function SimulationRunControl({ model, dispatch }: Props) {
     for (const event of events) dispatch({ type: "runnerEvent", event });
   }
 
-  async function runCommand(command: () => Promise<void>) {
+  async function runCommand(command: () => Promise<void>): Promise<boolean> {
     try {
       await command();
       await syncEvents();
+      return true;
     } catch (error) {
       dispatch({
         type: "commandRejected",
@@ -36,6 +37,7 @@ export function SimulationRunControl({ model, dispatch }: Props) {
           correlationId: "desktop-command"
         }
       });
+      return false;
     }
   }
 
@@ -77,6 +79,12 @@ export function SimulationRunControl({ model, dispatch }: Props) {
     const runId = await runnerClient.createRun(path);
     dispatch({ type: "scenarioReady", scenario, runId });
     await syncEvents();
+  }
+
+  async function setApprovalRequired(required: boolean) {
+    if (await runCommand(() => runnerClient.setApprovalRequired(required))) {
+      dispatch({ type: "approvalModeChanged", required });
+    }
   }
 
   return (
@@ -124,6 +132,15 @@ export function SimulationRunControl({ model, dispatch }: Props) {
             <Square className="h-4 w-4" />
           </button>
         </div>
+        <label className="flex items-center justify-between gap-3 border border-zinc-800 px-2 py-2 text-xs text-zinc-300">
+          <span>Require approval</span>
+          <input
+            aria-label="Require approval for actions"
+            checked={model.approvalRequired}
+            type="checkbox"
+            onChange={(event) => void setApprovalRequired(event.target.checked)}
+          />
+        </label>
         <dl className="grid grid-cols-2 gap-2 text-xs text-zinc-300">
           <dt>Seed</dt>
           <dd className="text-right">{model.scenario?.seed ?? "-"}</dd>

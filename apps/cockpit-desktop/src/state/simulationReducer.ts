@@ -13,6 +13,7 @@ export type SimulationAction =
   | { type: "scenarioInvalid"; error: SimulationError }
   | { type: "runCreating" }
   | { type: "scenarioReady"; scenario: ScenarioSummary; runId?: string }
+  | { type: "approvalModeChanged"; required: boolean }
   | { type: "commandRejected"; error: SimulationError }
   | { type: "runnerEvent"; event: RunnerEvent };
 
@@ -25,7 +26,8 @@ export const initialSimulationModel: SimulationModel = {
   events: [],
   toolCalls: [],
   actionResults: [],
-  serviceConnected: false
+  serviceConnected: false,
+  approvalRequired: false
 };
 
 export function simulationReducer(
@@ -65,6 +67,8 @@ export function simulationReducer(
         simTimeMs: 0,
         error: undefined
       };
+    case "approvalModeChanged":
+      return { ...state, approvalRequired: action.required };
     case "commandRejected":
       return {
         ...state,

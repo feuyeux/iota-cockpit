@@ -107,7 +107,7 @@ export function App() {
       </div>
       <div className="grid gap-4 px-4 pb-4 xl:grid-cols-2">
         <SimulationTimeline model={model} />
-        <SimulationTrace model={model} />
+        <SimulationTrace model={model} dispatch={dispatch} />
       </div>
     </main>
   );

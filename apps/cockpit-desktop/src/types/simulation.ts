@@ -157,6 +157,7 @@ export interface SimulationModel {
   evaluation?: EvaluationResult;
   error?: SimulationError;
   serviceConnected: boolean;
+  approvalRequired: boolean;
   lastCursor?: number;
 }
 
