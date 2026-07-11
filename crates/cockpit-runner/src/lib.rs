@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod ipc;
 pub mod server;
 

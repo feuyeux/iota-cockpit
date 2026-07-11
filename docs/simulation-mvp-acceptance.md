@@ -24,6 +24,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Multiple agent grants use deterministic priority/agent ordering, with duplicate target actions rejected before commit.
 - Large recording payloads use content-addressed SHA-256 fanout files; SQLite retains the payload hash and size.
 - A new persistent runner handler can restore a recorded run after process restart and rebuild its snapshot/event cursor.
+- Local benchmark at 1,000 entities and 10,000 events/minute: p95 0.2942 ms, p99 0.3286 ms, peak 0.4204 ms, recording 168,805 bytes (Windows dev profile, 120 ticks, scenario hash `15dd2255dec80c92ec2f898d27808513123b9d483d72bdbd90f49ae47a602002`, seed 42).
 - Observation and tool trace data do not include Ground Truth smoke or fire fields.
 - Repeated runs and replay produce the same final snapshot hash.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.
@@ -52,4 +53,4 @@ cd apps/cockpit-desktop && npm test && npm run build
 - SQLite content-addressed large-payload files and migration tooling.
 - Tauri packaged binary, reconnect behavior across process restart, and cross-platform packaging.
 - Tauri process transport with a separately packaged runner binary on every target OS.
-- 1000-entity / 10,000-event-per-minute performance target.
+- Cross-platform 1000-entity / 10,000-event-per-minute performance acceptance and peak memory measurement.

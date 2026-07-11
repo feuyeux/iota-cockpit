@@ -102,5 +102,9 @@ name = "runner_restart"
 path = "tests/contract/runner_restart.rs"
 
 [[test]]
+name = "benchmark_report"
+path = "tests/contract/benchmark_report.rs"
+
+[[test]]
 name = "rule_agent_smoke"
 path = "tests/integration/rule_agent_smoke.rs"

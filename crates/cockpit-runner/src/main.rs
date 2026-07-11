@@ -13,6 +13,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Bench {
+        scenario: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        ticks: u64,
+        #[arg(long, default_value_t = 1000)]
+        active_entities: u64,
+        #[arg(long, default_value_t = 10000)]
+        events_per_minute: u64,
+    },
     Serve {
         #[arg(long, default_value = "127.0.0.1:47701")]
         bind: String,
@@ -33,6 +42,21 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Bench {
+            scenario,
+            ticks,
+            active_entities,
+            events_per_minute,
+        } => {
+            let report =
+                cockpit_runner::benchmark::run(cockpit_runner::benchmark::BenchmarkConfig {
+                    scenario_path: scenario.display().to_string(),
+                    ticks,
+                    active_entities,
+                    events_per_minute,
+                })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::Serve {
             bind,
             session_token,
