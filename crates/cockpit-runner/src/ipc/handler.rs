@@ -1,10 +1,15 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_evaluation::evaluate_smoke_shutdown;
+use cockpit_plugin::{
+    PluginExecutor, PluginFailure, PluginFailurePolicy, PluginHost, PluginPolicy, PluginTickOutcome,
+};
 use cockpit_recording::{Recording, RecordingStore, diff_recordings, replay_recording};
 use cockpit_scenario::load_scenario;
-use cockpit_simulation_core::{Simulation, SimulationError, clock::RunStatus};
+use cockpit_simulation_core::{
+    PluginFailureRecord, Simulation, SimulationError, StateDiff, clock::RunStatus,
+};
 use serde_json::{Value, json};
 
 use super::proto::{
@@ -38,6 +43,9 @@ pub struct RunnerHandler {
     events: Vec<RunnerEvent>,
     next_cursor: u64,
     recording_store: Option<RecordingStore>,
+    plugin_host: PluginHost,
+    plugin_policy: PluginPolicy,
+    plugin_executors: BTreeMap<String, Box<dyn PluginExecutor>>,
 }
 
 impl RunnerHandler {
@@ -51,6 +59,36 @@ impl RunnerHandler {
             events: Vec::new(),
             next_cursor: 0,
             recording_store: None,
+            plugin_host: PluginHost::default(),
+            plugin_policy: PluginPolicy::default(),
+            plugin_executors: BTreeMap::new(),
+        }
+    }
+
+    pub fn configure_plugins(
+        &mut self,
+        directory: impl AsRef<Path>,
+        policy: PluginPolicy,
+        executors: BTreeMap<String, Box<dyn PluginExecutor>>,
+    ) -> Vec<PluginFailure> {
+        self.plugin_policy = policy;
+        self.plugin_executors = executors;
+        let failures = self.plugin_host.discover(directory, &self.plugin_policy);
+        self.update_recording_plugin_hashes();
+        for failure in &failures {
+            self.emit_plugin_failure(failure);
+        }
+        failures
+    }
+
+    fn update_recording_plugin_hashes(&mut self) {
+        let hashes = self
+            .plugin_host
+            .manifests()
+            .map(|manifest| format!("{}@{}:{}", manifest.id, manifest.version, manifest.hash))
+            .collect();
+        if let Some(recording) = self.recording.as_mut() {
+            recording.plugin_hashes = hashes;
         }
     }
 
@@ -161,6 +199,8 @@ impl RunnerHandler {
         self.recording = Some(Recording::new(run_id.clone(), &scenario));
         self.server = LocalMcpServer::default();
         self.agent = RuleAgent::default();
+        self.plugin_host = PluginHost::default();
+        self.plugin_executors.clear();
         self.emit(RunnerEvent::SimulationStateChanged {
             cursor: 0,
             state: RunStatus::Ready,
@@ -287,7 +327,10 @@ impl RunnerHandler {
             .simulation
             .take()
             .ok_or_else(|| Box::new(Self::no_run_error()))?;
-        let result = self.agent.step(&mut simulation, &mut self.server);
+        let (plugin_diffs, plugin_failures) = self.run_plugins(&simulation);
+        let result =
+            self.agent
+                .step_with_state_diffs(&mut simulation, &mut self.server, plugin_diffs);
         let step = match result {
             Ok(step) => step,
             Err(error) => {
@@ -296,6 +339,21 @@ impl RunnerHandler {
                 return Err(Box::new(ipc_error));
             }
         };
+        let mut step = step;
+        step.plugin_failures = plugin_failures.iter().map(plugin_failure_record).collect();
+        if plugin_failures
+            .iter()
+            .any(|failure| failure.decision == PluginFailurePolicy::PauseRun)
+        {
+            simulation.status = RunStatus::Paused;
+        }
+        if plugin_failures
+            .iter()
+            .any(|failure| failure.decision == PluginFailurePolicy::FailRun)
+        {
+            simulation.fail();
+        }
+        let plugin_status = simulation.status;
         let tick = step.tick;
         let snapshot = simulation.snapshot.clone();
         let snapshot_hash = step.snapshot_hash.clone();
@@ -316,6 +374,21 @@ impl RunnerHandler {
         for result in step.action_results {
             self.emit(RunnerEvent::SimulationActionResult { cursor: 0, result });
         }
+        for failure in &step.plugin_failures {
+            self.emit(RunnerEvent::SimulationPluginFailure {
+                cursor: 0,
+                failure: failure.clone(),
+            });
+        }
+        if !plugin_failures.is_empty()
+            && matches!(plugin_status, RunStatus::Paused | RunStatus::Failed)
+        {
+            self.emit(RunnerEvent::SimulationStateChanged {
+                cursor: 0,
+                state: plugin_status,
+                run_id: Some(simulation.run_id().to_string()),
+            });
+        }
         if let Some(recording) = self.recording.as_ref() {
             let evaluation =
                 evaluate_smoke_shutdown(recording, simulation.scenario.shutdown_deadline_ticks);
@@ -325,11 +398,13 @@ impl RunnerHandler {
             });
         }
         let run_id = simulation.run_id().to_string();
+        let status = simulation.status;
         self.simulation = Some(simulation);
         Ok(json!({
             "runId": run_id,
             "tick": tick,
-            "snapshotHash": snapshot_hash
+            "snapshotHash": snapshot_hash,
+            "status": status
         }))
     }
 
@@ -528,6 +603,47 @@ impl RunnerHandler {
         cursor.saturating_add(1) < first
     }
 
+    fn run_plugins(&mut self, simulation: &Simulation) -> (Vec<StateDiff>, Vec<PluginFailure>) {
+        let plugin_ids = self
+            .plugin_host
+            .plugin_ids()
+            .filter(|id| self.plugin_executors.contains_key(*id))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut diffs = Vec::new();
+        let mut failures = Vec::new();
+        for plugin_id in plugin_ids {
+            let Some(executor) = self.plugin_executors.get_mut(&plugin_id) else {
+                continue;
+            };
+            match self.plugin_host.run_tick(
+                &plugin_id,
+                &simulation.snapshot,
+                executor.as_mut(),
+                &self.plugin_policy,
+            ) {
+                PluginTickOutcome::Accepted(plugin_diffs) => {
+                    diffs.extend(plugin_diffs.into_iter().map(|diff| StateDiff {
+                        source_id: diff.plugin_id,
+                        entity_id: diff.entity_id,
+                        component_path: diff.component_path,
+                        value: diff.value,
+                        expected_state_version: diff.expected_state_version,
+                    }))
+                }
+                PluginTickOutcome::Failed(failure) => failures.push(failure),
+            }
+        }
+        (diffs, failures)
+    }
+
+    fn emit_plugin_failure(&mut self, failure: &PluginFailure) {
+        self.emit(RunnerEvent::SimulationPluginFailure {
+            cursor: 0,
+            failure: plugin_failure_record(failure),
+        });
+    }
+
     fn emit(&mut self, event: RunnerEvent) {
         self.next_cursor += 1;
         let cursor = self.next_cursor;
@@ -550,6 +666,9 @@ impl RunnerHandler {
             }
             RunnerEvent::SimulationActionResult { result, .. } => {
                 RunnerEvent::SimulationActionResult { cursor, result }
+            }
+            RunnerEvent::SimulationPluginFailure { failure, .. } => {
+                RunnerEvent::SimulationPluginFailure { cursor, failure }
             }
             RunnerEvent::SimulationEvaluationUpdated { evaluation, .. } => {
                 RunnerEvent::SimulationEvaluationUpdated { cursor, evaluation }
@@ -629,5 +748,17 @@ impl RunnerHandler {
             tick: None,
             correlation_id: "runner".to_string(),
         }
+    }
+}
+
+fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRecord {
+    PluginFailureRecord {
+        plugin_id: failure.plugin_id.clone(),
+        version: failure.version.clone(),
+        reason: failure.reason.clone(),
+        decision: serde_json::to_string(&failure.decision)
+            .unwrap_or_else(|_| "disablePlugin".to_string())
+            .trim_matches('"')
+            .to_string(),
     }
 }

@@ -1,10 +1,19 @@
-use cockpit_recording::run_scripted_recording;
+use cockpit_plugin::{
+    PLUGIN_API_VERSION, PluginExecutor, PluginFailurePolicy, PluginManifest, PluginPermission,
+    PluginPolicy, StateDiff as PluginStateDiff,
+};
+use cockpit_recording::{RecordingStore, run_scripted_recording};
 use cockpit_runner::ipc::{
     MAX_EVENT_HISTORY, RunnerHandler,
     proto::{IPC_VERSION, RunnerCommand, RunnerRequest},
 };
 use cockpit_scenario::load_scenario;
+use cockpit_simulation_core::WorldSnapshot;
 use serde_json::Value;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 fn request(command: RunnerCommand) -> RunnerRequest {
     RunnerRequest {
@@ -12,6 +21,83 @@ fn request(command: RunnerCommand) -> RunnerRequest {
         session_token: "session-1".to_string(),
         correlation_id: "contract-correlation".to_string(),
         command,
+    }
+}
+
+fn plugin_directory(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("cockpit-runner-plugin-{name}"));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("plugin directory");
+    path
+}
+
+fn plugin_manifest() -> PluginManifest {
+    let mut manifest = PluginManifest {
+        id: "runner-plugin".to_string(),
+        version: "1.0.0".to_string(),
+        api_contract: PLUGIN_API_VERSION,
+        permissions: vec![PluginPermission::WorldWrite],
+        schema: json!({"kind": "runner-test"}),
+        hash: String::new(),
+        signature: None,
+    };
+    let bytes = serde_json::to_vec(&manifest).expect("manifest");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    manifest.hash = format!("sha256:{:x}", hasher.finalize());
+    manifest
+}
+
+struct PluginExecutorStub {
+    result: Result<Vec<PluginStateDiff>, String>,
+}
+
+impl PluginExecutor for PluginExecutorStub {
+    fn tick(&mut self, _snapshot: &WorldSnapshot) -> Result<Vec<PluginStateDiff>, String> {
+        self.result.clone()
+    }
+}
+
+fn configure_runner_plugin(
+    handler: &mut RunnerHandler,
+    name: &str,
+    policy: PluginFailurePolicy,
+    result: Result<Vec<PluginStateDiff>, String>,
+) -> PathBuf {
+    let directory = plugin_directory(name);
+    let manifest = plugin_manifest();
+    std::fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest bytes"),
+    )
+    .expect("manifest writes");
+    let mut executors = BTreeMap::new();
+    executors.insert(
+        manifest.id.clone(),
+        Box::new(PluginExecutorStub { result }) as Box<dyn PluginExecutor>,
+    );
+    let plugin_policy = PluginPolicy {
+        allowed_permissions: [PluginPermission::WorldRead, PluginPermission::WorldWrite]
+            .into_iter()
+            .collect(),
+        failure_policy: policy,
+        ..PluginPolicy::default()
+    };
+    assert!(
+        handler
+            .configure_plugins(&directory, plugin_policy, executors)
+            .is_empty()
+    );
+    directory
+}
+
+fn plugin_diff(value: f64, version: u64) -> PluginStateDiff {
+    PluginStateDiff {
+        plugin_id: "runner-plugin".to_string(),
+        entity_id: "cabin".to_string(),
+        component_path: "environment.visibility".to_string(),
+        value: json!(value),
+        expected_state_version: version,
     }
 }
 
@@ -223,4 +309,140 @@ fn runner_bounds_event_history_and_marks_stale_cursors_for_reset() {
             .and_then(Value::as_u64)
             .is_some_and(|cursor| cursor > 1)
     );
+}
+
+#[test]
+fn runner_commits_plugin_diff_and_records_manifest_hash() {
+    let database = std::env::temp_dir().join(format!(
+        "cockpit-runner-plugin-recording-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let mut handler = RunnerHandler::new_persistent("session-1", &database.to_string_lossy())
+        .expect("recording store");
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    let directory = configure_runner_plugin(
+        &mut handler,
+        "accepted",
+        PluginFailurePolicy::DisablePlugin,
+        Ok(vec![plugin_diff(0.25, 0)]),
+    );
+    assert!(handler.dispatch(request(RunnerCommand::StartSimulation)).ok);
+    let response = handler.dispatch(request(RunnerCommand::StepSimulation));
+    assert!(response.ok, "{response:?}");
+    let snapshot = handler.dispatch(request(RunnerCommand::GetSimulationSnapshot));
+    assert_eq!(
+        snapshot
+            .result
+            .as_ref()
+            .and_then(|value| value.get("environment"))
+            .and_then(|value| value.get("visibility"))
+            .and_then(Value::as_f64),
+        Some(0.25)
+    );
+    let events = handler.dispatch(request(RunnerCommand::GetSimulationEvents {
+        cursor: Some(0),
+    }));
+    let events = events.result.expect("events");
+    assert!(
+        !events
+            .get("events")
+            .and_then(Value::as_array)
+            .expect("event list")
+            .iter()
+            .any(|event| event.get("type") == Some(&json!("SimulationPluginFailure")))
+    );
+    let recording = RecordingStore::open(&database.to_string_lossy())
+        .expect("open recording store")
+        .load("run-smoke-in-cockpit")
+        .expect("load recording");
+    assert_eq!(recording.plugin_hashes.len(), 1);
+    assert!(recording.plugin_hashes[0].starts_with("runner-plugin@1.0.0:sha256:"));
+    assert_eq!(recording.ticks[0].state_diffs.len(), 1);
+    let _ = std::fs::remove_dir_all(directory);
+    let _ = std::fs::remove_file(database);
+}
+
+#[test]
+fn runner_applies_pause_and_fail_plugin_policies() {
+    for (policy, expected_status) in [
+        (PluginFailurePolicy::PauseRun, "paused"),
+        (PluginFailurePolicy::FailRun, "failed"),
+    ] {
+        let mut handler = RunnerHandler::new("session-1");
+        assert!(
+            handler
+                .dispatch(request(RunnerCommand::CreateSimulationRun {
+                    path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+                }))
+                .ok
+        );
+        let directory = configure_runner_plugin(
+            &mut handler,
+            expected_status,
+            policy,
+            Err("executor failed".to_string()),
+        );
+        assert!(handler.dispatch(request(RunnerCommand::StartSimulation)).ok);
+        let response = handler.dispatch(request(RunnerCommand::StepSimulation));
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some(expected_status)
+        );
+        let events = handler.dispatch(request(RunnerCommand::GetSimulationEvents {
+            cursor: Some(0),
+        }));
+        let events = events.result.expect("events");
+        assert!(
+            events
+                .get("events")
+                .and_then(Value::as_array)
+                .expect("event list")
+                .iter()
+                .any(|event| event.get("type") == Some(&json!("SimulationPluginFailure")))
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+#[test]
+fn runner_disables_plugin_and_continues_after_plugin_failure() {
+    let mut handler = RunnerHandler::new("session-1");
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    let directory = configure_runner_plugin(
+        &mut handler,
+        "disabled",
+        PluginFailurePolicy::DisablePlugin,
+        Err("executor failed".to_string()),
+    );
+    assert!(handler.dispatch(request(RunnerCommand::StartSimulation)).ok);
+    let first = handler.dispatch(request(RunnerCommand::StepSimulation));
+    assert!(first.ok, "{first:?}");
+    let second = handler.dispatch(request(RunnerCommand::StepSimulation));
+    assert!(second.ok, "{second:?}");
+    assert_eq!(
+        second
+            .result
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str),
+        Some("running")
+    );
+    let _ = std::fs::remove_dir_all(directory);
 }

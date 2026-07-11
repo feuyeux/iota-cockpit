@@ -57,6 +57,17 @@ pub struct StepRecord {
     pub fallback: Option<String>,
     #[serde(default)]
     pub state_diffs: Vec<StateDiff>,
+    #[serde(default)]
+    pub plugin_failures: Vec<PluginFailureRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginFailureRecord {
+    pub plugin_id: String,
+    pub version: String,
+    pub reason: String,
+    pub decision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,6 +147,10 @@ impl Simulation {
 
     pub fn stop(&mut self) {
         self.status = RunStatus::Stopped;
+    }
+
+    pub fn fail(&mut self) {
+        self.status = RunStatus::Failed;
     }
 
     pub fn submit_action(&mut self, request: ActionRequest) -> ActionResult {
@@ -319,6 +334,7 @@ impl Simulation {
             errors: Vec::new(),
             fallback: None,
             state_diffs,
+            plugin_failures: Vec::new(),
         })
     }
 

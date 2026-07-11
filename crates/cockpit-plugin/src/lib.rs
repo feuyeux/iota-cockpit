@@ -62,7 +62,8 @@ pub enum PluginStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginFailure {
     pub plugin_id: String,
     pub version: String,
@@ -70,7 +71,7 @@ pub struct PluginFailure {
     pub decision: PluginFailurePolicy,
 }
 
-pub trait PluginExecutor {
+pub trait PluginExecutor: Send {
     fn tick(&mut self, snapshot: &WorldSnapshot) -> Result<Vec<StateDiff>, String>;
 }
 
@@ -266,6 +267,14 @@ impl PluginHost {
 
     pub fn get(&self, plugin_id: &str) -> Option<&LoadedPlugin> {
         self.plugins.get(plugin_id)
+    }
+
+    pub fn manifests(&self) -> impl Iterator<Item = &PluginManifest> {
+        self.plugins.values().map(|plugin| &plugin.manifest)
+    }
+
+    pub fn plugin_ids(&self) -> impl Iterator<Item = &str> {
+        self.plugins.keys().map(String::as_str)
     }
 
     pub fn failures(&self) -> &[PluginFailure] {

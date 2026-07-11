@@ -461,6 +461,15 @@ impl RuleAgent {
         simulation: &mut Simulation,
         server: &mut LocalMcpServer,
     ) -> SimulationResult<StepRecord> {
+        self.step_with_state_diffs(simulation, server, Vec::new())
+    }
+
+    pub fn step_with_state_diffs(
+        &mut self,
+        simulation: &mut Simulation,
+        server: &mut LocalMcpServer,
+        state_diffs: Vec<cockpit_simulation_core::StateDiff>,
+    ) -> SimulationResult<StepRecord> {
         let observation_request = self.request(simulation, TOOL_GET_OBSERVATION, json!({}));
         let (observation_response, observation_trace) =
             server.call(simulation, observation_request);
@@ -487,7 +496,7 @@ impl RuleAgent {
             traces.push(action_trace);
         }
 
-        let mut step = simulation.step_without_agent()?;
+        let mut step = simulation.step_with_state_diffs(state_diffs)?;
         step.tool_calls = traces;
         Ok(step)
     }

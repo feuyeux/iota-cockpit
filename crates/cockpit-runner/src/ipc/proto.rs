@@ -1,4 +1,5 @@
 use cockpit_simulation_core::{
+    PluginFailureRecord,
     action::ActionResult,
     clock::RunStatus,
     event::{EventEnvelope, ToolCallTrace},
@@ -109,6 +110,11 @@ pub enum RunnerEvent {
     SimulationToolCall { cursor: u64, trace: ToolCallTrace },
     #[serde(rename = "SimulationActionResult")]
     SimulationActionResult { cursor: u64, result: ActionResult },
+    #[serde(rename = "SimulationPluginFailure")]
+    SimulationPluginFailure {
+        cursor: u64,
+        failure: PluginFailureRecord,
+    },
     #[serde(rename = "SimulationEvaluationUpdated")]
     SimulationEvaluationUpdated { cursor: u64, evaluation: Value },
     #[serde(rename = "SimulationError")]
@@ -123,6 +129,7 @@ impl RunnerEvent {
             | Self::SimulationEvent { cursor, .. }
             | Self::SimulationToolCall { cursor, .. }
             | Self::SimulationActionResult { cursor, .. }
+            | Self::SimulationPluginFailure { cursor, .. }
             | Self::SimulationEvaluationUpdated { cursor, .. }
             | Self::SimulationError { cursor, .. } => *cursor,
         }

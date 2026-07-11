@@ -553,6 +553,7 @@ dependencies = [
  "clap",
  "cockpit-agent-runtime",
  "cockpit-evaluation",
+ "cockpit-plugin",
  "cockpit-recording",
  "cockpit-scenario",
  "cockpit-simulation-core",

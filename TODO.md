@@ -18,9 +18,9 @@ Status: in progress. This file records the next implementation work from `doc/00
 
 ## Plugin Execution
 
-- Connect validated plugin executor output to `cockpit-runner` and the core tick path.
-- Record plugin hash, version, failures, and policy decisions in recordings.
-- Apply `PauseRun` and `FailRun` plugin policies to runner state, not just plugin status.
+- [x] Connect validated plugin executor output to `cockpit-runner` and the core tick path; accepted diffs use the same single tick commit as agent actions.
+- [x] Record plugin hash/version metadata, failures, and policy decisions in recordings and runner events; contract coverage is in `tests/contract/runner_ipc.rs`.
+- [x] Apply `DisablePlugin`, `PauseRun`, and `FailRun` plugin policies to runner state, with observable failure/state events.
 - Add bounded plugin tick execution and OS-level isolation/sandboxing. The current host validates untrusted output but does not run third-party plugin binaries.
 
 ## Simulation And Recording
