@@ -21,6 +21,7 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Capability/version/expiry rejection is represented by a stable `ActionRejected` event and error code.
 - Approval-enabled mutation requests remain pending until an explicit approval decision and do not change the world beforehand.
 - Plugin manifests fail closed on hash/API/permission mismatch, and plugin StateDiffs cannot write outside the declared world scope.
+- Plugin tick output is treated as untrusted: every StateDiff is validated, failures are recorded, and the default policy disables the failing plugin.
 - Multiple agent grants use deterministic priority/agent ordering, with duplicate target actions rejected before commit.
 - Large recording payloads use content-addressed SHA-256 fanout files; SQLite retains the payload hash and size.
 - A new persistent runner handler can restore a recorded run after process restart and rebuild its snapshot/event cursor.
@@ -54,4 +55,5 @@ cd apps/cockpit-desktop && npm test && npm run build
 - SQLite content-addressed large-payload files and migration tooling.
 - Tauri packaged binary, reconnect behavior across process restart, and cross-platform packaging.
 - Tauri process transport with a separately packaged runner binary on every target OS.
+- OS-level plugin process sandboxing and timeout enforcement; the current host boundary validates untrusted output but does not execute third-party plugin binaries.
 - Cross-platform 1000-entity / 10,000-event-per-minute performance acceptance and peak memory measurement.

@@ -1,7 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use cockpit_plugin::{
-    PLUGIN_API_VERSION, PluginHost, PluginManifest, PluginPermission, PluginPolicy, StateDiff,
+    PLUGIN_API_VERSION, PluginExecutor, PluginFailurePolicy, PluginHost, PluginManifest,
+    PluginPermission, PluginPolicy, PluginStatus, PluginTickOutcome, StateDiff,
 };
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::Simulation;
@@ -42,6 +43,19 @@ fn write_policy() -> PluginPolicy {
             .into_iter()
             .collect(),
         ..PluginPolicy::default()
+    }
+}
+
+struct StaticExecutor {
+    output: Result<Vec<StateDiff>, String>,
+}
+
+impl PluginExecutor for StaticExecutor {
+    fn tick(
+        &mut self,
+        _snapshot: &cockpit_simulation_core::WorldSnapshot,
+    ) -> Result<Vec<StateDiff>, String> {
+        self.output.clone()
     }
 }
 
@@ -113,4 +127,54 @@ fn plugin_hash_permission_and_diff_scope_fail_closed() {
     assert!(error.to_string().contains("outside plugin write scope"));
     let _ = fs::remove_dir_all(directory);
     let _ = fs::remove_dir_all(valid_directory);
+}
+
+#[test]
+fn plugin_tick_output_is_validated_and_failures_disable_the_plugin() {
+    let directory = plugin_dir("tick");
+    fs::write(
+        directory.join("plugin.json"),
+        manifest_bytes(base_manifest(vec![PluginPermission::WorldWrite])),
+    )
+    .expect("manifest writes");
+    let mut host = PluginHost::default();
+    let policy = write_policy();
+    assert!(host.discover(&directory, &policy).is_empty());
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let simulation = Simulation::new("plugin-run", scenario);
+
+    let mut valid = StaticExecutor {
+        output: Ok(vec![StateDiff {
+            plugin_id: "smoke-plugin".to_string(),
+            entity_id: "cabin".to_string(),
+            component_path: "environment.visibility".to_string(),
+            value: json!(0.5),
+            expected_state_version: simulation.snapshot.version,
+        }]),
+    };
+    assert!(matches!(
+        host.run_tick("smoke-plugin", &simulation.snapshot, &mut valid, &policy),
+        PluginTickOutcome::Accepted(diffs) if diffs.len() == 1
+    ));
+
+    let mut invalid = StaticExecutor {
+        output: Ok(vec![StateDiff {
+            plugin_id: "smoke-plugin".to_string(),
+            entity_id: "engine-1".to_string(),
+            component_path: "environment.visibility".to_string(),
+            value: json!(0.5),
+            expected_state_version: simulation.snapshot.version,
+        }]),
+    };
+    let outcome = host.run_tick("smoke-plugin", &simulation.snapshot, &mut invalid, &policy);
+    assert!(matches!(
+        outcome,
+        PluginTickOutcome::Failed(ref failure)
+            if failure.decision == PluginFailurePolicy::DisablePlugin
+    ));
+    assert_eq!(
+        host.get("smoke-plugin").map(|plugin| &plugin.status),
+        Some(&PluginStatus::Disabled)
+    );
+    let _ = fs::remove_dir_all(directory);
 }

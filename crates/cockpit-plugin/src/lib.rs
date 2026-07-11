@@ -70,6 +70,16 @@ pub struct PluginFailure {
     pub decision: PluginFailurePolicy,
 }
 
+pub trait PluginExecutor {
+    fn tick(&mut self, snapshot: &WorldSnapshot) -> Result<Vec<StateDiff>, String>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PluginTickOutcome {
+    Accepted(Vec<StateDiff>),
+    Failed(PluginFailure),
+}
+
 #[derive(Debug, Error)]
 pub enum PluginError {
     #[error("manifest parse failed: {0}")]
@@ -200,6 +210,60 @@ impl PluginHost {
         validate_value(&diff.component_path, &diff.value)
     }
 
+    pub fn run_tick(
+        &mut self,
+        plugin_id: &str,
+        snapshot: &WorldSnapshot,
+        executor: &mut dyn PluginExecutor,
+        policy: &PluginPolicy,
+    ) -> PluginTickOutcome {
+        let Some(plugin) = self.plugins.get(plugin_id) else {
+            return PluginTickOutcome::Failed(self.record_failure(
+                plugin_id,
+                "unknown",
+                "plugin is not ready".to_string(),
+                policy,
+            ));
+        };
+        let version = plugin.manifest.version.clone();
+        if plugin.status != PluginStatus::Ready {
+            return PluginTickOutcome::Failed(self.record_failure(
+                plugin_id,
+                &version,
+                "plugin is not ready".to_string(),
+                policy,
+            ));
+        }
+
+        let diffs = match executor.tick(snapshot) {
+            Ok(diffs) => diffs,
+            Err(reason) => {
+                return PluginTickOutcome::Failed(
+                    self.record_failure(plugin_id, &version, reason, policy),
+                );
+            }
+        };
+        for diff in &diffs {
+            if diff.plugin_id != plugin_id {
+                return PluginTickOutcome::Failed(self.record_failure(
+                    plugin_id,
+                    &version,
+                    "plugin returned a StateDiff for another plugin".to_string(),
+                    policy,
+                ));
+            }
+            if let Err(error) = self.validate_state_diff(snapshot, diff) {
+                return PluginTickOutcome::Failed(self.record_failure(
+                    plugin_id,
+                    &version,
+                    error.to_string(),
+                    policy,
+                ));
+            }
+        }
+        PluginTickOutcome::Accepted(diffs)
+    }
+
     pub fn get(&self, plugin_id: &str) -> Option<&LoadedPlugin> {
         self.plugins.get(plugin_id)
     }
@@ -221,6 +285,26 @@ impl PluginHost {
             reason,
             decision: policy.failure_policy.clone(),
         }
+    }
+
+    fn record_failure(
+        &mut self,
+        plugin_id: &str,
+        version: &str,
+        reason: String,
+        policy: &PluginPolicy,
+    ) -> PluginFailure {
+        let failure = self.failure(plugin_id, version, reason, policy);
+        if let Some(plugin) = self.plugins.get_mut(plugin_id) {
+            plugin.status = match policy.failure_policy {
+                PluginFailurePolicy::DisablePlugin => PluginStatus::Disabled,
+                PluginFailurePolicy::PauseRun | PluginFailurePolicy::FailRun => {
+                    PluginStatus::Failed
+                }
+            };
+        }
+        self.failures.push(failure.clone());
+        failure
     }
 }
 
