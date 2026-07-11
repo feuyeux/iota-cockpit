@@ -18,9 +18,11 @@ Status: in progress. This report records the verified local vertical slice; it d
 - Smoke fault changes visibility and produces a degraded Observation.
 - RuleAgent calls `simulation.get_observation` and `simulation.request_action`.
 - Action Gateway applies engine shutdown and rejects an unknown agent identity.
+- Capability/version/expiry rejection is represented by a stable `ActionRejected` event and error code.
 - Observation and tool trace data do not include Ground Truth smoke or fire fields.
 - Repeated runs and replay produce the same final snapshot hash.
 - SQLite recording round-trips run metadata, ticks, hashes, observations, actions, and tool traces.
+- Recording headers persist runtime contract, world-model, application, plugin, scenario, seed, and clock compatibility data.
 - Runner IPC validates protocol version and session token, emits tagged events, and supports cursor reads.
 - Loopback runner server preserves handler state across a client disconnect and cursor-based reconnect.
 - Tauri command host compiles and React/Vite typecheck and production build pass.

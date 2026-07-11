@@ -12,6 +12,16 @@ pub fn replay_recording(
             "recording scenario hash does not match scenario".to_string(),
         ));
     }
+    if source.runtime_contract_version != 1 || source.world_model_version != 1 {
+        return Err(cockpit_simulation_core::SimulationError::InvalidScenario(
+            "recording runtime/world model version is incompatible".to_string(),
+        ));
+    }
+    if source.clock != scenario.clock {
+        return Err(cockpit_simulation_core::SimulationError::InvalidScenario(
+            "recording clock configuration does not match scenario".to_string(),
+        ));
+    }
 
     let run_id = run_id.into();
     let mut simulation = Simulation::new(run_id.clone(), scenario.clone());

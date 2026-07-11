@@ -9,6 +9,8 @@ pub struct EventPayload {
     pub target: Option<String>,
     #[serde(default)]
     pub value: Option<f64>,
+    #[serde(default)]
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

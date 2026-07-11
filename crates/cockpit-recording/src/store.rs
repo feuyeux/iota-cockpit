@@ -35,13 +35,18 @@ impl RecordingStore {
     pub fn save(&mut self, recording: &Recording) -> Result<(), RecordingStoreError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT OR REPLACE INTO recordings (run_id, schema_version, scenario_id, scenario_hash, seed) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 recording.run_id,
                 recording.schema_version,
+                recording.runtime_contract_version,
+                recording.world_model_version,
+                recording.application_commit,
+                serde_json::to_string(&recording.plugin_hashes)?,
                 recording.scenario_id,
                 recording.scenario_hash,
-                recording.seed
+                recording.seed,
+                serde_json::to_string(&recording.clock)?
             ],
         )?;
         transaction.execute(
@@ -67,7 +72,7 @@ impl RecordingStore {
         let metadata = self
             .connection
             .query_row(
-                "SELECT schema_version, scenario_id, scenario_hash, seed FROM recordings WHERE run_id = ?1",
+                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json FROM recordings WHERE run_id = ?1",
                 params![run_id],
                 |row| {
                     Ok((
@@ -75,6 +80,11 @@ impl RecordingStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, u64>(3)?,
+                        row.get::<_, u32>(4)?,
+                        row.get::<_, u32>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
@@ -93,10 +103,15 @@ impl RecordingStore {
 
         Ok(Recording {
             schema_version: metadata.0,
+            runtime_contract_version: metadata.4,
+            world_model_version: metadata.5,
+            application_commit: metadata.6,
+            plugin_hashes: serde_json::from_str(&metadata.7)?,
             run_id: run_id.to_string(),
             scenario_id: metadata.1,
             scenario_hash: metadata.2,
             seed: metadata.3,
+            clock: serde_json::from_str(&metadata.8)?,
             ticks,
         })
     }
@@ -107,9 +122,14 @@ impl RecordingStore {
              CREATE TABLE IF NOT EXISTS recordings (
                 run_id TEXT PRIMARY KEY,
                 schema_version INTEGER NOT NULL,
+                runtime_contract_version INTEGER NOT NULL,
+                world_model_version INTEGER NOT NULL,
+                application_commit TEXT NOT NULL,
+                plugin_hashes_json TEXT NOT NULL,
                 scenario_id TEXT NOT NULL,
                 scenario_hash TEXT NOT NULL,
-                seed INTEGER NOT NULL
+                seed INTEGER NOT NULL,
+                clock_json TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS recording_ticks (
                 run_id TEXT NOT NULL REFERENCES recordings(run_id) ON DELETE CASCADE,

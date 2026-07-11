@@ -98,6 +98,46 @@ fn rejects_unknown_agent_before_action_gateway() {
 }
 
 #[test]
+fn rejected_action_is_published_as_a_stable_event() {
+    let mut scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    scenario.agent.capabilities = vec!["engine.shutdown".to_string()];
+    let mut simulation = Simulation::new("rejection-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    let (response, _) = server.call(
+        &mut simulation,
+        request(
+            "rejection-run",
+            "cockpit-agent",
+            TOOL_REQUEST_ACTION,
+            json!({
+                "target": "alarm-1",
+                "command": "alarmActivate",
+                "expectedStateVersion": 0,
+                "expiresAtTick": 3
+            }),
+        ),
+    );
+    assert_eq!(
+        response
+            .result
+            .get("errorCode")
+            .and_then(|value| value.as_str()),
+        Some("CAPABILITY_DENIED")
+    );
+    let step = simulation.step_without_agent().expect("tick commits");
+    let event = step
+        .events
+        .iter()
+        .find(|event| event.event_type == "ActionRejected")
+        .expect("rejection event");
+    assert_eq!(
+        event.payload.error_code.as_deref(),
+        Some("CAPABILITY_DENIED")
+    );
+}
+
+#[test]
 fn iota_core_adapter_loads_cockpit_skill_from_public_registry() {
     let skill = IotaCoreAdapter::new(env!("CARGO_MANIFEST_DIR"))
         .load_cockpit_skill()

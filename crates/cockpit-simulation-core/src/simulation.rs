@@ -232,6 +232,21 @@ impl Simulation {
         self.apply_pending_actions(&mut events);
 
         let action_results = std::mem::take(&mut self.latest_results);
+        for result in &action_results {
+            if result.status == ActionStatus::Rejected {
+                let error_code = result
+                    .error_code
+                    .as_ref()
+                    .map(|code| code.stable_code().to_string());
+                events.push(self.event_with_error(
+                    "ActionRejected",
+                    "action-gateway",
+                    Some(&result.request.target),
+                    error_code,
+                    "action rejected by the Action Gateway",
+                ));
+            }
+        }
         observation.action_results = action_results
             .iter()
             .map(|result| format!("{:?}:{}", result.status, result.request.request_id))
@@ -403,6 +418,34 @@ impl Simulation {
                 message: message.to_string(),
                 target: target.map(ToString::to_string),
                 value,
+                error_code: None,
+            },
+        }
+    }
+
+    fn event_with_error(
+        &mut self,
+        event_type: &str,
+        source: &str,
+        target: Option<&str>,
+        error_code: Option<String>,
+        message: &str,
+    ) -> EventEnvelope {
+        self.sequence += 1;
+        EventEnvelope {
+            event_id: format!("{}-evt-{}", self.run_id(), self.sequence),
+            event_type: event_type.to_string(),
+            run_id: self.run_id().to_string(),
+            tick: self.snapshot.tick,
+            source: source.to_string(),
+            priority: 0,
+            sequence: self.sequence,
+            correlation_id: format!("{}-corr-{}", self.run_id(), self.sequence),
+            payload: EventPayload {
+                message: message.to_string(),
+                target: target.map(ToString::to_string),
+                value: None,
+                error_code,
             },
         }
     }

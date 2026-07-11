@@ -24,10 +24,25 @@ pub enum ErrorCode {
     CapabilityDenied,
     DeviceUnpowered,
     PreconditionFailed,
+    #[serde(rename = "STATE_VERSION_CONFLICT")]
     VersionMismatch,
     ActionExpired,
     ActionConflict,
     UnknownTarget,
+}
+
+impl ErrorCode {
+    pub fn stable_code(&self) -> &'static str {
+        match self {
+            Self::CapabilityDenied => "CAPABILITY_DENIED",
+            Self::DeviceUnpowered => "DEVICE_UNPOWERED",
+            Self::PreconditionFailed => "PRECONDITION_FAILED",
+            Self::VersionMismatch => "STATE_VERSION_CONFLICT",
+            Self::ActionExpired => "ACTION_EXPIRED",
+            Self::ActionConflict => "ACTION_CONFLICT",
+            Self::UnknownTarget => "UNKNOWN_TARGET",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

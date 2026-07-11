@@ -4,6 +4,7 @@ use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_simulation_core::{
     ScriptedAgent,
     action::{ActionRequest, ActionStatus},
+    clock::ClockConfig,
     error::SimulationResult,
     simulation::{Simulation, SimulationScenario, StepRecord},
 };
@@ -19,10 +20,15 @@ pub use store::{RecordingStore, RecordingStoreError};
 #[serde(rename_all = "camelCase")]
 pub struct Recording {
     pub schema_version: u32,
+    pub runtime_contract_version: u32,
+    pub world_model_version: u32,
+    pub application_commit: String,
+    pub plugin_hashes: Vec<String>,
     pub run_id: String,
     pub scenario_id: String,
     pub scenario_hash: String,
     pub seed: u64,
+    pub clock: ClockConfig,
     pub ticks: Vec<StepRecord>,
 }
 
@@ -30,10 +36,17 @@ impl Recording {
     pub fn new(run_id: impl Into<String>, scenario: &SimulationScenario) -> Self {
         Self {
             schema_version: 1,
+            runtime_contract_version: 1,
+            world_model_version: 1,
+            application_commit: option_env!("COCKPIT_APPLICATION_COMMIT")
+                .unwrap_or("unknown")
+                .to_string(),
+            plugin_hashes: Vec::new(),
             run_id: run_id.into(),
             scenario_id: scenario.id.clone(),
             scenario_hash: scenario.scenario_hash.clone(),
             seed: scenario.seed,
+            clock: scenario.clock,
             ticks: Vec::new(),
         }
     }
