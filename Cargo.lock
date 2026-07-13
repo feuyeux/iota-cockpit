@@ -560,6 +560,7 @@ dependencies = [
  "cockpit-recording",
  "cockpit-scenario",
  "cockpit-simulation-core",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

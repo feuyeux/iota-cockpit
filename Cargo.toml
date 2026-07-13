@@ -34,6 +34,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync", "net", "io-util"] }
 tokio-util = "0.7"
 thiserror = "2"
+libc = "0.2"
 cockpit-simulation-core = { path = "crates/cockpit-simulation-core" }
 cockpit-scenario = { path = "crates/cockpit-scenario" }
 cockpit-recording = { path = "crates/cockpit-recording" }

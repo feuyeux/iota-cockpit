@@ -66,10 +66,10 @@ fn linux_peak_rss() -> Option<u64> {
 fn macos_peak_rss() -> Option<u64> {
     // Use libc::getrusage which is available without additional dependencies
     use std::mem::MaybeUninit;
-    
+
     let mut usage = MaybeUninit::<libc::rusage>::uninit();
     let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
-    
+
     if result == 0 {
         let usage = unsafe { usage.assume_init() };
         // On macOS, ru_maxrss is in bytes (unlike Linux where it's in KB)
@@ -83,7 +83,7 @@ fn macos_peak_rss() -> Option<u64> {
 fn windows_peak_rss() -> Option<u64> {
     // Use Windows API without pulling in extra crates
     use std::mem::MaybeUninit;
-    
+
     #[repr(C)]
     struct ProcessMemoryCountersEx {
         cb: u32,
@@ -98,12 +98,12 @@ fn windows_peak_rss() -> Option<u64> {
         peak_pagefile_usage: usize,
         private_usage: usize,
     }
-    
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentProcess() -> *mut std::ffi::c_void;
     }
-    
+
     #[link(name = "psapi")]
     unsafe extern "system" {
         fn K32GetProcessMemoryInfo(
@@ -112,18 +112,18 @@ fn windows_peak_rss() -> Option<u64> {
             cb: u32,
         ) -> i32;
     }
-    
+
     unsafe {
         let mut counters = MaybeUninit::<ProcessMemoryCountersEx>::uninit();
         let counters_ptr = counters.as_mut_ptr();
         (*counters_ptr).cb = std::mem::size_of::<ProcessMemoryCountersEx>() as u32;
-        
+
         let result = K32GetProcessMemoryInfo(
             GetCurrentProcess(),
             counters_ptr,
             std::mem::size_of::<ProcessMemoryCountersEx>() as u32,
         );
-        
+
         if result != 0 {
             let counters = counters.assume_init();
             Some(counters.peak_working_set_size as u64)

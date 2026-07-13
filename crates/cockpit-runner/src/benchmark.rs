@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_scenario::load_scenario;
-use cockpit_simulation_core::Simulation;
+use cockpit_simulation_core::{EventEnvelope, EventPayload, Simulation};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -29,6 +29,7 @@ pub struct BenchmarkReport {
     pub p99_tick_ms: f64,
     pub peak_tick_ms: f64,
     pub recording_bytes: usize,
+    pub synthetic_event_count: u64,
     pub synthetic_workload_hash: String,
     /// Peak resident set size in bytes, when the platform exposes it without
     /// extra dependencies; `None` means it was not captured on this OS.
@@ -43,6 +44,7 @@ pub fn run(config: BenchmarkConfig) -> anyhow::Result<BenchmarkReport> {
     let scenario = load_scenario(&config.scenario_path)?;
     let mut samples = Vec::with_capacity(config.ticks as usize);
     let mut workload_hasher = Sha256::new();
+    let mut synthetic_event_count = 0_u64;
     let mut simulation = Simulation::new("benchmark-run", scenario.clone());
     simulation.start()?;
     let mut agent = RuleAgent::default();
@@ -51,13 +53,17 @@ pub fn run(config: BenchmarkConfig) -> anyhow::Result<BenchmarkReport> {
 
     for _ in 0..config.ticks {
         let tick_started = Instant::now();
-        let step = agent.step(&mut simulation, &mut server)?;
+        let mut step = agent.step(&mut simulation, &mut server)?;
         let synthetic_events = synthetic_event_work(
             simulation.snapshot.tick,
             config.active_entities,
             config.events_per_minute,
         );
-        workload_hasher.update(&synthetic_events);
+        for event in synthetic_events {
+            workload_hasher.update(serde_json::to_vec(&event)?);
+            step.events.push(event);
+            synthetic_event_count += 1;
+        }
         let elapsed = tick_started.elapsed();
         samples.push(elapsed);
         recording.push(step);
@@ -85,19 +91,41 @@ pub fn run(config: BenchmarkConfig) -> anyhow::Result<BenchmarkReport> {
         p99_tick_ms: percentile(99),
         peak_tick_ms: nanos.last().copied().unwrap_or_default() as f64 / 1_000_000.0,
         recording_bytes,
+        synthetic_event_count,
         synthetic_workload_hash: format!("sha256:{:x}", workload_hasher.finalize()),
         peak_memory_bytes,
         peak_memory_source: crate::memory::peak_memory_source().to_string(),
-        target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        target: option_env!("COCKPIT_TARGET")
+            .unwrap_or("unknown-target")
+            .to_string(),
     })
 }
 
-fn synthetic_event_work(tick: u64, active_entities: u64, events_per_minute: u64) -> Vec<u8> {
+fn synthetic_event_work(
+    tick: u64,
+    active_entities: u64,
+    events_per_minute: u64,
+) -> Vec<EventEnvelope> {
     let events_this_tick = (events_per_minute / 60).max(1);
-    let mut bytes = Vec::with_capacity((events_this_tick * 32) as usize);
+    let mut events = Vec::with_capacity(events_this_tick as usize);
     for sequence in 0..events_this_tick {
         let entity = (tick.wrapping_mul(events_this_tick) + sequence) % active_entities.max(1);
-        bytes.extend_from_slice(format!("{tick}:{sequence}:entity-{entity};").as_bytes());
+        events.push(EventEnvelope {
+            event_id: format!("benchmark-{tick}-{sequence}"),
+            event_type: "SyntheticWorkloadEvent".to_string(),
+            run_id: "benchmark-run".to_string(),
+            tick,
+            source: "benchmark".to_string(),
+            priority: 0,
+            sequence,
+            correlation_id: format!("benchmark-{tick}"),
+            payload: EventPayload {
+                message: "synthetic capacity workload".to_string(),
+                target: Some(format!("entity-{entity}")),
+                value: Some(entity as f64),
+                error_code: None,
+            },
+        });
     }
-    bytes
+    events
 }
