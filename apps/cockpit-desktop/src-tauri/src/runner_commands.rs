@@ -46,17 +46,14 @@ impl RunnerState {
             workspace_root,
         }
     }
-    
+
     /// Resolve a path relative to the workspace root if it's not already absolute
     fn resolve_path(&self, path: &str) -> String {
         let path_buf = Path::new(path);
         if path_buf.is_absolute() {
             path.to_string()
         } else {
-            self.workspace_root
-                .join(path)
-                .to_string_lossy()
-                .to_string()
+            self.workspace_root.join(path).to_string_lossy().to_string()
         }
     }
 
@@ -210,8 +207,10 @@ pub fn validate_scenario(
     eprintln!("validate_scenario: input path = {}", path);
     let resolved_path = state.resolve_path(&path);
     eprintln!("validate_scenario: resolved path = {}", resolved_path);
-    serde_json::from_value(state.dispatch(RunnerCommand::ValidateScenario { path: resolved_path })?)
-        .map_err(|error| error.to_string())
+    serde_json::from_value(state.dispatch(RunnerCommand::ValidateScenario {
+        path: resolved_path,
+    })?)
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -221,7 +220,9 @@ pub fn create_simulation_run(
 ) -> Result<String, String> {
     let resolved_path = state.resolve_path(&path);
     state
-        .dispatch(RunnerCommand::CreateSimulationRun { path: resolved_path })?
+        .dispatch(RunnerCommand::CreateSimulationRun {
+            path: resolved_path,
+        })?
         .get("runId")
         .and_then(Value::as_str)
         .map(ToString::to_string)

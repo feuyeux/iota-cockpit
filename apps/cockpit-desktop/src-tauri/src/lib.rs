@@ -12,7 +12,7 @@ pub fn run() {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     );
-    
+
     // Capture workspace root at startup
     // In dev mode, CARGO_MANIFEST_DIR points to apps/cockpit-desktop/src-tauri
     // We need to go up to the repository root (../../..)
@@ -20,13 +20,20 @@ pub fn run() {
         .map(PathBuf::from)
         .and_then(|manifest_dir| {
             // Go up from apps/cockpit-desktop/src-tauri to project root
-            manifest_dir.parent()?.parent()?.parent().map(|p| p.to_path_buf())
+            manifest_dir
+                .parent()?
+                .parent()?
+                .parent()
+                .map(|p| p.to_path_buf())
         })
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
-    
-    eprintln!("Cockpit Desktop: workspace_root = {}", workspace_root.display());
-    
+
+    eprintln!(
+        "Cockpit Desktop: workspace_root = {}",
+        workspace_root.display()
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(RunnerState::new(token, workspace_root))
