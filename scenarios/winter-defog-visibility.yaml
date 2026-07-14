@@ -1,0 +1,19 @@
+schemaVersion: 1
+id: winter-defog-visibility
+seed: 102
+language: en
+clock: { mode: stepped, tickMs: 100 }
+conflictPolicy: highestPriorityWins
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 12.0 } } }
+  - { id: outer-rain, type: outerEnvironment, components: { temperature: { celsius: 2.0 }, altitude: { meters: 80.0 }, wind: { speedKmh: 28.0 }, weather: { precipitation: 0.92 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.9 }, location: cockpit, name: Maya, role: driver, background: Experienced driver navigating a cold rainy night., traits: { openness: 0.48, conscientiousness: 0.88, extraversion: 0.35, agreeableness: 0.56, neuroticism: 0.3 } } }
+  - { id: passenger-1, type: human, components: { attention: { value: 0.7 }, location: rear-right, name: Noah, role: passenger, background: Passenger sensitive to cold airflow. } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: defogger-1, type: device, components: { capabilities: [front-defog, rear-defrost] } }
+  - { id: rain-sensor-1, type: device, components: { capabilities: [precipitation-detection] } }
+influences:
+  - { ruleId: fog-visibility-loss, ruleVersion: 1, schedule: { kind: every, start: 2, interval: 4 }, entityId: cabin, componentPath: environment.visibility, op: { op: delta, value: -0.12 }, priority: 6 }
+  - { ruleId: defog-recovery, ruleVersion: 1, schedule: { kind: every, start: 4, interval: 4 }, entityId: cabin, componentPath: environment.visibility, op: { op: delta, value: 0.08 }, priority: 8 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [visibility.activateDefog] }]
+evaluation: [{ id: windshield-visibility-restored, deadlineTick: 24, rule: Windshield visibility recovers to at least 80 percent }]

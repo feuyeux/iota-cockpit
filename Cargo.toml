@@ -121,10 +121,6 @@ name = "recording_diff"
 path = "tests/contract/recording_diff.rs"
 
 [[test]]
-name = "recording_migration"
-path = "tests/contract/recording_migration.rs"
-
-[[test]]
 name = "influence_rules"
 path = "tests/contract/influence_rules.rs"
 
@@ -135,6 +131,14 @@ path = "tests/contract/runner_restart.rs"
 [[test]]
 name = "benchmark_report"
 path = "tests/contract/benchmark_report.rs"
+
+[[test]]
+name = "benchmark_scenario_evaluation"
+path = "tests/contract/benchmark_scenario_evaluation.rs"
+
+[[test]]
+name = "benchmark_actions"
+path = "tests/contract/benchmark_actions.rs"
 
 [[test]]
 name = "rule_agent_smoke"

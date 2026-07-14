@@ -1,0 +1,16 @@
+schemaVersion: 1
+id: driver-fatigue-guardian
+seed: 103
+language: zh-CN
+clock: { mode: stepped, tickMs: 100 }
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 23.0 } } }
+  - { id: outer-night, type: outerEnvironment, components: { temperature: { celsius: 11.0 }, altitude: { meters: 520.0 }, wind: { speedKmh: 14.0 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.68 }, location: cockpit, name: 周远, role: driver, background: 已连续驾驶三小时，倾向于低估自身疲劳。, traits: { openness: 0.42, conscientiousness: 0.76, extraversion: 0.3, agreeableness: 0.5, neuroticism: 0.46 } } }
+  - { id: passenger-1, type: human, components: { attention: { value: 0.5 }, location: rear-left, name: 叶宁, role: sleeping passenger, background: 熟睡中的同行乘员。 } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: dms-1, type: device, components: { capabilities: [gaze-tracking, fatigue-estimation] } }
+influences:
+  - { ruleId: fatigue-decay, ruleVersion: 1, schedule: { kind: every, start: 1, interval: 3 }, entityId: driver-1, componentPath: pilot.attention, op: { op: delta, value: -0.055 }, priority: 8 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [driver.activateFatigueIntervention] }]
+evaluation: [{ id: fatigue-intervention-effective, deadlineTick: 20, rule: Driver attention recovers to at least 70 percent }]

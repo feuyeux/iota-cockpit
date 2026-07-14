@@ -113,7 +113,8 @@ pub struct PluginPolicy {
     ///
     /// This is a cooperative budget: it bounds plugins that return but does not
     /// preempt a hung plugin. OS-level preemption requires out-of-process
-    /// execution (see `## 36. 插件生命周期` / ADR in `doc/001.md`).
+    /// execution (see the plugin and acceptance sections in
+    /// `docs/cockpit-desktop-simulation-guide-zh.md`).
     pub tick_budget_ms: Option<u64>,
 }
 
@@ -386,17 +387,20 @@ fn validate_manifest(
     Ok(manifest)
 }
 
+/// Whether a plugin-authored StateDiff may target the given entity/component
+/// pair. Human component paths (`pilot.stress`, `pilot.attention`) are
+/// accepted for any human id since the human entity set is scenario-defined
+/// and not fixed to a single `pilot-1` id.
 fn allowed_path(entity_id: &str, component_path: &str) -> bool {
-    matches!(
-        (entity_id, component_path),
-        ("cabin", "environment.smokeDensity")
-            | ("cabin", "environment.visibility")
-            | ("cabin", "environment.temperatureC")
-            | ("pilot-1", "pilot.stress")
-            | ("pilot-1", "pilot.attention")
-            | ("engine-1", "engine.health")
-            | ("alarm-1", "alarm.active")
-    )
+    matches!(component_path, "pilot.stress" | "pilot.attention")
+        || matches!(
+            (entity_id, component_path),
+            ("cabin", "environment.smokeDensity")
+                | ("cabin", "environment.visibility")
+                | ("cabin", "environment.temperatureC")
+                | ("engine-1", "engine.health")
+                | ("alarm-1", "alarm.active")
+        )
 }
 
 fn validate_value(path: &str, value: &Value) -> Result<(), PluginError> {

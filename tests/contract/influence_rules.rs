@@ -49,7 +49,7 @@ fn scheduled_influence_applies_and_emits_event() {
             .any(|event| event.event_type == "InfluenceApplied"),
         "due rule emits an InfluenceApplied event"
     );
-    assert!((simulation.snapshot.pilot.attention - 0.25).abs() < 1e-9);
+    assert!((simulation.snapshot.primary_human().attention - 0.25).abs() < 1e-9);
 }
 
 #[test]
@@ -94,9 +94,10 @@ fn highest_priority_wins_is_deterministic() {
     second.step_without_agent().expect("tick 1");
 
     // Highest-priority rule "b" (0.8) wins in both runs.
-    assert!((first.snapshot.pilot.attention - 0.8).abs() < 1e-9);
+    assert!((first.snapshot.primary_human().attention - 0.8).abs() < 1e-9);
     assert_eq!(
-        first.snapshot.pilot.attention, second.snapshot.pilot.attention,
+        first.snapshot.primary_human().attention,
+        second.snapshot.primary_human().attention,
         "arbitration is deterministic across runs"
     );
 }

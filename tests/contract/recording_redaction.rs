@@ -1,5 +1,6 @@
 use std::fs;
 
+use cockpit_agent_runtime::{HumanDecision, HumanTurnEvidence};
 use cockpit_recording::{RecordingStore, run_rule_agent_recording};
 use cockpit_scenario::load_scenario;
 use serde_json::{Value, json};
@@ -28,6 +29,14 @@ fn recording_payloads_redact_nested_secrets_before_writing_to_disk() {
         }
     });
     trace.result = json!({ "secret": "secret-must-not-persist" });
+    recording.push_human_turns(vec![HumanTurnEvidence {
+        human_id: "pilot-1".to_string(),
+        decision: HumanDecision {
+            narrative: "prompt-must-not-persist".to_string(),
+            utterance: Some("token-must-not-persist".to_string()),
+            ..HumanDecision::default()
+        },
+    }]);
 
     let mut store = RecordingStore::open(&database_path).expect("store");
     store.save(&recording).expect("recording saves");
@@ -67,6 +76,8 @@ fn recording_payloads_redact_nested_secrets_before_writing_to_disk() {
         "token-must-not-persist",
         "complete-private-prompt",
         "secret-must-not-persist",
+        "prompt-must-not-persist",
+        "token-must-not-persist",
     ] {
         assert!(!stored.contains(secret), "recording contains {secret}");
     }

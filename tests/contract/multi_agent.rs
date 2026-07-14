@@ -48,5 +48,44 @@ fn multi_agent_arbitration_is_priority_then_stable_and_conflict_safe() {
         Some(cockpit_simulation_core::ErrorCode::ActionConflict)
     );
     simulation.step_without_agent().expect("tick commits");
-    assert!(simulation.snapshot.engine.shutdown);
+    assert!(simulation.snapshot.device("engine-1").unwrap().shutdown);
+}
+
+#[test]
+fn actions_with_overlapping_effects_are_conflict_safe() {
+    let mut scenario =
+        load_scenario("scenarios/driver-fatigue-guardian.yaml").expect("scenario loads");
+    scenario.agent.capabilities.extend([
+        "driver.activateFatigueIntervention".to_string(),
+        "privacy.activateMode".to_string(),
+    ]);
+    scenario.agents[0].capabilities = scenario.agent.capabilities.clone();
+    let mut simulation = Simulation::new("overlapping-effects", scenario);
+    simulation.start().expect("starts");
+    let version = simulation.snapshot.version;
+    let first = simulation.submit_action(ActionRequest {
+        request_id: "fatigue".to_string(),
+        agent_id: "cockpit-agent".to_string(),
+        target: "dms-1".to_string(),
+        command: Command::FatigueInterventionActivate,
+        expected_state_version: version,
+        expires_at_tick: 3,
+        correlation_id: "fatigue".to_string(),
+    });
+    let second = simulation.submit_action(ActionRequest {
+        request_id: "privacy".to_string(),
+        agent_id: "cockpit-agent".to_string(),
+        target: "voice-array-1".to_string(),
+        command: Command::PrivacyModeActivate,
+        expected_state_version: version,
+        expires_at_tick: 3,
+        correlation_id: "privacy".to_string(),
+    });
+
+    assert_eq!(first.status, ActionStatus::Applied);
+    assert_eq!(second.status, ActionStatus::Rejected);
+    assert_eq!(
+        second.error_code,
+        Some(cockpit_simulation_core::ErrorCode::ActionConflict)
+    );
 }

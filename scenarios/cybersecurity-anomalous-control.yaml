@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: cybersecurity-anomalous-control
+seed: 109
+language: en
+clock: { mode: stepped, tickMs: 100 }
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 22.0 } } }
+  - { id: outer-city, type: outerEnvironment, components: { temperature: { celsius: 16.0 }, altitude: { meters: 55.0 }, wind: { speedKmh: 8.0 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.84 }, location: cockpit, name: Marcus, role: driver, background: Fleet driver receiving an unexpected remote-control notification., traits: { openness: 0.45, conscientiousness: 0.86, extraversion: 0.38, agreeableness: 0.48, neuroticism: 0.41 } } }
+  - { id: passenger-1, type: human, components: { attention: { value: 0.7 }, location: rear-left, name: Jia, role: passenger, background: Passenger unaware of the security incident. } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: gateway-1, type: device, components: { capabilities: [request-authentication, network-isolation] } }
+  - { id: telematics-1, type: device, components: { capabilities: [remote-command, audit-log] } }
+  - { id: security-monitor-1, type: device, components: { capabilities: [anomaly-detection, evidence-capture] } }
+  - { id: identity-manager-1, type: device, components: { capabilities: [device-identity, certificate-validation, least-privilege] } }
+  - { id: local-hmi-1, type: device, components: { capabilities: [trusted-local-alert, incident-status, recovery-guidance] } }
+influences:
+  - { ruleId: security-alert-stress, ruleVersion: 1, schedule: { kind: atTick, tick: 6 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.18 }, priority: 9 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [cybersecurity.enterSafeMode] }]
+evaluation: [{ id: cyber-incident-contained, deadlineTick: 16, rule: Safe mode restores driver attention to at least 85 percent }]

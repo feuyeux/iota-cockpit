@@ -4,7 +4,8 @@ import type {
   RecordingDiff,
   RunnerEventBatch,
   ScenarioSummary,
-  WorldSnapshot
+  WorldSnapshot,
+  LiveRunSummary
 } from "./types/simulation";
 
 function isTauri(): boolean {
@@ -19,15 +20,16 @@ function invokeRunner<T>(command: string, args?: Record<string, unknown>): Promi
 export interface RunnerClient {
   connect(): Promise<void>;
   validateScenario(path: string): Promise<ScenarioSummary>;
-  createRun(path: string): Promise<string>;
+  createLiveRun(path: string, timeoutMs: number): Promise<LiveRunSummary>;
   start(): Promise<void>;
   pause(): Promise<void>;
-  step(): Promise<void>;
+  stepLive(): Promise<unknown>;
   stop(): Promise<void>;
   resume(scenarioPath: string, runId: string): Promise<void>;
   approveAction(requestId: string): Promise<unknown>;
   rejectAction(requestId: string, reason?: string): Promise<unknown>;
   cancelAgentTurn(): Promise<void>;
+  cancelLiveTurn(): Promise<void>;
   setApprovalRequired(required: boolean): Promise<void>;
   startReplay(scenarioPath: string, recordingPath: string): Promise<unknown>;
   diffRecordings(sourceRecordingPath: string, candidateRecordingPath: string): Promise<RecordingDiff>;
@@ -54,9 +56,9 @@ export const runnerClient: RunnerClient = {
     }
     return invokeRunner("validate_scenario", { path });
   },
-  async createRun(path: string) {
-    if (!isTauri()) return "preview-run";
-    return invokeRunner<string>("create_simulation_run", { path });
+  async createLiveRun(path: string, timeoutMs: number) {
+    if (!isTauri()) return { runId: "preview-live-run", backend: "preview-no-backend" };
+    return invokeRunner<LiveRunSummary>("create_live_simulation_run", { path, timeoutMs });
   },
   async start() {
     await invokeRunner<void>("start_simulation");
@@ -64,8 +66,8 @@ export const runnerClient: RunnerClient = {
   async pause() {
     await invokeRunner<void>("pause_simulation");
   },
-  async step() {
-    await invokeRunner<void>("step_simulation");
+  async stepLive() {
+    return invokeRunner("step_live_simulation");
   },
   async stop() {
     await invokeRunner<void>("stop_simulation");
@@ -81,6 +83,9 @@ export const runnerClient: RunnerClient = {
   },
   async cancelAgentTurn() {
     await invokeRunner<void>("cancel_agent_turn");
+  },
+  async cancelLiveTurn() {
+    await invokeRunner<void>("cancel_live_turn");
   },
   async setApprovalRequired(required) {
     await invokeRunner<void>("set_approval_required", { required });
@@ -117,8 +122,8 @@ export const runnerClient: RunnerClient = {
       multiple: false,
       directory: false,
       filters: [
-        { name: "YAML Scenarios", extensions: ["yaml", "yml"] },
-        { name: "All Files", extensions: ["*"] },
+        { name: "YAML", extensions: ["yaml", "yml"] },
+        { name: "*", extensions: ["*"] },
       ],
     });
     if (!result) return null;
@@ -131,8 +136,8 @@ export const runnerClient: RunnerClient = {
       multiple: false,
       directory: false,
       filters: [
-        { name: "Recording Files", extensions: ["json", "jsonl"] },
-        { name: "All Files", extensions: ["*"] },
+        { name: "JSON / JSONL", extensions: ["json", "jsonl"] },
+        { name: "*", extensions: ["*"] },
       ],
     });
     if (!result) return null;

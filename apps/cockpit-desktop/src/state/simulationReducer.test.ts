@@ -54,11 +54,13 @@ describe("simulationReducer", () => {
       type: "scenarioReady",
       scenario,
       runId: "run-123",
+      backend: "iota-core-acp",
     };
     const state = simulationReducer(initialSimulationModel, action);
     expect(state.state).toBe("ready");
     expect(state.scenario).toEqual(scenario);
     expect(state.runId).toBe("run-123");
+    expect(state.backend).toBe("iota-core-acp");
     expect(state.tick).toBe(0);
     expect(state.events).toEqual([]);
   });
@@ -84,6 +86,19 @@ describe("simulationReducer", () => {
     expect(state.runId).toBe("run-123");
   });
 
+  it("applies a runner event batch in one reducer action", () => {
+    const state = simulationReducer(initialSimulationModel, {
+      type: "runnerEvents",
+      events: [
+        { type: "SimulationStateChanged", state: "running", runId: "run-batch" },
+        { type: "SimulationStateChanged", state: "stopped", runId: "run-batch" },
+      ],
+    });
+
+    expect(state.state).toBe("stopped");
+    expect(state.runId).toBe("run-batch");
+  });
+
   it("should handle SimulationTickCommitted event", () => {
     const snapshot = {
       runId: "run-123",
@@ -99,21 +114,51 @@ describe("simulationReducer", () => {
         noiseDb: 40,
         fireActive: false,
       },
-      pilot: {
-        stress: 0.2,
-        fatigue: 0.1,
-        health: 1.0,
-        attention: 0.8,
-        location: "cabin",
+      outerEnvironment: {
+        externalTemperatureC: 20,
+        altitudeM: 0,
+        windSpeedKmh: 5,
+        precipitation: 0,
+        threatActive: false,
       },
-      engine: {
-        health: 0.95,
-        powerState: "running",
-        lifecycle: "operational",
-        faults: [],
-        capabilities: ["thrust"],
-        shutdown: false,
-      },
+      humans: [
+        {
+          id: "pilot-1",
+          persona: {
+            name: "Alex",
+            role: "pilot",
+            background: "",
+            traits: {
+              openness: 0.5,
+              conscientiousness: 0.8,
+              extraversion: 0.4,
+              agreeableness: 0.5,
+              neuroticism: 0.3,
+            },
+            relationships: [],
+          },
+          needs: { comfort: 1, safety: 1, social: 1 },
+          stress: 0.2,
+          fatigue: 0.1,
+          health: 1.0,
+          attention: 0.8,
+          location: "cabin",
+          goal: "maintain safe cockpit state",
+          shortTermMemory: [],
+          longTermMemory: [],
+        },
+      ],
+      devices: [
+        {
+          id: "engine-1",
+          health: 0.95,
+          powerState: "running",
+          lifecycle: "operational",
+          faults: [],
+          capabilities: ["thrust"],
+          shutdown: false,
+        },
+      ],
       alarm: {
         active: false,
         volumeDb: 0,
@@ -130,6 +175,31 @@ describe("simulationReducer", () => {
     expect(state.simTimeMs).toBe(500);
     expect(state.snapshot).toEqual(snapshot);
     expect(state.lastCursor).toBe(10);
+  });
+
+  it("should collect redacted per-human backend turn evidence", () => {
+    const event = {
+      type: "SimulationHumanTurn" as const,
+      cursor: 7,
+      tick: 3,
+      backend: "iota-core-acp",
+      evidence: {
+        humanId: "driver-1",
+        decision: {
+          actions: [{ target: "engine-1", command: "engineShutdown" }],
+          internalStateDelta: { stress: 0.05, attention: -0.02 },
+          narrative: "[redacted]"
+        }
+      }
+    };
+    const state = simulationReducer(initialSimulationModel, {
+      type: "runnerEvent",
+      event
+    });
+    expect(state.humanTurns).toEqual([
+      { tick: 3, backend: "iota-core-acp", evidence: event.evidence }
+    ]);
+    expect(state.lastCursor).toBe(7);
   });
 
   it("should transition to failed on a SimulationError event", () => {
@@ -166,15 +236,51 @@ describe("simulationReducer", () => {
         noiseDb: 40,
         fireActive: false,
       },
-      pilot: { stress: 0.2, fatigue: 0.1, health: 1, attention: 0.8, location: "cabin" },
-      engine: {
-        health: 0.95,
-        powerState: "running",
-        lifecycle: "operational",
-        faults: [],
-        capabilities: ["thrust"],
-        shutdown: false,
+      outerEnvironment: {
+        externalTemperatureC: 20,
+        altitudeM: 0,
+        windSpeedKmh: 5,
+        precipitation: 0,
+        threatActive: false,
       },
+      humans: [
+        {
+          id: "pilot-1",
+          persona: {
+            name: "Alex",
+            role: "pilot",
+            background: "",
+            traits: {
+              openness: 0.5,
+              conscientiousness: 0.8,
+              extraversion: 0.4,
+              agreeableness: 0.5,
+              neuroticism: 0.3,
+            },
+            relationships: [],
+          },
+          needs: { comfort: 1, safety: 1, social: 1 },
+          stress: 0.2,
+          fatigue: 0.1,
+          health: 1,
+          attention: 0.8,
+          location: "cabin",
+          goal: "maintain safe cockpit state",
+          shortTermMemory: [],
+          longTermMemory: [],
+        },
+      ],
+      devices: [
+        {
+          id: "engine-1",
+          health: 0.95,
+          powerState: "running",
+          lifecycle: "operational",
+          faults: [],
+          capabilities: ["thrust"],
+          shutdown: false,
+        },
+      ],
       alarm: { active: false, volumeDb: 0 },
     };
     const paused = simulationReducer(
@@ -227,15 +333,51 @@ describe("simulationReducer", () => {
         noiseDb: 40,
         fireActive: false,
       },
-      pilot: { stress: 0.2, fatigue: 0.1, health: 1, attention: 0.8, location: "cabin" },
-      engine: {
-        health: 0.95,
-        powerState: "running",
-        lifecycle: "operational",
-        faults: [],
-        capabilities: ["thrust"],
-        shutdown: false,
+      outerEnvironment: {
+        externalTemperatureC: 20,
+        altitudeM: 0,
+        windSpeedKmh: 5,
+        precipitation: 0,
+        threatActive: false,
       },
+      humans: [
+        {
+          id: "pilot-1",
+          persona: {
+            name: "Alex",
+            role: "pilot",
+            background: "",
+            traits: {
+              openness: 0.5,
+              conscientiousness: 0.8,
+              extraversion: 0.4,
+              agreeableness: 0.5,
+              neuroticism: 0.3,
+            },
+            relationships: [],
+          },
+          needs: { comfort: 1, safety: 1, social: 1 },
+          stress: 0.2,
+          fatigue: 0.1,
+          health: 1,
+          attention: 0.8,
+          location: "cabin",
+          goal: "maintain safe cockpit state",
+          shortTermMemory: [],
+          longTermMemory: [],
+        },
+      ],
+      devices: [
+        {
+          id: "engine-1",
+          health: 0.95,
+          powerState: "running",
+          lifecycle: "operational",
+          faults: [],
+          capabilities: ["thrust"],
+          shutdown: false,
+        },
+      ],
       alarm: { active: false, volumeDb: 0 },
     };
     const seeded = {

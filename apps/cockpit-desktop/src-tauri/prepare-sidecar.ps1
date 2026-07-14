@@ -24,7 +24,7 @@ $Ext = if ($Triple -match "windows") { ".exe" } else { "" }
 Write-Host "Building cockpit-runner (release) for $Triple"
 Push-Location $WorkspaceRoot
 try {
-    cargo build --release -p cockpit-runner
+    cargo build --release -p cockpit-runner --features live-acp
 } finally {
     Pop-Location
 }

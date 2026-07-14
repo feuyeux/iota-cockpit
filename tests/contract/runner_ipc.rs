@@ -121,6 +121,106 @@ fn runner_requires_version_and_session_token() {
     );
 }
 
+#[tokio::test]
+async fn runner_live_ipc_keeps_one_backend_session_across_interactive_steps() {
+    let mut handler = RunnerHandler::new("session-1");
+    let created = handler
+        .dispatch_async(request(RunnerCommand::CreateLiveSimulationRun {
+            path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            timeout_ms: 1_000,
+        }))
+        .await;
+    if !created.ok
+        && created.error.as_ref().is_some_and(|error| {
+            error.code == "LIVE_BACKEND_INIT_FAILED"
+                && error.message.contains("Hermes ACP warm-up failed")
+        })
+    {
+        // The desktop package enables `live-acp`, which Cargo unifies across
+        // the workspace. Contract tests must remain offline; integration
+        // tests cover the opt-in real-backend failure path separately.
+        return;
+    }
+    assert!(created.ok, "{created:?}");
+    let backend = created
+        .result
+        .as_ref()
+        .and_then(|value| value.get("backend"))
+        .and_then(Value::as_str)
+        .expect("backend label");
+    assert!(matches!(backend, "synthetic" | "iota-core-acp"));
+    if backend == "iota-core-acp" {
+        // Feature-unified workspace tests must not call an external model.
+        // The default-feature invocation below exercises the full two-step
+        // interactive contract with the deterministic synthetic backend.
+        return;
+    }
+    assert!(handler.dispatch(request(RunnerCommand::StartSimulation)).ok);
+
+    for expected_tick in 0..2 {
+        let stepped = handler
+            .dispatch_async(request(RunnerCommand::StepLiveSimulation))
+            .await;
+        assert!(stepped.ok, "{stepped:?}");
+        assert_eq!(
+            stepped
+                .result
+                .as_ref()
+                .and_then(|value| value.get("tick"))
+                .and_then(Value::as_u64),
+            Some(expected_tick)
+        );
+        assert_eq!(
+            stepped
+                .result
+                .as_ref()
+                .and_then(|value| value.get("humanTurns"))
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+    }
+
+    let snapshot = handler.dispatch(request(RunnerCommand::GetSimulationSnapshot));
+    assert_eq!(
+        snapshot
+            .result
+            .as_ref()
+            .and_then(|value| value.get("tick"))
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    let events = handler.dispatch(request(RunnerCommand::GetSimulationEvents {
+        cursor: Some(0),
+    }));
+    assert!(
+        events
+            .result
+            .as_ref()
+            .and_then(|value| value.get("events"))
+            .and_then(Value::as_array)
+            .is_some_and(|events| events
+                .iter()
+                .filter(|event| { event.get("type") == Some(&json!("SimulationTickCommitted")) })
+                .count()
+                == 2)
+    );
+    assert!(
+        events
+            .result
+            .as_ref()
+            .and_then(|value| value.get("events"))
+            .and_then(Value::as_array)
+            .is_some_and(|events| events
+                .iter()
+                .filter(|event| {
+                    event.get("type") == Some(&json!("SimulationHumanTurn"))
+                        && event.get("backend") == Some(&json!("synthetic"))
+                })
+                .count()
+                == 4)
+    );
+}
+
 #[test]
 fn runner_step_emits_snapshot_trace_evaluation_and_cursored_events() {
     let mut handler = RunnerHandler::new("session-1");

@@ -11,16 +11,23 @@ use cockpit_simulation_core::{
 use serde::{Deserialize, Serialize};
 
 pub mod diff;
-pub mod migrate;
 pub mod queue;
 pub mod replay;
 pub mod store;
 
+/// Current recording schema version understood by this build.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// Current runtime contract version. Version 2 makes backend prose transient:
+/// durable human-turn evidence and social-perception state contain redacted
+/// markers while live turns receive utterance text through an in-memory overlay.
+pub const CURRENT_RUNTIME_CONTRACT_VERSION: u32 = 2;
+/// Current world-model version. Version 4 carries authoritative typed cockpit
+/// subsystem state (climate, driver assistance, occupant care, experience, and
+/// cybersecurity) in every snapshot; replay rejects a different world-model
+/// version rather than claiming deterministic equivalence.
+pub const CURRENT_WORLD_MODEL_VERSION: u32 = 4;
+
 pub use diff::{RecordingDiff, RecordingMetrics, TickDiff, diff_recordings};
-pub use migrate::{
-    CURRENT_RUNTIME_CONTRACT_VERSION, CURRENT_SCHEMA_VERSION, CURRENT_WORLD_MODEL_VERSION,
-    MigrationError, MigrationReport, migrate_recording_bytes, migrate_recording_value,
-};
 pub use queue::{
     AsyncRecordingSink, RecordingQueue, RecordingQueueHealth, RecordingQueueOutcome,
     RecordingQueuePolicy,
@@ -42,14 +49,19 @@ pub struct Recording {
     pub seed: u64,
     pub clock: ClockConfig,
     pub ticks: Vec<StepRecord>,
+    /// Per-tick human decisions for a live run, in driver order. Free-form
+    /// narrative and utterance text is redacted; typed actions and state deltas
+    /// remain available for deterministic replay without another model call.
+    #[serde(default)]
+    pub human_turns: Vec<Vec<cockpit_agent_runtime::HumanTurnEvidence>>,
 }
 
 impl Recording {
     pub fn new(run_id: impl Into<String>, scenario: &SimulationScenario) -> Self {
         Self {
-            schema_version: migrate::CURRENT_SCHEMA_VERSION,
-            runtime_contract_version: migrate::CURRENT_RUNTIME_CONTRACT_VERSION,
-            world_model_version: migrate::CURRENT_WORLD_MODEL_VERSION,
+            schema_version: CURRENT_SCHEMA_VERSION,
+            runtime_contract_version: CURRENT_RUNTIME_CONTRACT_VERSION,
+            world_model_version: CURRENT_WORLD_MODEL_VERSION,
             application_commit: option_env!("COCKPIT_APPLICATION_COMMIT")
                 .unwrap_or("unknown")
                 .to_string(),
@@ -60,11 +72,17 @@ impl Recording {
             seed: scenario.seed,
             clock: scenario.clock,
             ticks: Vec::new(),
+            human_turns: Vec::new(),
         }
     }
 
     pub fn push(&mut self, step: StepRecord) {
         self.ticks.push(step);
+    }
+
+    /// Record one tick's backend-authored human decisions (live runs only).
+    pub fn push_human_turns(&mut self, turns: Vec<cockpit_agent_runtime::HumanTurnEvidence>) {
+        self.human_turns.push(turns);
     }
 
     pub fn final_snapshot_hash(&self) -> Option<&str> {

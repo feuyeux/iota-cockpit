@@ -1,0 +1,21 @@
+schemaVersion: 1
+id: voice-privacy-conflict
+seed: 106
+language: zh-CN
+clock: { mode: stepped, tickMs: 100 }
+conflictPolicy: highestPriorityWins
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 24.0 } } }
+  - { id: outer-road, type: outerEnvironment, components: { temperature: { celsius: 21.0 }, altitude: { meters: 110.0 }, wind: { speedKmh: 12.0 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.86 }, location: cockpit, name: 唐悦, role: driver, background: 正在驾驶并接收工作消息。 } }
+  - { id: partner-1, type: human, components: { attention: { value: 0.8 }, location: cabin, name: 沈川, role: front passenger, background: 希望查看导航但无权读取驾驶员私信。, relationships: [driver-1 is the partner] } }
+  - { id: teen-1, type: human, components: { attention: { value: 0.62 }, location: rear-left, name: 小满, role: teen passenger, background: 同时请求播放个人音乐。 } }
+  - { id: child-1, type: human, components: { attention: { value: 0.58 }, location: rear-right, name: 星星, role: child passenger, background: 反复发出语音请求。 } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: voice-array-1, type: device, components: { capabilities: [speaker-id, beamforming, intent-routing] } }
+  - { id: infotainment-1, type: device, components: { capabilities: [media-session, zone-audio, content-handoff] } }
+  - { id: profile-manager-1, type: device, components: { capabilities: [occupant-profile, preference-isolation, parental-control] } }
+influences:
+  - { ruleId: dialogue-distraction, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 4 }, entityId: driver-1, componentPath: pilot.attention, op: { op: delta, value: -0.025 }, priority: 5 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: family-default, capabilities: [privacy.activateMode] }]
+evaluation: [{ id: privacy-conflict-contained, deadlineTick: 20, rule: Privacy mode restores driver attention to at least 80 percent }]

@@ -23,7 +23,7 @@ case "$TRIPLE" in
 esac
 
 echo "Building cockpit-runner (release) for $TRIPLE"
-cargo build --release -p cockpit-runner --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
+cargo build --release -p cockpit-runner --features live-acp --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 
 mkdir -p "$BIN_DIR"
 SRC="$WORKSPACE_ROOT/target/release/cockpit-runner$EXT"

@@ -46,23 +46,19 @@ enum Command {
         ticks: u64,
         #[arg(long, default_value_t = 2_000)]
         timeout_ms: u64,
-        #[arg(long, default_value_t = 2)]
-        max_attempts: usize,
-        #[arg(long, default_value_t = 3)]
-        circuit_failure_threshold: usize,
     },
-    /// Migrate a recording file forward to the current schema version.
-    MigrateRecording {
-        /// Source recording JSON file.
-        input: PathBuf,
-        /// Destination for the migrated recording. Defaults to overwriting the
-        /// input in place.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Report the migration that would run without writing any output.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
+}
+
+fn evaluate_recording(
+    recording: &cockpit_recording::Recording,
+    scenario: &cockpit_simulation_core::SimulationScenario,
+) -> cockpit_evaluation::EvaluationResult {
+    cockpit_evaluation::evaluate(
+        recording,
+        scenario.evaluation_rule_id.as_deref(),
+        scenario.shutdown_deadline_ticks,
+        &scenario.language,
+    )
 }
 
 #[tokio::main]
@@ -109,10 +105,12 @@ async fn main() -> anyhow::Result<()> {
         Command::Run { scenario, ticks } => {
             let scenario = cockpit_scenario::load_scenario(&scenario)
                 .with_context(|| format!("failed to load {}", scenario.display()))?;
-            let deadline = scenario.shutdown_deadline_ticks;
-            let recording =
-                cockpit_recording::run_rule_agent_recording("runner-run-1", scenario, ticks)?;
-            let evaluation = cockpit_evaluation::evaluate_smoke_shutdown(&recording, deadline);
+            let recording = cockpit_recording::run_rule_agent_recording(
+                "runner-run-1",
+                scenario.clone(),
+                ticks,
+            )?;
+            let evaluation = evaluate_recording(&recording, &scenario);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -128,48 +126,68 @@ async fn main() -> anyhow::Result<()> {
             scenario,
             ticks,
             timeout_ms,
-            max_attempts,
-            circuit_failure_threshold,
         } => {
             let report = cockpit_runner::run_live(cockpit_runner::LiveRunConfig {
                 scenario_path: scenario.display().to_string(),
                 ticks,
                 timeout_ms,
-                max_attempts,
-                circuit_failure_threshold,
             })
             .await
             .with_context(|| format!("failed to run live agent on {}", scenario.display()))?;
+            let run_failed = report.error.is_some();
             println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        Command::MigrateRecording {
-            input,
-            output,
-            dry_run,
-        } => {
-            let bytes = std::fs::read(&input)
-                .with_context(|| format!("failed to read {}", input.display()))?;
-            let (recording, report) = cockpit_recording::migrate_recording_bytes(&bytes)
-                .map_err(|error| anyhow::anyhow!("migration failed: {error}"))?;
-            if !dry_run {
-                let destination = output.unwrap_or_else(|| input.clone());
-                let encoded = serde_json::to_vec_pretty(&recording)?;
-                std::fs::write(&destination, encoded)
-                    .with_context(|| format!("failed to write {}", destination.display()))?;
+            if run_failed {
+                anyhow::bail!(
+                    "live run aborted by a mandatory backend failure: {}",
+                    report.error.unwrap_or_default()
+                );
             }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "fromVersion": report.from_version,
-                    "toVersion": report.to_version,
-                    "migrated": report.migrated(),
-                    "steps": report.steps,
-                    "dryRun": dry_run,
-                    "runId": recording.run_id,
-                    "ticks": recording.ticks.len()
-                }))?
-            );
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::evaluate_recording;
+
+    const BUNDLED_SCENARIOS: &[&str] = &[
+        "scenarios/smoke-in-cockpit.yaml",
+        "scenarios/heatwave-thermal-comfort.yaml",
+        "scenarios/winter-defog-visibility.yaml",
+        "scenarios/driver-fatigue-guardian.yaml",
+        "scenarios/child-left-behind.yaml",
+        "scenarios/medical-emergency.yaml",
+        "scenarios/voice-privacy-conflict.yaml",
+        "scenarios/ev-range-anxiety.yaml",
+        "scenarios/adas-takeover-construction.yaml",
+        "scenarios/cybersecurity-anomalous-control.yaml",
+    ];
+
+    #[test]
+    fn every_bundled_scenario_runs_and_passes_its_registered_evaluation() {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        for relative_path in BUNDLED_SCENARIOS {
+            let path = workspace_root.join(relative_path);
+            let scenario = cockpit_scenario::load_scenario(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let recording = cockpit_recording::run_rule_agent_recording(
+                format!("runner-evaluation-{}", scenario.id),
+                scenario.clone(),
+                scenario.shutdown_deadline_ticks + 1,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let evaluation = evaluate_recording(&recording, &scenario);
+
+            assert!(
+                evaluation.passed,
+                "{}: {}",
+                path.display(),
+                evaluation.explanation
+            );
+        }
+    }
 }

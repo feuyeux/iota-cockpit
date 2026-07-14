@@ -16,10 +16,15 @@ pub mod live;
 pub mod multi_agent;
 pub mod policy;
 pub mod skill;
+pub mod translation;
 
-pub use live::{LiveAgentDriver, disposition_label};
+pub use live::{
+    HumanAgentDriver, HumanBackend, HumanDecision, HumanTurnContext, HumanTurnError,
+    HumanTurnEvidence, InternalStateDelta, RecordedHumanBackend, RequestedAction,
+};
 pub use multi_agent::{AgentActionBatch, MultiAgentCoordinator};
-pub use policy::{AgentRuntimePolicy, AgentTurn, FallbackPolicy, TurnDisposition};
+pub use policy::{AgentRuntimePolicy, AgentTurnError};
+pub use translation::{IdentityTranslator, Translator, normalize_language, same_language};
 
 pub const TOOL_GET_OBSERVATION: &str = "simulation.get_observation";
 pub const TOOL_LIST_VISIBLE_ENTITIES: &str = "simulation.list_visible_entities";
@@ -181,7 +186,19 @@ impl LocalMcpServer {
                     "required": ["target", "command", "expectedStateVersion", "expiresAtTick"],
                     "properties": {
                         "target": { "type": "string" },
-                        "command": { "type": "string", "enum": ["engineShutdown", "alarmActivate"] },
+                        "command": { "type": "string", "enum": [
+                            "engineShutdown",
+                            "alarmActivate",
+                            "climateComfortRestore",
+                            "windshieldDefogActivate",
+                            "fatigueInterventionActivate",
+                            "childProtectionActivate",
+                            "medicalResponseActivate",
+                            "privacyModeActivate",
+                            "chargingPlanAccept",
+                            "adasTakeoverAcknowledge",
+                            "cyberSafeModeActivate"
+                        ] },
                         "expectedStateVersion": { "type": "integer", "minimum": 0 },
                         "expiresAtTick": { "type": "integer", "minimum": 0 }
                     },
@@ -326,15 +343,12 @@ impl LocalMcpServer {
             .get("target")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid_arguments("target is required"))?;
-        let command = match request.arguments.get("command").and_then(Value::as_str) {
-            Some("engineShutdown") => Command::EngineShutdown,
-            Some("alarmActivate") => Command::AlarmActivate,
-            _ => {
-                return Err(invalid_arguments(
-                    "command must be engineShutdown or alarmActivate",
-                ));
-            }
-        };
+        let command = request
+            .arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .and_then(Command::from_wire_name)
+            .ok_or_else(|| invalid_arguments("command is not a registered cockpit action"))?;
         let expected_state_version = request
             .arguments
             .get("expectedStateVersion")
@@ -455,6 +469,7 @@ mod tests {
 #[derive(Debug, Default)]
 pub struct RuleAgent {
     sequence: u64,
+    handled_alerts: std::collections::BTreeSet<String>,
 }
 
 impl RuleAgent {
@@ -479,17 +494,32 @@ impl RuleAgent {
             .map_err(|err| SimulationError::Serialization(err.to_string()))?;
         let mut traces = vec![observation_trace];
 
-        if observation
-            .alerts
-            .iter()
-            .any(|alert| alert == "SmokeDetected")
-        {
+        let action_for_alert = |alert: &str| match alert {
+            "SmokeDetected" => Some(("engine-1", "engineShutdown")),
+            "ThermalComfortRisk" => Some(("hvac-1", "climateComfortRestore")),
+            "WindshieldVisibilityRisk" => Some(("defogger-1", "windshieldDefogActivate")),
+            "DriverFatigueRisk" => Some(("dms-1", "fatigueInterventionActivate")),
+            "ChildPresenceHeatRisk" => Some(("occupant-radar-1", "childProtectionActivate")),
+            "MedicalEmergencyRisk" => Some(("emergency-call-1", "medicalResponseActivate")),
+            "MultiUserPrivacyConflict" => Some(("voice-array-1", "privacyModeActivate")),
+            "EvRangeRisk" => Some(("navigation-1", "chargingPlanAccept")),
+            "AdasTakeoverRequired" => Some(("adas-controller-1", "adasTakeoverAcknowledge")),
+            "CyberControlAnomaly" => Some(("security-monitor-1", "cyberSafeModeActivate")),
+            _ => None,
+        };
+        for alert in &observation.alerts {
+            let Some((target, command)) = action_for_alert(alert) else {
+                continue;
+            };
+            if !self.handled_alerts.insert(alert.clone()) {
+                continue;
+            }
             let action_request = self.request(
                 simulation,
                 TOOL_REQUEST_ACTION,
                 json!({
-                    "target": "engine-1",
-                    "command": "engineShutdown",
+                    "target": target,
+                    "command": command,
                     "expectedStateVersion": simulation.snapshot.version,
                     "expiresAtTick": simulation.snapshot.tick + 3
                 }),

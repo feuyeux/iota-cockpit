@@ -1,0 +1,19 @@
+schemaVersion: 1
+id: adas-takeover-construction
+seed: 108
+language: zh-CN
+clock: { mode: stepped, tickMs: 100 }
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 22.0 } } }
+  - { id: outer-construction, type: outerEnvironment, components: { temperature: { celsius: 17.0 }, altitude: { meters: 160.0 }, wind: { speedKmh: 18.0 }, weather: { precipitation: 0.35 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.74 }, location: cockpit, name: 顾航, role: driver, background: 正在使用辅助驾驶，对系统能力边界信任较高。, traits: { openness: 0.58, conscientiousness: 0.72, extraversion: 0.4, agreeableness: 0.52, neuroticism: 0.44 } } }
+  - { id: passenger-1, type: human, components: { attention: { value: 0.65 }, location: rear-right, name: 季晨, role: passenger, background: 关注施工区风险的乘员。 } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: front-camera-1, type: device, components: { capabilities: [lane-detection, object-detection] } }
+  - { id: radar-1, type: device, components: { capabilities: [range-rate] } }
+  - { id: adas-controller-1, type: device, components: { capabilities: [lane-centering, takeover-request] } }
+  - { id: takeover-hmi-1, type: device, components: { capabilities: [visual-countdown, haptic-alert, mode-status] } }
+influences:
+  - { ruleId: construction-attention-demand, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 3 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.05 }, priority: 8 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [adas.acknowledgeTakeover] }]
+evaluation: [{ id: adas-takeover-completed, deadlineTick: 18, rule: Driver attention reaches at least 90 percent after takeover }]

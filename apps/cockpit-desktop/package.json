@@ -9,7 +9,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:tsc": "tsc -b --noEmit",
-    "tauri:prepare-sidecar": "powershell -ExecutionPolicy Bypass -File src-tauri/prepare-sidecar.ps1",
+    "tauri:prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "tauri:dev": "npm run tauri:prepare-sidecar && tauri dev",
     "tauri:build": "npm run tauri:prepare-sidecar && tauri build"
   },

@@ -1,3 +1,4 @@
+use cockpit_agent_runtime::HumanTurnEvidence;
 use cockpit_simulation_core::{
     PluginFailureRecord,
     action::ActionResult,
@@ -17,6 +18,8 @@ pub enum RunnerCommand {
     ValidateScenario { path: String },
     #[serde(rename = "CreateSimulationRun")]
     CreateSimulationRun { path: String },
+    #[serde(rename = "CreateLiveSimulationRun")]
+    CreateLiveSimulationRun { path: String, timeout_ms: u64 },
     #[serde(rename = "ResumeSimulation")]
     ResumeSimulation {
         scenario_path: String,
@@ -28,6 +31,10 @@ pub enum RunnerCommand {
     PauseSimulation,
     #[serde(rename = "StepSimulation")]
     StepSimulation,
+    #[serde(rename = "StepLiveSimulation")]
+    StepLiveSimulation,
+    #[serde(rename = "CancelLiveTurn")]
+    CancelLiveTurn,
     #[serde(rename = "StopSimulation")]
     StopSimulation,
     #[serde(rename = "ApproveAction")]
@@ -108,6 +115,13 @@ pub enum RunnerEvent {
     SimulationEvent { cursor: u64, event: EventEnvelope },
     #[serde(rename = "SimulationToolCall")]
     SimulationToolCall { cursor: u64, trace: ToolCallTrace },
+    #[serde(rename = "SimulationHumanTurn")]
+    SimulationHumanTurn {
+        cursor: u64,
+        tick: u64,
+        backend: String,
+        evidence: HumanTurnEvidence,
+    },
     #[serde(rename = "SimulationActionResult")]
     SimulationActionResult { cursor: u64, result: ActionResult },
     #[serde(rename = "SimulationPluginFailure")]
@@ -128,6 +142,7 @@ impl RunnerEvent {
             | Self::SimulationTickCommitted { cursor, .. }
             | Self::SimulationEvent { cursor, .. }
             | Self::SimulationToolCall { cursor, .. }
+            | Self::SimulationHumanTurn { cursor, .. }
             | Self::SimulationActionResult { cursor, .. }
             | Self::SimulationPluginFailure { cursor, .. }
             | Self::SimulationEvaluationUpdated { cursor, .. }

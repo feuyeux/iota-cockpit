@@ -93,6 +93,22 @@ fn redact_value(value: &mut Value) {
     }
 }
 
+fn redact_human_turn_prose(value: &mut Value) {
+    match value {
+        Value::Array(values) => values.iter_mut().for_each(redact_human_turn_prose),
+        Value::Object(values) => {
+            for (key, value) in values {
+                if matches!(key.as_str(), "narrative" | "utterance") && value.is_string() {
+                    *value = Value::String(REDACTED.to_string());
+                } else {
+                    redact_human_turn_prose(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     let normalized = key
         .chars()
@@ -162,9 +178,13 @@ impl RecordingStore {
     }
 
     pub fn save(&mut self, recording: &Recording) -> Result<(), RecordingStoreError> {
+        let mut human_turns_value = serde_json::to_value(&recording.human_turns)?;
+        redact_human_turn_prose(&mut human_turns_value);
+        redact_value(&mut human_turns_value);
+        let human_turns_json = serde_json::to_string(&human_turns_value)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json, human_turns_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 recording.run_id,
                 recording.schema_version,
@@ -175,7 +195,8 @@ impl RecordingStore {
                 recording.scenario_id,
                 recording.scenario_hash,
                 recording.seed,
-                serde_json::to_string(&recording.clock)?
+                serde_json::to_string(&recording.clock)?,
+                human_turns_json
             ],
         )?;
         transaction.execute(
@@ -204,7 +225,7 @@ impl RecordingStore {
         let metadata = self
             .connection
             .query_row(
-                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json FROM recordings WHERE run_id = ?1",
+                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json, human_turns_json FROM recordings WHERE run_id = ?1",
                 params![run_id],
                 |row| {
                     Ok((
@@ -217,6 +238,7 @@ impl RecordingStore {
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
                         row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
                     ))
                 },
             )
@@ -245,6 +267,7 @@ impl RecordingStore {
             seed: metadata.3,
             clock: serde_json::from_str(&metadata.8)?,
             ticks,
+            human_turns: serde_json::from_str(&metadata.9)?,
         })
     }
 
@@ -261,7 +284,8 @@ impl RecordingStore {
                 scenario_id TEXT NOT NULL,
                 scenario_hash TEXT NOT NULL,
                 seed INTEGER NOT NULL,
-                clock_json TEXT NOT NULL
+                clock_json TEXT NOT NULL,
+                human_turns_json TEXT NOT NULL DEFAULT '[]'
              );
              CREATE TABLE IF NOT EXISTS recording_ticks (
                 run_id TEXT NOT NULL REFERENCES recordings(run_id) ON DELETE CASCADE,
@@ -274,6 +298,19 @@ impl RecordingStore {
              CREATE INDEX IF NOT EXISTS recording_ticks_by_hash
                ON recording_ticks(run_id, snapshot_hash);",
         )?;
+        let has_human_turns = self
+            .connection
+            .prepare("PRAGMA table_info(recordings)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|name| name == "human_turns_json");
+        if !has_human_turns {
+            self.connection.execute(
+                "ALTER TABLE recordings ADD COLUMN human_turns_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
         Ok(())
     }
 }

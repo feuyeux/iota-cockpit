@@ -94,7 +94,7 @@ fn rejects_unknown_agent_before_action_gateway() {
         Some("AGENT_IDENTITY_DENIED")
     );
     assert!(!trace.allowed);
-    assert!(!simulation.snapshot.engine.shutdown);
+    assert!(!simulation.snapshot.device("engine-1").unwrap().shutdown);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn mutation_requires_approval_when_the_runtime_policy_enables_it() {
             .and_then(|value| value.as_str()),
         Some("pendingApproval")
     );
-    assert!(!simulation.snapshot.engine.shutdown);
+    assert!(!simulation.snapshot.device("engine-1").unwrap().shutdown);
 
     let result = server
         .approve_action(&mut simulation, "call-simulation.request_action")
@@ -176,7 +176,55 @@ fn mutation_requires_approval_when_the_runtime_policy_enables_it() {
         cockpit_simulation_core::ActionStatus::Applied
     );
     simulation.step_without_agent().expect("tick commits");
-    assert!(simulation.snapshot.engine.shutdown);
+    assert!(simulation.snapshot.device("engine-1").unwrap().shutdown);
+}
+
+#[test]
+fn domain_action_requires_approval_before_world_state_changes() {
+    let scenario =
+        load_scenario("scenarios/heatwave-thermal-comfort.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("domain-approval-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    server.set_approval_required(true);
+
+    let (response, _) = server.call(
+        &mut simulation,
+        request(
+            "domain-approval-run",
+            "cockpit-agent",
+            TOOL_REQUEST_ACTION,
+            json!({
+                "target": "hvac-1",
+                "command": "climateComfortRestore",
+                "expectedStateVersion": 0,
+                "expiresAtTick": 3
+            }),
+        ),
+    );
+
+    assert_eq!(
+        response
+            .result
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some("pendingApproval")
+    );
+    assert!(!simulation.snapshot.cockpit_systems.climate.cooling_active);
+    assert_eq!(simulation.snapshot.environment.temperature_c, 43.0);
+
+    let result = server
+        .approve_action(&mut simulation, "call-simulation.request_action")
+        .expect("approval applies");
+    assert_eq!(
+        result.status,
+        cockpit_simulation_core::ActionStatus::Applied
+    );
+    simulation
+        .step_without_agent()
+        .expect("approved action commits");
+    assert!(simulation.snapshot.cockpit_systems.climate.cooling_active);
+    assert_eq!(simulation.snapshot.environment.temperature_c, 25.5);
 }
 
 #[test]
@@ -185,8 +233,13 @@ fn iota_core_adapter_loads_cockpit_skill_from_public_registry() {
         .load_cockpit_skill()
         .expect("skill is registered");
     assert_eq!(skill.name, "cockpit-simulation");
-    assert_eq!(skill.version, "1");
+    assert_eq!(skill.version, "2");
     assert!(skill.body.contains("Never request or infer Ground Truth"));
+    assert!(
+        skill
+            .body
+            .contains("cyberSafeModeActivate -> security-monitor-1")
+    );
     assert!(
         skill
             .tools

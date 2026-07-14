@@ -1,7 +1,12 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
-use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
-use cockpit_evaluation::evaluate_smoke_shutdown;
+use cockpit_agent_runtime::{HumanAgentDriver, LocalMcpServer, RuleAgent};
+use cockpit_evaluation::evaluate;
 use cockpit_plugin::{
     PluginExecutor, PluginFailure, PluginFailurePolicy, PluginHost, PluginPolicy, PluginTickOutcome,
 };
@@ -14,6 +19,9 @@ use cockpit_simulation_core::{
     PluginFailureRecord, Simulation, SimulationError, StateDiff, clock::RunStatus,
 };
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
+
+use crate::live_run::backend_impl::{BackendSession, backend_session};
 
 use super::proto::{
     IPC_VERSION, IpcError, RunnerCommand, RunnerEvent, RunnerRequest, RunnerResponse,
@@ -21,6 +29,50 @@ use super::proto::{
 
 type HandlerResult = Result<Value, Box<IpcError>>;
 pub const MAX_EVENT_HISTORY: usize = 2_048;
+
+/// Shared cancellation handle kept outside the mutable runner state so a
+/// stop request can interrupt a live ACP turn while that state is locked.
+#[derive(Clone, Default)]
+pub struct LiveTurnControl {
+    active: Arc<Mutex<Option<CancellationToken>>>,
+}
+
+impl LiveTurnControl {
+    pub fn begin(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        if let Ok(mut active) = self.active.lock()
+            && let Some(previous) = active.replace(token.clone())
+        {
+            previous.cancel();
+        }
+        token
+    }
+
+    pub fn cancel(&self) -> bool {
+        self.active
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().cloned())
+            .is_some_and(|token| {
+                token.cancel();
+                true
+            })
+    }
+
+    pub fn finish(&self) {
+        if let Ok(mut active) = self.active.lock() {
+            *active = None;
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.active
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().cloned())
+            .is_some_and(|token| token.is_cancelled())
+    }
+}
 
 fn read_recording(path: &str) -> Result<Recording, Box<IpcError>> {
     let bytes = fs::read(Path::new(path)).map_err(|error| {
@@ -43,6 +95,8 @@ pub struct RunnerHandler {
     recording: Option<Recording>,
     server: LocalMcpServer,
     agent: RuleAgent,
+    live_driver: HumanAgentDriver,
+    live_backend: Option<BackendSession>,
     events: Vec<RunnerEvent>,
     next_cursor: u64,
     recording_store: Option<RecordingStore>,
@@ -50,16 +104,26 @@ pub struct RunnerHandler {
     plugin_policy: PluginPolicy,
     plugin_executors: BTreeMap<String, Box<dyn PluginExecutor>>,
     recording_queue: RecordingQueue,
+    live_turn_control: LiveTurnControl,
 }
 
 impl RunnerHandler {
     pub fn new(session_token: impl Into<String>) -> Self {
+        Self::with_live_turn_control(session_token, LiveTurnControl::default())
+    }
+
+    pub fn with_live_turn_control(
+        session_token: impl Into<String>,
+        live_turn_control: LiveTurnControl,
+    ) -> Self {
         Self {
             session_token: session_token.into(),
             simulation: None,
             recording: None,
             server: LocalMcpServer::default(),
             agent: RuleAgent::default(),
+            live_driver: HumanAgentDriver::new(),
+            live_backend: None,
             events: Vec::new(),
             next_cursor: 0,
             recording_store: None,
@@ -67,7 +131,16 @@ impl RunnerHandler {
             plugin_policy: PluginPolicy::default(),
             plugin_executors: BTreeMap::new(),
             recording_queue: RecordingQueue::new(256, RecordingQueuePolicy::FailRun),
+            live_turn_control,
         }
+    }
+
+    pub fn live_turn_control(&self) -> LiveTurnControl {
+        self.live_turn_control.clone()
+    }
+
+    pub fn session_token(&self) -> &str {
+        &self.session_token
     }
 
     pub fn configure_plugins(
@@ -107,6 +180,40 @@ impl RunnerHandler {
         Ok(handler)
     }
 
+    pub async fn dispatch_async(&mut self, request: RunnerRequest) -> RunnerResponse {
+        if !matches!(
+            request.command,
+            RunnerCommand::CreateLiveSimulationRun { .. } | RunnerCommand::StepLiveSimulation
+        ) {
+            return self.dispatch(request);
+        }
+
+        let correlation_id = request.correlation_id.clone();
+        if request.version != IPC_VERSION {
+            return self.error_response(
+                correlation_id,
+                "IPC_VERSION_UNSUPPORTED",
+                format!("supported IPC version is {IPC_VERSION}"),
+            );
+        }
+        if request.session_token != self.session_token {
+            return self.error_response(
+                correlation_id,
+                "SESSION_UNAUTHORIZED",
+                "session token is invalid".to_string(),
+            );
+        }
+
+        let result = match request.command {
+            RunnerCommand::CreateLiveSimulationRun { path, timeout_ms } => {
+                self.create_live_run(&path, timeout_ms).await
+            }
+            RunnerCommand::StepLiveSimulation => self.step_live().await,
+            _ => unreachable!("non-live commands return through dispatch"),
+        };
+        Self::response_from_result(correlation_id, result)
+    }
+
     pub fn dispatch(&mut self, request: RunnerRequest) -> RunnerResponse {
         let correlation_id = request.correlation_id.clone();
         if request.version != IPC_VERSION {
@@ -127,6 +234,22 @@ impl RunnerHandler {
         let result = match request.command {
             RunnerCommand::ValidateScenario { path } => self.validate(&path),
             RunnerCommand::CreateSimulationRun { path } => self.create_run(&path),
+            RunnerCommand::CreateLiveSimulationRun { .. }
+            | RunnerCommand::StepLiveSimulation
+            | RunnerCommand::CancelLiveTurn => Err(Box::new(IpcError {
+                code: "ASYNC_COMMAND_REQUIRED".to_string(),
+                message: "live backend commands require async dispatch".to_string(),
+                details: None,
+                run_id: self
+                    .simulation
+                    .as_ref()
+                    .map(|simulation| simulation.run_id().to_string()),
+                tick: self
+                    .simulation
+                    .as_ref()
+                    .map(|simulation| simulation.snapshot.tick),
+                correlation_id: correlation_id.clone(),
+            })),
             RunnerCommand::ResumeSimulation {
                 scenario_path,
                 run_id,
@@ -152,7 +275,11 @@ impl RunnerHandler {
                 "events": self
                     .events
                     .iter()
-                    .filter(|event| matches!(event, RunnerEvent::SimulationToolCall { .. }))
+                    .filter(|event| matches!(
+                        event,
+                        RunnerEvent::SimulationToolCall { .. }
+                            | RunnerEvent::SimulationHumanTurn { .. }
+                    ))
                     .collect::<Vec<_>>()
             })),
             RunnerCommand::StartReplay {
@@ -165,6 +292,10 @@ impl RunnerHandler {
             } => self.diff_recordings(&source_recording_path, &candidate_recording_path),
         };
 
+        Self::response_from_result(correlation_id, result)
+    }
+
+    fn response_from_result(correlation_id: String, result: HandlerResult) -> RunnerResponse {
         match result {
             Ok(result) => RunnerResponse {
                 version: IPC_VERSION,
@@ -204,6 +335,8 @@ impl RunnerHandler {
         self.recording = Some(Recording::new(run_id.clone(), &scenario));
         self.server = LocalMcpServer::default();
         self.agent = RuleAgent::default();
+        self.live_driver = HumanAgentDriver::new();
+        self.live_backend = None;
         self.plugin_host = PluginHost::default();
         self.plugin_executors.clear();
         self.recording_queue = RecordingQueue::new(256, RecordingQueuePolicy::FailRun);
@@ -217,6 +350,54 @@ impl RunnerHandler {
             "runId": run_id,
             "status": RunStatus::Ready,
             "scenarioHash": scenario.scenario_hash
+        }))
+    }
+
+    async fn create_live_run(&mut self, path: &str, timeout_ms: u64) -> HandlerResult {
+        let scenario =
+            load_scenario(path).map_err(|error| Box::new(Self::simulation_error(error, None)))?;
+        let mut backend = backend_session(&scenario, timeout_ms).map_err(|error| {
+            Box::new(IpcError {
+                code: "LIVE_BACKEND_INIT_FAILED".to_string(),
+                message: error.to_string(),
+                details: None,
+                run_id: None,
+                tick: None,
+                correlation_id: "live-backend".to_string(),
+            })
+        })?;
+        backend.warm().await.map_err(|error| {
+            Box::new(IpcError {
+                code: "LIVE_BACKEND_INIT_FAILED".to_string(),
+                message: format!("Hermes ACP warm-up failed: {error}"),
+                details: None,
+                run_id: None,
+                tick: None,
+                correlation_id: "live-backend".to_string(),
+            })
+        })?;
+        let backend_label = backend.label();
+        let run_id = format!("live-run-{}", scenario.id);
+        self.simulation = Some(Simulation::new(run_id.clone(), scenario.clone()));
+        self.recording = Some(Recording::new(run_id.clone(), &scenario));
+        self.server = LocalMcpServer::default();
+        self.agent = RuleAgent::default();
+        self.live_driver = HumanAgentDriver::new();
+        self.live_backend = Some(backend);
+        self.plugin_host = PluginHost::default();
+        self.plugin_executors.clear();
+        self.recording_queue = RecordingQueue::new(256, RecordingQueuePolicy::FailRun);
+        self.emit(RunnerEvent::SimulationStateChanged {
+            cursor: 0,
+            state: RunStatus::Ready,
+            run_id: Some(run_id.clone()),
+        });
+        self.persist_recording()?;
+        Ok(json!({
+            "runId": run_id,
+            "status": RunStatus::Ready,
+            "scenarioHash": scenario.scenario_hash,
+            "backend": backend_label
         }))
     }
 
@@ -423,8 +604,12 @@ impl RunnerHandler {
             });
         }
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation =
-                evaluate_smoke_shutdown(recording, simulation.scenario.shutdown_deadline_ticks);
+            let evaluation = evaluate(
+                recording,
+                simulation.scenario.evaluation_rule_id.as_deref(),
+                simulation.scenario.shutdown_deadline_ticks,
+                &simulation.scenario.language,
+            );
             self.emit(RunnerEvent::SimulationEvaluationUpdated {
                 cursor: 0,
                 evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
@@ -439,6 +624,129 @@ impl RunnerHandler {
             "snapshotHash": snapshot_hash,
             "status": status,
             "recordingQueue": self.recording_queue.health()
+        }))
+    }
+
+    async fn step_live(&mut self) -> HandlerResult {
+        let mut simulation = self
+            .simulation
+            .take()
+            .ok_or_else(|| Box::new(Self::no_run_error()))?;
+        let mut backend = self.live_backend.take().ok_or_else(|| {
+            Box::new(IpcError {
+                code: "LIVE_BACKEND_NOT_CREATED".to_string(),
+                message: "create a live simulation run first".to_string(),
+                details: None,
+                run_id: Some(simulation.run_id().to_string()),
+                tick: Some(simulation.snapshot.tick),
+                correlation_id: "live-backend".to_string(),
+            })
+        })?;
+        let backend_label = backend.label();
+        let cancellation = self.live_turn_control.begin();
+        backend.set_turn_cancellation(cancellation);
+        let result = self
+            .live_driver
+            .step_with_backend(&mut simulation, &mut backend)
+            .await;
+        let cancelled = self.live_turn_control.is_cancelled();
+        self.live_turn_control.finish();
+        self.live_backend = Some(backend);
+
+        if cancelled {
+            simulation.stop();
+            let run_id = simulation.run_id().to_string();
+            self.emit(RunnerEvent::SimulationStateChanged {
+                cursor: 0,
+                state: RunStatus::Stopped,
+                run_id: Some(run_id.clone()),
+            });
+            self.simulation = Some(simulation);
+            return Ok(json!({
+                "runId": run_id,
+                "status": RunStatus::Stopped,
+                "cancelled": true,
+                "backend": backend_label,
+            }));
+        }
+
+        let (step, human_turns) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                simulation.fail();
+                let ipc_error = IpcError {
+                    code: "LIVE_BACKEND_TURN_FAILED".to_string(),
+                    message: error.to_string(),
+                    details: None,
+                    run_id: Some(simulation.run_id().to_string()),
+                    tick: Some(simulation.snapshot.tick),
+                    correlation_id: "live-backend".to_string(),
+                };
+                self.emit(RunnerEvent::SimulationError {
+                    cursor: 0,
+                    error: ipc_error.clone(),
+                });
+                self.emit(RunnerEvent::SimulationStateChanged {
+                    cursor: 0,
+                    state: RunStatus::Failed,
+                    run_id: Some(simulation.run_id().to_string()),
+                });
+                self.simulation = Some(simulation);
+                return Err(Box::new(ipc_error));
+            }
+        };
+
+        let tick = step.tick;
+        let snapshot_hash = step.snapshot_hash.clone();
+        let snapshot = simulation.snapshot.clone();
+        if let Some(recording) = self.recording.as_mut() {
+            recording.push(step.clone());
+            recording.push_human_turns(human_turns.clone());
+        }
+        self.persist_recording()?;
+        self.emit(RunnerEvent::SimulationTickCommitted {
+            cursor: 0,
+            snapshot,
+        });
+        for evidence in &human_turns {
+            self.emit(RunnerEvent::SimulationHumanTurn {
+                cursor: 0,
+                tick,
+                backend: backend_label.to_string(),
+                evidence: evidence.clone(),
+            });
+        }
+        for event in step.events {
+            self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
+        }
+        for trace in step.tool_calls {
+            self.emit(RunnerEvent::SimulationToolCall { cursor: 0, trace });
+        }
+        for result in step.action_results {
+            self.emit(RunnerEvent::SimulationActionResult { cursor: 0, result });
+        }
+        if let Some(recording) = self.recording.as_ref() {
+            let evaluation = evaluate(
+                recording,
+                simulation.scenario.evaluation_rule_id.as_deref(),
+                simulation.scenario.shutdown_deadline_ticks,
+                &simulation.scenario.language,
+            );
+            self.emit(RunnerEvent::SimulationEvaluationUpdated {
+                cursor: 0,
+                evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
+            });
+        }
+        let run_id = simulation.run_id().to_string();
+        let status = simulation.status;
+        self.simulation = Some(simulation);
+        Ok(json!({
+            "runId": run_id,
+            "tick": tick,
+            "snapshotHash": snapshot_hash,
+            "status": status,
+            "backend": backend_label,
+            "humanTurns": human_turns.len()
         }))
     }
 
@@ -698,6 +1006,17 @@ impl RunnerHandler {
             RunnerEvent::SimulationToolCall { trace, .. } => {
                 RunnerEvent::SimulationToolCall { cursor, trace }
             }
+            RunnerEvent::SimulationHumanTurn {
+                tick,
+                backend,
+                evidence,
+                ..
+            } => RunnerEvent::SimulationHumanTurn {
+                cursor,
+                tick,
+                backend,
+                evidence,
+            },
             RunnerEvent::SimulationActionResult { result, .. } => {
                 RunnerEvent::SimulationActionResult { cursor, result }
             }
@@ -794,5 +1113,22 @@ fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRecord {
             .unwrap_or_else(|_| "disablePlugin".to_string())
             .trim_matches('"')
             .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LiveTurnControl;
+
+    #[test]
+    fn live_turn_control_cancels_without_runner_state_access() {
+        let control = LiveTurnControl::default();
+        let token = control.begin();
+
+        assert!(control.cancel());
+        assert!(token.is_cancelled());
+
+        control.finish();
+        assert!(!control.cancel());
     }
 }

@@ -1,77 +1,131 @@
 //! End-to-end coverage for the live-agent runner path.
 //!
-//! The default build exercises the full driver -> retry/circuit-breaker policy
-//! -> recording pipeline with a synthetic backend, so it stays deterministic
-//! and offline. The `live-acp` feature adds an opt-in test that starts the real
-//! iota-core ACP backend and asserts the run still records authoritative
-//! disposition evidence and remains replayable.
+//! The default build exercises the full per-human driver -> synthetic backend
+//! -> recording pipeline, so it stays deterministic and offline. There is no
+//! fallback: a backend failure must abort the run rather than substitute a
+//! value. The `live-acp` feature adds an opt-in test that starts the real
+//! iota-core ACP backend against a deliberately short timeout and asserts the
+//! run fails fast rather than silently degrading.
 
-use cockpit_runner::{LiveRunConfig, run_live};
+use cockpit_recording::{CURRENT_RUNTIME_CONTRACT_VERSION, Recording};
+use cockpit_runner::{LiveRunConfig, replay_live, run_live};
+use cockpit_scenario::load_scenario;
 
 fn base_config() -> LiveRunConfig {
     LiveRunConfig {
         scenario_path: "scenarios/smoke-in-cockpit.yaml".to_string(),
         ticks: 20,
         timeout_ms: 100,
-        max_attempts: 2,
-        circuit_failure_threshold: 3,
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_run_records_disposition_evidence_and_stays_deterministic() {
+async fn live_run_with_the_synthetic_backend_stays_deterministic() {
     let first = run_live(base_config()).await.expect("first live run");
-    let second = run_live(base_config()).await.expect("second live run");
 
+    if first.backend == "iota-core-acp" {
+        assert!(
+            first.error.is_some(),
+            "feature-unified tests must fail closed when no ACP backend is available"
+        );
+        assert_eq!(
+            first.ticks, 0,
+            "a failed model turn must not commit its tick"
+        );
+        return;
+    }
+
+    assert_eq!(first.backend, "synthetic");
+    let second = run_live(base_config()).await.expect("second live run");
     assert!(first.ticks > 0, "the run commits ticks");
+    assert!(first.error.is_none(), "the synthetic backend never fails");
     assert_eq!(
         first.tick_evidence.len(),
         first.ticks,
-        "every committed tick carries completed/fallback disposition evidence"
+        "every committed tick carries per-human decision evidence"
     );
-    assert_eq!(
-        first.completed_turns + first.fallback_turns,
-        first.ticks,
-        "each tick is classified as completed or fallback"
-    );
+    for tick in &first.tick_evidence {
+        assert!(
+            !tick.humans.is_empty(),
+            "every tick records a decision for at least one human"
+        );
+    }
     assert_eq!(
         first.final_snapshot_hash, second.final_snapshot_hash,
-        "the deterministic tick commit is independent of live-turn evidence"
+        "two runs against the same scenario/backend produce the same final hash"
     );
-    assert!(
-        first
-            .tick_evidence
-            .iter()
-            .all(|evidence| !evidence.disposition.is_empty()),
-        "no tick is missing disposition evidence"
-    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_replay_rejects_the_previous_runtime_contract() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario");
+    let mut recording = Recording::new("old-live-run", &scenario);
+    recording.runtime_contract_version = CURRENT_RUNTIME_CONTRACT_VERSION - 1;
+
+    let error = replay_live(scenario, &recording)
+        .await
+        .expect_err("old live recording must be rejected");
+    assert!(error.to_string().contains("runtime contract version"));
 }
 
 /// Startup + failure handling against the real ACP backend. Opt-in because it
 /// starts an external process; deterministic CI runs without the feature.
+///
+/// A very short timeout with no backend process present must make the run
+/// fail outright: there is no fallback/circuit-breaker path that would let the
+/// run keep committing ticks without a real backend decision.
 #[cfg(feature = "live-acp")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn live_acp_backend_start_records_fallback_when_unavailable() {
-    // A very short timeout forces the retry/circuit-breaker policy to record
-    // fallback evidence rather than hang when no backend process is present.
+async fn live_acp_backend_unavailable_aborts_the_run_without_a_fallback() {
     let report = run_live(LiveRunConfig {
         scenario_path: "scenarios/smoke-in-cockpit.yaml".to_string(),
         ticks: 5,
         timeout_ms: 50,
-        max_attempts: 2,
-        circuit_failure_threshold: 2,
     })
     .await
-    .expect("live-acp run still commits deterministic ticks");
+    .expect("run_live resolves (with a reported error) rather than panicking");
 
     assert_eq!(report.backend, "iota-core-acp");
-    assert_eq!(
-        report.tick_evidence.len(),
-        report.ticks,
-        "backend failures still produce per-tick evidence"
+    assert!(
+        report.error.is_some(),
+        "an unavailable backend must be reported as a run failure, not silently degraded"
     );
     assert!(
-        report.final_snapshot_hash.is_some(),
-        "deterministic ticks are committed even when the backend degrades"
+        report.ticks < 5,
+        "the run must not have committed every requested tick without a real backend"
     );
+}
+
+#[cfg(not(feature = "live-acp"))]
+#[tokio::test(flavor = "current_thread")]
+async fn synthetic_live_backend_completes_every_bundled_scenario_evaluation() {
+    const SCENARIOS: &[&str] = &[
+        "scenarios/smoke-in-cockpit.yaml",
+        "scenarios/heatwave-thermal-comfort.yaml",
+        "scenarios/winter-defog-visibility.yaml",
+        "scenarios/driver-fatigue-guardian.yaml",
+        "scenarios/child-left-behind.yaml",
+        "scenarios/medical-emergency.yaml",
+        "scenarios/voice-privacy-conflict.yaml",
+        "scenarios/ev-range-anxiety.yaml",
+        "scenarios/adas-takeover-construction.yaml",
+        "scenarios/cybersecurity-anomalous-control.yaml",
+    ];
+
+    for path in SCENARIOS {
+        let scenario = load_scenario(path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let report = run_live(LiveRunConfig {
+            scenario_path: path.to_string(),
+            ticks: scenario.shutdown_deadline_ticks + 6,
+            timeout_ms: 100,
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{path}: {error}"));
+        let evaluation: cockpit_evaluation::EvaluationResult =
+            serde_json::from_value(report.evaluation).expect("evaluation serializes");
+
+        assert_eq!(report.backend, "synthetic", "{path}");
+        assert!(report.error.is_none(), "{path}: {:?}", report.error);
+        assert!(evaluation.passed, "{path}: {}", evaluation.explanation);
+    }
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 560" width="1100" height="560">
+  <style>text{font-family:'Helvetica Neue',Helvetica,Arial,'PingFang SC','Microsoft YaHei',sans-serif}.t{fill:#111827}.s{fill:#6b7280}.h{font-weight:600}</style>
+  <rect width="1100" height="560" fill="#fff"/>
+  <text x="550" y="38" text-anchor="middle" class="t h" font-size="22">AI LOD：把计算花在玩家真正能感知的地方</text>
+  <circle cx="160" cy="275" r="48" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/><text x="160" y="270" text-anchor="middle" class="t h" font-size="15">玩家</text><text x="160" y="291" text-anchor="middle" class="s" font-size="11">关注中心</text>
+  <g>
+    <rect x="260" y="80" width="760" height="105" rx="8" fill="#eff6ff" stroke="#bfdbfe"/><text x="285" y="110" fill="#1d4ed8" class="h" font-size="16">LOD 0：近场关键 NPC（0-30 m）</text><text x="285" y="140" class="t" font-size="14">感知 10-20 Hz · 决策 5-10 Hz · 完整导航、动画、物理</text><text x="285" y="164" class="s" font-size="12">适用：战斗、对话、玩家正在观察的角色</text>
+    <rect x="260" y="210" width="760" height="105" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/><text x="285" y="240" fill="#15803d" class="h" font-size="16">LOD 1：中场活跃 NPC（30-120 m）</text><text x="285" y="270" class="t" font-size="14">感知 1-5 Hz · 决策 1-2 Hz · 简化避障与动画</text><text x="285" y="294" class="s" font-size="12">适用：街区居民、远处巡逻、可被玩家快速接近的角色</text>
+    <rect x="260" y="340" width="760" height="105" rx="8" fill="#fff7ed" stroke="#fed7aa"/><text x="285" y="370" fill="#c2410c" class="h" font-size="16">LOD 2：远场 / 离屏 NPC（120 m 之外）</text><text x="285" y="400" class="t" font-size="14">0.1-0.5 Hz 摘要模拟 · 无逐帧导航、骨骼动画、射线</text><text x="285" y="424" class="s" font-size="12">适用：按日程推进位置、库存、关系和任务状态</text>
+  </g>
+  <path d="M205 240C230 200 235 150 252 135" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <path d="M208 275H252" fill="none" stroke="#16a34a" stroke-width="2"/>
+  <path d="M205 310C230 350 235 390 252 395" fill="none" stroke="#ea580c" stroke-width="2"/>
+  <rect x="260" y="475" width="760" height="48" rx="8" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="640" y="496" text-anchor="middle" class="t h" font-size="13">晋升触发：进入视野、受到伤害、任务关联、声音刺激、玩家锁定</text>
+  <text x="640" y="515" text-anchor="middle" class="s" font-size="11">降级应带滞回区间，避免角色在边界附近频繁抖动</text>
+</svg>

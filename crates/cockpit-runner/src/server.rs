@@ -6,7 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 use crate::ipc::{
-    RunnerHandler,
+    LiveTurnControl, RunnerHandler,
     proto::{IPC_VERSION, IpcError, RunnerRequest, RunnerResponse},
 };
 
@@ -44,12 +44,18 @@ pub async fn serve_listener(
 }
 
 pub async fn serve_listener_with(listener: TcpListener, handler: RunnerHandler) -> io::Result<()> {
+    let session_token = handler.session_token().to_string();
+    let live_turn_control = handler.live_turn_control();
     let handler = Arc::new(Mutex::new(handler));
     loop {
         let (stream, _) = listener.accept().await?;
         let handler = Arc::clone(&handler);
+        let session_token = session_token.clone();
+        let live_turn_control = live_turn_control.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, handler).await {
+            if let Err(error) =
+                handle_connection(stream, handler, session_token, live_turn_control).await
+            {
                 eprintln!("cockpit-runner connection closed: {error}");
             }
         });
@@ -59,6 +65,8 @@ pub async fn serve_listener_with(listener: TcpListener, handler: RunnerHandler) 
 async fn handle_connection(
     stream: TcpStream,
     handler: Arc<Mutex<RunnerHandler>>,
+    session_token: String,
+    live_turn_control: LiveTurnControl,
 ) -> io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut read = read;
@@ -68,7 +76,15 @@ async fn handle_connection(
         let response = match frame {
             RequestFrame::Oversized => payload_too_large_response(),
             RequestFrame::Data(bytes) => match serde_json::from_slice::<RunnerRequest>(&bytes) {
-                Ok(request) => handler.lock().await.dispatch(request),
+                Ok(request)
+                    if matches!(
+                        request.command,
+                        crate::ipc::proto::RunnerCommand::CancelLiveTurn
+                    ) =>
+                {
+                    cancel_live_turn_response(request, &session_token, &live_turn_control)
+                }
+                Ok(request) => handler.lock().await.dispatch_async(request).await,
                 Err(error) => RunnerResponse {
                     version: IPC_VERSION,
                     correlation_id: "invalid-request".to_string(),
@@ -95,6 +111,51 @@ async fn handle_connection(
         }
     }
     Ok(())
+}
+
+fn cancel_live_turn_response(
+    request: RunnerRequest,
+    session_token: &str,
+    live_turn_control: &LiveTurnControl,
+) -> RunnerResponse {
+    if request.version != IPC_VERSION {
+        return invalid_cancel_response(
+            request.correlation_id,
+            "IPC_VERSION_UNSUPPORTED",
+            format!("supported IPC version is {IPC_VERSION}"),
+        );
+    }
+    if request.session_token != session_token {
+        return invalid_cancel_response(
+            request.correlation_id,
+            "SESSION_UNAUTHORIZED",
+            "session token is invalid".to_string(),
+        );
+    }
+    RunnerResponse {
+        version: IPC_VERSION,
+        correlation_id: request.correlation_id,
+        ok: true,
+        result: Some(serde_json::json!({ "cancelled": live_turn_control.cancel() })),
+        error: None,
+    }
+}
+
+fn invalid_cancel_response(correlation_id: String, code: &str, message: String) -> RunnerResponse {
+    RunnerResponse {
+        version: IPC_VERSION,
+        correlation_id: correlation_id.clone(),
+        ok: false,
+        result: None,
+        error: Some(IpcError {
+            code: code.to_string(),
+            message,
+            details: None,
+            run_id: None,
+            tick: None,
+            correlation_id,
+        }),
+    }
 }
 
 enum RequestFrame {
@@ -144,5 +205,66 @@ fn payload_too_large_response() -> RunnerResponse {
             tick: None,
             correlation_id: "payload-too-large".to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::proto::{RunnerCommand, RunnerRequest};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        time::{Duration, timeout},
+    };
+
+    #[tokio::test]
+    async fn cancel_live_turn_bypasses_a_busy_runner_handler() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener binds");
+        let address = listener.local_addr().expect("listener address");
+        let control = LiveTurnControl::default();
+        let token = control.begin();
+        let handler = Arc::new(Mutex::new(RunnerHandler::with_live_turn_control(
+            "test-token",
+            control.clone(),
+        )));
+        let handler_lock = handler.lock().await;
+        let server = tokio::spawn({
+            let handler = Arc::clone(&handler);
+            let control = control.clone();
+            async move {
+                let (stream, _) = listener.accept().await.expect("connection accepted");
+                handle_connection(stream, handler, "test-token".to_string(), control)
+                    .await
+                    .expect("connection completes");
+            }
+        });
+
+        let mut stream = TcpStream::connect(address).await.expect("client connects");
+        let request = RunnerRequest {
+            version: IPC_VERSION,
+            session_token: "test-token".to_string(),
+            correlation_id: "cancel-test".to_string(),
+            command: RunnerCommand::CancelLiveTurn,
+        };
+        let mut encoded = serde_json::to_vec(&request).expect("request serializes");
+        encoded.push(b'\n');
+        stream.write_all(&encoded).await.expect("request writes");
+
+        let mut line = String::new();
+        timeout(
+            Duration::from_millis(250),
+            BufReader::new(stream).read_line(&mut line),
+        )
+        .await
+        .expect("cancel response is not blocked by the handler lock")
+        .expect("cancel response reads");
+        let response: RunnerResponse = serde_json::from_str(&line).expect("response parses");
+        assert!(response.ok);
+        assert!(token.is_cancelled());
+
+        drop(handler_lock);
+        server.await.expect("server task joins");
     }
 }

@@ -7,13 +7,118 @@ use crate::{id::AgentId, sensor::Observation};
 pub enum Command {
     EngineShutdown,
     AlarmActivate,
+    ClimateComfortRestore,
+    WindshieldDefogActivate,
+    FatigueInterventionActivate,
+    ChildProtectionActivate,
+    MedicalResponseActivate,
+    PrivacyModeActivate,
+    ChargingPlanAccept,
+    AdasTakeoverAcknowledge,
+    CyberSafeModeActivate,
 }
 
 impl Command {
+    /// Every command in wire order, so callers (e.g. prompt construction) can
+    /// enumerate the action surface without hardcoding a parallel list that
+    /// silently drifts when a command is added.
+    pub const ALL: [Command; 11] = [
+        Command::EngineShutdown,
+        Command::AlarmActivate,
+        Command::ClimateComfortRestore,
+        Command::WindshieldDefogActivate,
+        Command::FatigueInterventionActivate,
+        Command::ChildProtectionActivate,
+        Command::MedicalResponseActivate,
+        Command::PrivacyModeActivate,
+        Command::ChargingPlanAccept,
+        Command::AdasTakeoverAcknowledge,
+        Command::CyberSafeModeActivate,
+    ];
+
+    /// Authoritative component paths an action can mutate during commit.
+    /// These drive conflict arbitration before any shared state is changed.
+    pub fn write_set(&self) -> &'static [&'static str] {
+        match self {
+            Self::EngineShutdown => &["engine-1.shutdown", "cabin.fireActive"],
+            Self::AlarmActivate => &["alarm-1.active", "cabin.noiseDb"],
+            Self::ClimateComfortRestore => &["climate.cooling", "cabin.temperatureC"],
+            Self::WindshieldDefogActivate => &["climate.defog", "cabin.visibility"],
+            Self::FatigueInterventionActivate
+            | Self::PrivacyModeActivate
+            | Self::AdasTakeoverAcknowledge
+            | Self::CyberSafeModeActivate => &["driver-1.attention"],
+            Self::ChildProtectionActivate => &[
+                "occupant.childProtection",
+                "cabin.temperatureC",
+                "child-1.stress",
+            ],
+            Self::MedicalResponseActivate => &["occupant.medicalResponse", "patient-1.stress"],
+            Self::ChargingPlanAccept => &["mobility.chargingRoute", "driver-1.stress"],
+        }
+    }
+    pub fn from_wire_name(value: &str) -> Option<Self> {
+        Some(match value {
+            "engineShutdown" => Self::EngineShutdown,
+            "alarmActivate" => Self::AlarmActivate,
+            "climateComfortRestore" => Self::ClimateComfortRestore,
+            "windshieldDefogActivate" => Self::WindshieldDefogActivate,
+            "fatigueInterventionActivate" => Self::FatigueInterventionActivate,
+            "childProtectionActivate" => Self::ChildProtectionActivate,
+            "medicalResponseActivate" => Self::MedicalResponseActivate,
+            "privacyModeActivate" => Self::PrivacyModeActivate,
+            "chargingPlanAccept" => Self::ChargingPlanAccept,
+            "adasTakeoverAcknowledge" => Self::AdasTakeoverAcknowledge,
+            "cyberSafeModeActivate" => Self::CyberSafeModeActivate,
+            _ => return None,
+        })
+    }
+
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::EngineShutdown => "engineShutdown",
+            Self::AlarmActivate => "alarmActivate",
+            Self::ClimateComfortRestore => "climateComfortRestore",
+            Self::WindshieldDefogActivate => "windshieldDefogActivate",
+            Self::FatigueInterventionActivate => "fatigueInterventionActivate",
+            Self::ChildProtectionActivate => "childProtectionActivate",
+            Self::MedicalResponseActivate => "medicalResponseActivate",
+            Self::PrivacyModeActivate => "privacyModeActivate",
+            Self::ChargingPlanAccept => "chargingPlanAccept",
+            Self::AdasTakeoverAcknowledge => "adasTakeoverAcknowledge",
+            Self::CyberSafeModeActivate => "cyberSafeModeActivate",
+        }
+    }
+
     pub fn capability_name(&self) -> &'static str {
         match self {
             Self::EngineShutdown => "engine.shutdown",
             Self::AlarmActivate => "alarm.activate",
+            Self::ClimateComfortRestore => "climate.restoreComfort",
+            Self::WindshieldDefogActivate => "visibility.activateDefog",
+            Self::FatigueInterventionActivate => "driver.activateFatigueIntervention",
+            Self::ChildProtectionActivate => "occupant.activateChildProtection",
+            Self::MedicalResponseActivate => "health.activateMedicalResponse",
+            Self::PrivacyModeActivate => "privacy.activateMode",
+            Self::ChargingPlanAccept => "energy.acceptChargingPlan",
+            Self::AdasTakeoverAcknowledge => "adas.acknowledgeTakeover",
+            Self::CyberSafeModeActivate => "cybersecurity.enterSafeMode",
+        }
+    }
+
+    pub fn target_id(&self) -> &'static str {
+        match self {
+            Self::EngineShutdown => "engine-1",
+            Self::AlarmActivate => "alarm-1",
+            Self::ClimateComfortRestore => "hvac-1",
+            Self::WindshieldDefogActivate => "defogger-1",
+            Self::FatigueInterventionActivate => "dms-1",
+            Self::ChildProtectionActivate => "occupant-radar-1",
+            Self::MedicalResponseActivate => "emergency-call-1",
+            Self::PrivacyModeActivate => "voice-array-1",
+            Self::ChargingPlanAccept => "navigation-1",
+            Self::AdasTakeoverAcknowledge => "adas-controller-1",
+            Self::CyberSafeModeActivate => "security-monitor-1",
         }
     }
 }

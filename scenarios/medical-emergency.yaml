@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: medical-emergency
+seed: 105
+language: en
+clock: { mode: stepped, tickMs: 100 }
+entities:
+  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 22.0 } } }
+  - { id: outer-urban, type: outerEnvironment, components: { temperature: { celsius: 18.0 }, altitude: { meters: 45.0 }, wind: { speedKmh: 9.0 } } }
+  - { id: driver-1, type: human, components: { attention: { value: 0.82 }, location: cockpit, name: Elena, role: driver, background: Driver coordinating a safe stop while a passenger becomes unwell. } }
+  - { id: patient-1, type: human, components: { attention: { value: 0.45 }, location: rear-left, name: Robert, role: patient, background: Older passenger with a known cardiac history., relationships: [driver-1 is a family member], traits: { openness: 0.4, conscientiousness: 0.65, extraversion: 0.35, agreeableness: 0.7, neuroticism: 0.62 } } }
+  - { id: helper-1, type: human, components: { attention: { value: 0.75 }, location: rear-right, name: Ada, role: caregiver, background: Passenger able to follow first-aid guidance. } }
+  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: health-sensor-1, type: device, components: { capabilities: [heart-rate, respiration] } }
+  - { id: emergency-call-1, type: device, components: { capabilities: [voice-call, location-share] } }
+  - { id: navigation-1, type: device, components: { capabilities: [emergency-routing, hospital-search, eta-share] } }
+influences:
+  - { ruleId: patient-stress, ruleVersion: 1, schedule: { kind: every, start: 2, interval: 3 }, entityId: patient-1, componentPath: pilot.stress, op: { op: delta, value: 0.07 }, priority: 9 }
+  - { ruleId: driver-distraction, ruleVersion: 1, schedule: { kind: every, start: 4, interval: 5 }, entityId: driver-1, componentPath: pilot.attention, op: { op: delta, value: -0.04 }, priority: 6 }
+agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [health.activateMedicalResponse] }]
+evaluation: [{ id: medical-response-stabilized, deadlineTick: 22, rule: Patient stress is stabilized at 40 percent or below }]

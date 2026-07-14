@@ -6,7 +6,7 @@ use cockpit_simulation_core::{
     error::{SimulationError, SimulationResult},
     influence::{ConflictPolicy, InfluenceRule},
     simulation::{Fault, SimulationScenario},
-    world::{AlarmState, DeviceState, EnvironmentState, HumanState},
+    world::{AlarmState, CabinEnvironment, DeviceState, HumanState, OuterEnvironmentState},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -27,6 +27,8 @@ struct ScenarioDocument {
     id: String,
     seed: u64,
     clock: ClockConfig,
+    #[serde(default = "default_language")]
+    language: String,
     entities: Vec<EntityDocument>,
     #[serde(default)]
     faults: Vec<FaultDocument>,
@@ -72,7 +74,6 @@ struct AgentDocument {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EvaluationDocument {
-    #[allow(dead_code)]
     id: String,
     #[serde(default = "default_deadline")]
     deadline_tick: u64,
@@ -82,6 +83,10 @@ struct EvaluationDocument {
 
 fn default_deadline() -> u64 {
     30
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 pub fn load_scenario(path: impl AsRef<Path>) -> SimulationResult<SimulationScenario> {
@@ -101,17 +106,29 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         .map_err(|err| SimulationError::InvalidScenario(format!("invalid YAML: {err}")))?;
     validate_document(&document)?;
 
-    let mut environment = EnvironmentState::default();
-    let mut pilot = HumanState::default();
-    let mut engine = DeviceState::default();
+    let mut outer_environment = OuterEnvironmentState::default();
+    let mut environment = CabinEnvironment::default();
+    let mut humans: Vec<HumanState> = Vec::new();
+    let mut devices: Vec<DeviceState> = Vec::new();
     let alarm = AlarmState::default();
 
     for entity in &document.entities {
         match entity.entity_type.as_str() {
-            "environment" => apply_environment_components(&mut environment, &entity.components)?,
-            "human" => apply_human_components(&mut pilot, &entity.components)?,
-            "device" if entity.id == "engine-1" => {
-                apply_device_components(&mut engine, &entity.components)?
+            "environment" if entity.id == "cabin" => {
+                apply_environment_components(&mut environment, &entity.components)?
+            }
+            "outerEnvironment" => {
+                apply_outer_environment_components(&mut outer_environment, &entity.components)?
+            }
+            "human" => {
+                let mut human = HumanState::new(entity.id.clone());
+                apply_human_components(&mut human, &entity.components)?;
+                humans.push(human);
+            }
+            "device" => {
+                let mut device = DeviceState::new(entity.id.clone());
+                apply_device_components(&mut device, &entity.components)?;
+                devices.push(device);
             }
             _ => {}
         }
@@ -121,6 +138,19 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         .agents
         .first()
         .ok_or_else(|| SimulationError::InvalidScenario("missing agent".to_string()))?;
+    // Live runs are driven by one decision turn per human. Scenarios that do
+    // not explicitly delegate action capabilities therefore grant the primary
+    // human the primary cockpit-agent's scoped capabilities. Any explicit
+    // human-level grant remains authoritative, preserving least privilege.
+    if humans
+        .iter()
+        .all(|human| human.action_capabilities.is_empty())
+    {
+        let primary_human = humans.first_mut().ok_or_else(|| {
+            SimulationError::InvalidScenario("missing at least one human entity".to_string())
+        })?;
+        primary_human.action_capabilities = agent.capabilities.clone();
+    }
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let scenario_hash = format!("{:x}", hasher.finalize());
@@ -129,6 +159,10 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         .first()
         .map(|evaluation| evaluation.deadline_tick)
         .unwrap_or(30);
+    let evaluation_rule_id = document
+        .evaluation
+        .first()
+        .map(|evaluation| evaluation.id.clone());
 
     Ok(SimulationScenario {
         id: document.id,
@@ -136,9 +170,11 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         scenario_hash,
         seed: document.seed,
         clock: document.clock,
+        language: document.language,
+        outer_environment,
         environment,
-        pilot,
-        engine,
+        humans,
+        devices,
         alarm,
         faults: document
             .faults
@@ -162,6 +198,7 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
             })
             .collect(),
         shutdown_deadline_ticks,
+        evaluation_rule_id,
         influences: document.influences,
         conflict_policy: document
             .conflict_policy
@@ -216,7 +253,16 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
     if !document
         .entities
         .iter()
-        .any(|entity| entity.id == "engine-1")
+        .any(|entity| entity.entity_type == "human")
+    {
+        return Err(SimulationError::InvalidScenario(
+            "missing at least one human entity".to_string(),
+        ));
+    }
+    if !document
+        .entities
+        .iter()
+        .any(|entity| entity.entity_type == "device" && entity.id == "engine-1")
     {
         return Err(SimulationError::InvalidScenario(
             "missing engine-1 entity".to_string(),
@@ -255,18 +301,18 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
 }
 
 /// Component paths that scheduled influences may target, mirroring the writable
-/// StateDiff surface in the simulation core.
+/// StateDiff surface in the simulation core. Human component paths are accepted
+/// for any human id since the entity set is scenario-defined.
 fn is_writable_component(entity_id: &str, component_path: &str) -> bool {
-    matches!(
-        (entity_id, component_path),
-        ("cabin", "environment.smokeDensity")
-            | ("cabin", "environment.visibility")
-            | ("cabin", "environment.temperatureC")
-            | ("pilot-1", "pilot.stress")
-            | ("pilot-1", "pilot.attention")
-            | ("engine-1", "engine.health")
-            | ("alarm-1", "alarm.active")
-    )
+    matches!(component_path, "pilot.stress" | "pilot.attention")
+        || matches!(
+            (entity_id, component_path),
+            ("cabin", "environment.smokeDensity")
+                | ("cabin", "environment.visibility")
+                | ("cabin", "environment.temperatureC")
+                | ("engine-1", "engine.health")
+                | ("alarm-1", "alarm.active")
+        )
 }
 
 fn validate_limit(name: &str, actual: usize, limit: usize) -> SimulationResult<()> {
@@ -289,13 +335,35 @@ fn validate_identifier(name: &str, value: &str) -> SimulationResult<()> {
 }
 
 fn apply_environment_components(
-    environment: &mut EnvironmentState,
+    environment: &mut CabinEnvironment,
     components: &serde_yaml::Value,
 ) -> SimulationResult<()> {
     if let Some(smoke) = lookup(components, "smoke", "density") {
         environment.smoke_density = smoke;
     }
+    if let Some(temperature) = lookup(components, "temperature", "celsius") {
+        environment.temperature_c = temperature;
+    }
     ensure_range("smoke.density", environment.smoke_density, 0.0, 3.0)?;
+    Ok(())
+}
+
+fn apply_outer_environment_components(
+    outer: &mut OuterEnvironmentState,
+    components: &serde_yaml::Value,
+) -> SimulationResult<()> {
+    if let Some(temperature) = lookup(components, "temperature", "celsius") {
+        outer.external_temperature_c = temperature;
+    }
+    if let Some(altitude) = lookup(components, "altitude", "meters") {
+        outer.altitude_m = altitude;
+    }
+    if let Some(wind) = lookup(components, "wind", "speedKmh") {
+        outer.wind_speed_kmh = wind;
+    }
+    if let Some(precipitation) = lookup(components, "weather", "precipitation") {
+        outer.precipitation = precipitation;
+    }
     Ok(())
 }
 
@@ -309,7 +377,49 @@ fn apply_human_components(
     if let Some(location) = scalar_string(components, "location") {
         human.location = location;
     }
+    if let Some(name) = scalar_string(components, "name") {
+        human.persona.name = name;
+    }
+    if let Some(role) = scalar_string(components, "role") {
+        human.persona.role = role;
+    }
+    if let Some(background) = scalar_string(components, "background") {
+        human.persona.background = background;
+    }
+    if let Some(capabilities) = sequence_strings(components, "actionCapabilities") {
+        human.action_capabilities = capabilities;
+    }
+    if let Some(relationships) = sequence_strings(components, "relationships") {
+        human.persona.relationships = relationships;
+    }
+    let mut traits = human.persona.traits;
+    if let Some(value) = lookup(components, "traits", "openness") {
+        traits.openness = value;
+    }
+    if let Some(value) = lookup(components, "traits", "conscientiousness") {
+        traits.conscientiousness = value;
+    }
+    if let Some(value) = lookup(components, "traits", "extraversion") {
+        traits.extraversion = value;
+    }
+    if let Some(value) = lookup(components, "traits", "agreeableness") {
+        traits.agreeableness = value;
+    }
+    if let Some(value) = lookup(components, "traits", "neuroticism") {
+        traits.neuroticism = value;
+    }
+    human.persona.traits = traits;
+
     ensure_range("attention.value", human.attention, 0.0, 1.0)?;
+    for (name, value) in [
+        ("traits.openness", traits.openness),
+        ("traits.conscientiousness", traits.conscientiousness),
+        ("traits.extraversion", traits.extraversion),
+        ("traits.agreeableness", traits.agreeableness),
+        ("traits.neuroticism", traits.neuroticism),
+    ] {
+        ensure_range(name, value, 0.0, 1.0)?;
+    }
     Ok(())
 }
 
@@ -320,10 +430,11 @@ fn apply_device_components(
     if let Some(capabilities) = sequence_strings(components, "capabilities") {
         device.capabilities = capabilities;
     }
-    if !device
-        .capabilities
-        .iter()
-        .any(|capability| capability == "shutdown")
+    if device.id == "engine-1"
+        && !device
+            .capabilities
+            .iter()
+            .any(|capability| capability == "shutdown")
     {
         return Err(SimulationError::InvalidScenario(
             "engine-1 must define shutdown capability".to_string(),

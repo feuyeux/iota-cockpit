@@ -3,16 +3,44 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use cockpit_runner::ipc::{
-    RunnerHandler,
+    LiveTurnControl, RunnerHandler,
     proto::{IPC_VERSION, RunnerCommand, RunnerEvent, RunnerRequest, RunnerResponse},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn runner_binary() -> Option<std::ffi::OsString> {
+    std::env::var_os("COCKPIT_RUNNER_BIN").or_else(bundled_runner_binary)
+}
+
+fn bundled_runner_binary() -> Option<std::ffi::OsString> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
+    let current_exe = std::env::current_exe().ok()?;
+    let binary = bundled_runner_path(&current_exe)?;
+    binary.is_file().then(|| binary.into_os_string())
+}
+
+fn bundled_runner_path(current_exe: &Path) -> Option<PathBuf> {
+    let executable_dir = current_exe.parent()?;
+    let base_dir = if executable_dir.ends_with("deps") {
+        executable_dir.parent().unwrap_or(executable_dir)
+    } else {
+        executable_dir
+    };
+    let binary_name = if cfg!(windows) {
+        "cockpit-runner.exe"
+    } else {
+        "cockpit-runner"
+    };
+    Some(base_dir.join(binary_name))
+}
 
 enum RunnerTransport {
     Embedded(Box<RunnerHandler>),
@@ -27,22 +55,28 @@ impl Drop for RunnerTransport {
     }
 }
 
+#[derive(Clone)]
 pub struct RunnerState {
-    transport: Mutex<RunnerTransport>,
+    transport: Arc<Mutex<RunnerTransport>>,
+    process_address: Arc<Mutex<Option<SocketAddr>>>,
+    live_turn_control: LiveTurnControl,
     token: String,
-    sequence: Mutex<u64>,
+    sequence: Arc<Mutex<u64>>,
     workspace_root: PathBuf,
 }
 
 impl RunnerState {
     pub fn new(token: impl Into<String>, workspace_root: PathBuf) -> Self {
         let token = token.into();
+        let live_turn_control = LiveTurnControl::default();
         Self {
-            transport: Mutex::new(RunnerTransport::Embedded(Box::new(RunnerHandler::new(
-                token.clone(),
+            transport: Arc::new(Mutex::new(RunnerTransport::Embedded(Box::new(
+                RunnerHandler::with_live_turn_control(token.clone(), live_turn_control.clone()),
             )))),
+            process_address: Arc::new(Mutex::new(None)),
+            live_turn_control,
             token,
-            sequence: Mutex::new(0),
+            sequence: Arc::new(Mutex::new(0)),
             workspace_root,
         }
     }
@@ -58,7 +92,7 @@ impl RunnerState {
     }
 
     pub fn connect(&self) -> Result<String, String> {
-        let Some(binary) = std::env::var_os("COCKPIT_RUNNER_BIN") else {
+        let Some(binary) = runner_binary() else {
             return Ok("embedded".to_string());
         };
         let address: SocketAddr = "127.0.0.1:47701"
@@ -71,9 +105,17 @@ impl RunnerState {
         if let RunnerTransport::Process { address, .. } = &*transport
             && TcpStream::connect_timeout(address, Duration::from_millis(20)).is_ok()
         {
+            *self
+                .process_address
+                .lock()
+                .map_err(|_| "runner process address lock poisoned".to_string())? = Some(*address);
             return Ok("process".to_string());
         }
         *transport = Self::spawn_process(binary, address, &self.token)?;
+        *self
+            .process_address
+            .lock()
+            .map_err(|_| "runner process address lock poisoned".to_string())? = Some(address);
         Ok("process".to_string())
     }
 
@@ -134,13 +176,18 @@ impl RunnerState {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                let Some(binary) = std::env::var_os("COCKPIT_RUNNER_BIN") else {
+                let Some(binary) = runner_binary() else {
                     return Err(error);
                 };
                 let address: SocketAddr = "127.0.0.1:47701"
                     .parse()
                     .map_err(|parse_error| format!("invalid runner address: {parse_error}"))?;
                 *transport = Self::spawn_process(binary, address, &self.token)?;
+                *self
+                    .process_address
+                    .lock()
+                    .map_err(|_| "runner process address lock poisoned".to_string())? =
+                    Some(address);
                 match &mut *transport {
                     RunnerTransport::Process { address, .. } => {
                         request_process(*address, &request)?
@@ -151,13 +198,69 @@ impl RunnerState {
         };
         response_value(response)
     }
+
+    fn dispatch_live_blocking(&self, command: RunnerCommand) -> Result<Value, String> {
+        let mut sequence = self
+            .sequence
+            .lock()
+            .map_err(|_| "sequence lock poisoned".to_string())?;
+        *sequence += 1;
+        let request = RunnerRequest {
+            version: IPC_VERSION,
+            session_token: self.token.clone(),
+            correlation_id: format!("desktop-{}", *sequence),
+            command,
+        };
+        drop(sequence);
+
+        let mut transport = self
+            .transport
+            .lock()
+            .map_err(|_| "runner transport lock poisoned".to_string())?;
+        let response = match &mut *transport {
+            RunnerTransport::Embedded(handler) => {
+                tauri::async_runtime::block_on(handler.dispatch_async(request))
+            }
+            RunnerTransport::Process { address, .. } => request_process(*address, &request)?,
+        };
+        response_value(response)
+    }
+
+    fn cancel_live_turn(&self) -> Result<(), String> {
+        let address = *self
+            .process_address
+            .lock()
+            .map_err(|_| "runner process address lock poisoned".to_string())?;
+        let Some(address) = address else {
+            self.live_turn_control.cancel();
+            return Ok(());
+        };
+        let mut sequence = self
+            .sequence
+            .lock()
+            .map_err(|_| "sequence lock poisoned".to_string())?;
+        *sequence += 1;
+        let request = RunnerRequest {
+            version: IPC_VERSION,
+            session_token: self.token.clone(),
+            correlation_id: format!("desktop-{}", *sequence),
+            command: RunnerCommand::CancelLiveTurn,
+        };
+        drop(sequence);
+        response_value(request_process(address, &request)?).map(|_| ())
+    }
 }
 
 fn request_process(address: SocketAddr, request: &RunnerRequest) -> Result<RunnerResponse, String> {
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1_000))
         .map_err(|error| format!("runner disconnected: {error}"))?;
+    let read_timeout = if matches!(request.command, RunnerCommand::StepLiveSimulation) {
+        Duration::from_secs(600)
+    } else {
+        Duration::from_millis(5_000)
+    };
     stream
-        .set_read_timeout(Some(Duration::from_millis(5_000)))
+        .set_read_timeout(Some(read_timeout))
         .map_err(|error| error.to_string())?;
     let mut encoded = serde_json::to_vec(request).map_err(|error| error.to_string())?;
     encoded.push(b'\n');
@@ -194,6 +297,13 @@ pub struct ScenarioSummary {
     pub agent_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveRunSummary {
+    pub run_id: String,
+    pub backend: String,
+}
+
 #[tauri::command]
 pub fn connect_runner(state: tauri::State<'_, RunnerState>) -> Result<String, String> {
     state.connect()
@@ -214,19 +324,41 @@ pub fn validate_scenario(
 }
 
 #[tauri::command]
-pub fn create_simulation_run(
+pub async fn create_live_simulation_run(
     state: tauri::State<'_, RunnerState>,
     path: String,
-) -> Result<String, String> {
+    timeout_ms: u64,
+) -> Result<LiveRunSummary, String> {
     let resolved_path = state.resolve_path(&path);
-    state
-        .dispatch(RunnerCommand::CreateSimulationRun {
+    let started = std::time::Instant::now();
+    eprintln!(
+        "runner command started: CreateLiveSimulationRun path={} timeout_ms={timeout_ms}",
+        resolved_path
+    );
+    let owned = state.inner().clone();
+    let result: Result<LiveRunSummary, String> = tauri::async_runtime::spawn_blocking(move || {
+        owned.dispatch_live_blocking(RunnerCommand::CreateLiveSimulationRun {
             path: resolved_path,
-        })?
-        .get("runId")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .ok_or_else(|| "runner did not return runId".to_string())
+            timeout_ms,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result)
+    .and_then(|result| serde_json::from_value(result).map_err(|error| error.to_string()));
+    match &result {
+        Ok(run) => eprintln!(
+            "runner command completed: CreateLiveSimulationRun run_id={} backend={} elapsed_ms={}",
+            run.run_id,
+            run.backend,
+            started.elapsed().as_millis()
+        ),
+        Err(error) => eprintln!(
+            "runner command failed: CreateLiveSimulationRun elapsed_ms={} error={error}",
+            started.elapsed().as_millis()
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -240,8 +372,30 @@ pub fn pause_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn step_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), String> {
-    state.dispatch(RunnerCommand::StepSimulation).map(|_| ())
+pub async fn step_live_simulation(state: tauri::State<'_, RunnerState>) -> Result<Value, String> {
+    let started = std::time::Instant::now();
+    eprintln!("runner command started: StepLiveSimulation");
+    let owned = state.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        owned.dispatch_live_blocking(RunnerCommand::StepLiveSimulation)
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result);
+    match &result {
+        Ok(step) => eprintln!(
+            "runner command completed: StepLiveSimulation tick={} elapsed_ms={}",
+            step.get("tick")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "unknown".to_string(), |tick| tick.to_string()),
+            started.elapsed().as_millis()
+        ),
+        Err(error) => eprintln!(
+            "runner command failed: StepLiveSimulation elapsed_ms={} error={error}",
+            started.elapsed().as_millis()
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -284,6 +438,11 @@ pub fn reject_action(
 #[tauri::command]
 pub fn cancel_agent_turn(state: tauri::State<'_, RunnerState>) -> Result<(), String> {
     state.dispatch(RunnerCommand::CancelAgentTurn).map(|_| ())
+}
+
+#[tauri::command]
+pub fn cancel_live_turn(state: tauri::State<'_, RunnerState>) -> Result<(), String> {
+    state.cancel_live_turn()
 }
 
 #[tauri::command]
@@ -345,4 +504,33 @@ pub struct SimulationEventBatch {
 #[tauri::command]
 pub fn get_simulation_snapshot(state: tauri::State<'_, RunnerState>) -> Result<Value, String> {
     state.dispatch(RunnerCommand::GetSimulationSnapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_runner_is_resolved_next_to_the_desktop_executable() {
+        let executable = Path::new("target/release/cockpit-desktop");
+        let expected = Path::new("target/release").join(if cfg!(windows) {
+            "cockpit-runner.exe"
+        } else {
+            "cockpit-runner"
+        });
+
+        assert_eq!(bundled_runner_path(executable), Some(expected));
+    }
+
+    #[test]
+    fn bundled_runner_moves_out_of_the_test_deps_directory() {
+        let executable = Path::new("target/debug/deps/cockpit-desktop-test");
+        let expected = Path::new("target/debug").join(if cfg!(windows) {
+            "cockpit-runner.exe"
+        } else {
+            "cockpit-runner"
+        });
+
+        assert_eq!(bundled_runner_path(executable), Some(expected));
+    }
 }

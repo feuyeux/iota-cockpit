@@ -3,6 +3,7 @@ export const APP_CONFIG = {
   MAX_EVENTS: 300,
   MAX_TOOL_CALLS: 100,
   MAX_ACTION_RESULTS: 100,
+  MAX_HUMAN_TURNS: 300,
 
   // Network timeouts (milliseconds)
   CONNECT_TIMEOUT: 500,

@@ -1,6 +1,7 @@
 schemaVersion: 1
 id: smoke-in-cockpit
 seed: 42
+language: en
 clock:
   mode: stepped
   tickMs: 100
@@ -10,12 +11,52 @@ entities:
     components:
       smoke:
         density: 0.0
+      temperature:
+        celsius: 22.0
+  - id: outer-1
+    type: outerEnvironment
+    components:
+      temperature:
+        celsius: 20.0
+      altitude:
+        meters: 0.0
+      wind:
+        speedKmh: 5.0
   - id: pilot-1
     type: human
     components:
       attention:
         value: 0.9
       location: cockpit
+      name: Alex
+      role: pilot
+      actionCapabilities:
+        - engine.shutdown
+        - alarm.activate
+      background: Primary operator responsible for cockpit safety and emergency response.
+      traits:
+        openness: 0.5
+        conscientiousness: 0.8
+        extraversion: 0.4
+        agreeableness: 0.5
+        neuroticism: 0.3
+  - id: rear-passenger-1
+    type: human
+    components:
+      attention:
+        value: 0.6
+      location: rear-left
+      name: Sam
+      role: passenger
+      background: Rear-seat passenger, easily unsettled by discomfort or unfamiliar noises.
+      relationships:
+        - "pilot-1 is the driver"
+      traits:
+        openness: 0.4
+        conscientiousness: 0.4
+        extraversion: 0.3
+        agreeableness: 0.6
+        neuroticism: 0.75
   - id: engine-1
     type: device
     components:

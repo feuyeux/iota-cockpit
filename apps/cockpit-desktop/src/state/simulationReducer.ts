@@ -14,12 +14,18 @@ export type SimulationAction =
   | { type: "scenarioLoading" }
   | { type: "scenarioInvalid"; error: SimulationError }
   | { type: "runCreating" }
-  | { type: "scenarioReady"; scenario: ScenarioSummary; runId?: string }
+  | {
+      type: "scenarioReady";
+      scenario: ScenarioSummary;
+      runId?: string;
+      backend?: string;
+    }
   | { type: "approvalModeChanged"; required: boolean }
   | { type: "replayDiffUpdated"; report: import("../types/simulation").RecordingDiff }
   | { type: "snapshotReset"; snapshot: import("../types/simulation").WorldSnapshot; cursor: number }
   | { type: "commandRejected"; error: SimulationError }
-  | { type: "runnerEvent"; event: RunnerEvent };
+  | { type: "runnerEvent"; event: RunnerEvent }
+  | { type: "runnerEvents"; events: RunnerEvent[] };
 
 export const initialSimulationModel: SimulationModel = {
   state: "disconnected",
@@ -29,6 +35,7 @@ export const initialSimulationModel: SimulationModel = {
   observations: [],
   events: [],
   toolCalls: [],
+  humanTurns: [],
   actionResults: [],
   serviceConnected: false,
   approvalRequired: false
@@ -64,10 +71,12 @@ export function simulationReducer(
         state: "ready",
         scenario: action.scenario,
         runId: action.runId ?? state.runId,
+        backend: action.backend,
         events: [],
         observations: [],
         actionResults: [],
         toolCalls: [],
+        humanTurns: [],
         evaluation: undefined,
         tick: 0,
         simTimeMs: 0,
@@ -87,6 +96,7 @@ export function simulationReducer(
         snapshot: action.snapshot,
         events: [],
         toolCalls: [],
+        humanTurns: [],
         actionResults: [],
         lastCursor: action.cursor
       };
@@ -101,6 +111,8 @@ export function simulationReducer(
       };
     case "runnerEvent":
       return reduceRunnerEvent(state, action.event);
+    case "runnerEvents":
+      return action.events.reduce(reduceRunnerEvent, state);
   }
 }
 
@@ -128,6 +140,15 @@ function reduceRunnerEvent(state: SimulationModel, event: RunnerEvent): Simulati
       return {
         ...state,
         toolCalls: [event.trace, ...state.toolCalls].slice(0, APP_CONFIG.MAX_TOOL_CALLS),
+        lastCursor: event.cursor
+      };
+    case "SimulationHumanTurn":
+      return {
+        ...state,
+        humanTurns: [
+          { tick: event.tick, backend: event.backend, evidence: event.evidence },
+          ...state.humanTurns
+        ].slice(0, APP_CONFIG.MAX_HUMAN_TURNS),
         lastCursor: event.cursor
       };
     case "SimulationActionResult":

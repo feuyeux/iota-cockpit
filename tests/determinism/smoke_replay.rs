@@ -1,5 +1,7 @@
 use cockpit_evaluation::evaluate_smoke_shutdown;
-use cockpit_recording::{Recording, replay_recording, run_scripted_recording};
+use cockpit_recording::{
+    Recording, replay_recording, run_rule_agent_recording, run_scripted_recording,
+};
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{Simulation, StateDiff};
 use serde_json::json;
@@ -75,5 +77,33 @@ fn committed_state_diffs_are_audited_and_replayed_deterministically() {
     assert_eq!(
         recording.final_snapshot_hash(),
         replay.final_snapshot_hash()
+    );
+}
+
+#[test]
+fn cockpit_system_state_is_included_in_deterministic_replay() {
+    let scenario =
+        load_scenario("scenarios/heatwave-thermal-comfort.yaml").expect("scenario loads");
+    let recording =
+        run_rule_agent_recording("domain-state-run", scenario.clone(), 30).expect("rule run");
+    let replay = replay_recording("domain-state-replay", scenario, &recording).expect("replay");
+
+    assert_eq!(
+        recording.final_snapshot_hash(),
+        replay.final_snapshot_hash()
+    );
+    assert!(
+        recording
+            .ticks
+            .iter()
+            .flat_map(|tick| &tick.events)
+            .any(|event| event.event_type == "ThermalComfortRestored")
+    );
+    assert!(
+        replay
+            .ticks
+            .iter()
+            .flat_map(|tick| &tick.events)
+            .any(|event| event.event_type == "ThermalComfortRestored")
     );
 }

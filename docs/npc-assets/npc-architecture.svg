@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760">
+  <style>text{font-family:'Helvetica Neue',Helvetica,Arial,'PingFang SC','Microsoft YaHei',sans-serif}.t{fill:#111827}.s{fill:#6b7280}.h{font-weight:600}</style>
+  <defs>
+    <marker id="ab" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#2563eb"/></marker>
+    <marker id="ag" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#16a34a"/></marker>
+    <marker id="ao" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ea580c"/></marker>
+  </defs>
+  <rect width="1200" height="760" fill="#fff"/>
+  <text x="600" y="38" text-anchor="middle" class="t h" font-size="22">现代开放世界 NPC：从世界状态到可见行为</text>
+  <rect x="35" y="65" width="1130" height="100" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-dasharray="6,4"/>
+  <text x="55" y="88" fill="#1d4ed8" class="h" font-size="12">输入与世界状态</text>
+  <g font-size="15" text-anchor="middle" class="t">
+    <rect x="95" y="105" width="180" height="42" rx="7" fill="#fff" stroke="#d1d5db"/><text x="185" y="132">玩家与任务事件</text>
+    <rect x="355" y="105" width="180" height="42" rx="7" fill="#fff" stroke="#d1d5db"/><text x="445" y="132">天气 / 时间 / 生态</text>
+    <rect x="615" y="105" width="180" height="42" rx="7" fill="#fff" stroke="#d1d5db"/><text x="705" y="132">空间索引 / 导航</text>
+    <rect x="875" y="105" width="180" height="42" rx="7" fill="#fff" stroke="#d1d5db"/><text x="965" y="132">区域事件流</text>
+  </g>
+  <rect x="35" y="195" width="1130" height="120" rx="8" fill="#f0fdf4" stroke="#bbf7d0" stroke-dasharray="6,4"/>
+  <text x="55" y="218" fill="#15803d" class="h" font-size="12">数据底座与调度</text>
+  <g font-size="15" text-anchor="middle" class="t">
+    <rect x="95" y="240" width="200" height="50" rx="7" fill="#fff" stroke="#d1d5db"/><text x="195" y="261">ECS Chunk</text><text x="195" y="280" class="s" font-size="11">连续数据 / 批处理</text>
+    <rect x="365" y="240" width="200" height="50" rx="7" fill="#fff" stroke="#d1d5db"/><text x="465" y="261">任务图 Job Graph</text><text x="465" y="280" class="s" font-size="11">依赖 / 并行 / 同步点</text>
+    <rect x="635" y="240" width="200" height="50" rx="7" fill="#fff" stroke="#d1d5db"/><text x="735" y="261">AI LOD 调度器</text><text x="735" y="280" class="s" font-size="11">重要度 / 预算 / 分帧</text>
+    <rect x="905" y="240" width="200" height="50" rx="7" fill="#fff" stroke="#d1d5db"/><text x="1005" y="261">World Partition</text><text x="1005" y="280" class="s" font-size="11">流送 / 休眠 / 摘要模拟</text>
+  </g>
+  <rect x="35" y="345" width="1130" height="145" rx="8" fill="#faf5ff" stroke="#e9d5ff" stroke-dasharray="6,4"/>
+  <text x="55" y="368" fill="#7e22ce" class="h" font-size="12">NPC 认知管线</text>
+  <g font-size="15" text-anchor="middle" class="t">
+    <rect x="80" y="395" width="175" height="62" rx="8" fill="#fff" stroke="#d1d5db"/><text x="167" y="421">感知</text><text x="167" y="441" class="s" font-size="11">粗筛 → 精测 → 记忆</text>
+    <rect x="310" y="395" width="175" height="62" rx="8" fill="#fff" stroke="#d1d5db"/><text x="397" y="421">情境评估</text><text x="397" y="441" class="s" font-size="11">Utility / Threat</text>
+    <rect x="540" y="395" width="175" height="62" rx="8" fill="#fff" stroke="#7c3aed" stroke-width="2"/><text x="627" y="421" class="h">规划与控制</text><text x="627" y="441" class="s" font-size="11">StateTree / HTN / GOAP</text>
+    <rect x="770" y="395" width="175" height="62" rx="8" fill="#fff" stroke="#d1d5db"/><text x="857" y="421">Smart Object</text><text x="857" y="441" class="s" font-size="11">能力广告 / 槽位预约</text>
+    <rect x="1000" y="395" width="125" height="62" rx="8" fill="#fff" stroke="#d1d5db"/><text x="1062" y="421">动作意图</text><text x="1062" y="441" class="s" font-size="11">Intent</text>
+  </g>
+  <g stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#ab)"><path d="M255 426H302"/><path d="M485 426H532"/><path d="M715 426H762"/><path d="M945 426H992"/></g>
+  <rect x="35" y="520" width="1130" height="105" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-dasharray="6,4"/>
+  <text x="55" y="543" fill="#c2410c" class="h" font-size="12">一致性与表现</text>
+  <g font-size="15" text-anchor="middle" class="t">
+    <rect x="145" y="560" width="240" height="45" rx="7" fill="#fff" stroke="#d1d5db"/><text x="265" y="588">仲裁：锁、优先级、租约</text>
+    <rect x="480" y="560" width="240" height="45" rx="7" fill="#fff" stroke="#d1d5db"/><text x="600" y="588">提交：ECS Command Buffer</text>
+    <rect x="815" y="560" width="240" height="45" rx="7" fill="#fff" stroke="#d1d5db"/><text x="935" y="588">表现：导航 / 动画 / IK</text>
+  </g>
+  <g stroke="#ea580c" stroke-width="2" fill="none" marker-end="url(#ao)"><path d="M385 582H472"/><path d="M720 582H807"/></g>
+  <path d="M1062 457V505H265V552" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#ao)"/>
+  <path d="M600 605V650H167V465" fill="none" stroke="#16a34a" stroke-width="1.7" stroke-dasharray="5,3" marker-end="url(#ag)"/>
+  <text x="394" y="670" text-anchor="middle" class="s" font-size="12">提交后的新世界状态进入下一轮感知</text>
+  <g transform="translate(55 710)" font-size="12" class="s"><line x1="0" y1="0" x2="32" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#ab)"/><text x="42" y="4">认知数据流</text><line x1="180" y1="0" x2="212" y2="0" stroke="#ea580c" stroke-width="2" marker-end="url(#ao)"/><text x="222" y="4">意图与提交</text><line x1="365" y1="0" x2="397" y2="0" stroke="#16a34a" stroke-dasharray="5,3" marker-end="url(#ag)"/><text x="407" y="4">状态反馈</text></g>
+</svg>

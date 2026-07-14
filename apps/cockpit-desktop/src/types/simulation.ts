@@ -32,6 +32,11 @@ export interface ScenarioSummary {
   agentId: string;
 }
 
+export interface LiveRunSummary {
+  runId: string;
+  backend: string;
+}
+
 export interface SensorQuality {
   visibilityQuality: number;
   audioQuality: number;
@@ -65,7 +70,7 @@ export interface SimulationEvent {
   payload: {
     message: string;
     target?: string;
-    value?: number;
+    value?: number | null;
   };
 }
 
@@ -74,7 +79,18 @@ export interface ActionResult {
     requestId: string;
     agentId: string;
     target: string;
-    command: "engineShutdown" | "alarmActivate";
+    command:
+      | "engineShutdown"
+      | "alarmActivate"
+      | "climateComfortRestore"
+      | "windshieldDefogActivate"
+      | "fatigueInterventionActivate"
+      | "childProtectionActivate"
+      | "medicalResponseActivate"
+      | "privacyModeActivate"
+      | "chargingPlanAccept"
+      | "adasTakeoverAcknowledge"
+      | "cyberSafeModeActivate";
     expectedStateVersion: number;
     expiresAtTick: number;
     correlationId: string;
@@ -86,11 +102,74 @@ export interface ActionResult {
   correlationId: string;
 }
 
+export interface BigFiveTraits {
+  openness: number;
+  conscientiousness: number;
+  extraversion: number;
+  agreeableness: number;
+  neuroticism: number;
+}
+
+export interface Persona {
+  name: string;
+  role: string;
+  background: string;
+  traits: BigFiveTraits;
+  relationships: string[];
+}
+
+export interface NeedsState {
+  comfort: number;
+  safety: number;
+  social: number;
+}
+
+export interface PerceivedEvent {
+  originTick: number;
+  availableAtTick: number;
+  source: string;
+  kind: string;
+  summary: string;
+}
+
+export interface HumanState {
+  id: string;
+  persona: Persona;
+  needs: NeedsState;
+  stress: number;
+  fatigue: number;
+  health: number;
+  attention: number;
+  location: string;
+  goal: string;
+  shortTermMemory: PerceivedEvent[];
+  longTermMemory: string[];
+}
+
+export interface DeviceState {
+  id: string;
+  health: number;
+  powerState: string;
+  lifecycle: string;
+  faults: string[];
+  capabilities: string[];
+  shutdown: boolean;
+}
+
+export interface OuterEnvironmentState {
+  externalTemperatureC: number;
+  altitudeM: number;
+  windSpeedKmh: number;
+  precipitation: number;
+  threatActive: boolean;
+}
+
 export interface WorldSnapshot {
   runId: string;
   tick: number;
   simTimeMs: number;
   version: number;
+  outerEnvironment: OuterEnvironmentState;
   environment: {
     temperatureC: number;
     humidityPct: number;
@@ -100,24 +179,52 @@ export interface WorldSnapshot {
     noiseDb: number;
     fireActive: boolean;
   };
-  pilot: {
-    stress: number;
-    fatigue: number;
-    health: number;
-    attention: number;
-    location: string;
-  };
-  engine: {
-    health: number;
-    powerState: string;
-    lifecycle: string;
-    faults: string[];
-    capabilities: string[];
-    shutdown: boolean;
-  };
+  humans: HumanState[];
+  devices: DeviceState[];
   alarm: {
     active: boolean;
     volumeDb: number;
+  };
+  cockpitSystems?: {
+    climate: {
+      comfortTargetC: number | null;
+      coolingActive: boolean;
+      defogActive: boolean;
+      seatVentilationActive: boolean;
+    };
+    driverAssistance: {
+      fatigueInterventionActive: boolean;
+      takeoverAcknowledged: boolean;
+      takeoverHmiActive: boolean;
+    };
+    occupantCare: {
+      childProtectionActive: boolean;
+      medicalResponseActive: boolean;
+      emergencyContacted: boolean;
+      guardianNotified: boolean;
+      remoteUnlockRequested: boolean;
+    };
+    experience: {
+      privacyModeActive: boolean;
+      chargingPlanAccepted: boolean;
+      mediaSessionsIsolated: boolean;
+      occupantProfilesIsolated: boolean;
+    };
+    mobility: {
+      emergencyRouteActive: boolean;
+      chargingRouteActive: boolean;
+      chargerServiceConnected: boolean;
+    };
+    connectivity: {
+      emergencyCallActive: boolean;
+      remoteServicesIsolated: boolean;
+      trustedLocalAlertActive: boolean;
+    };
+    cybersecurity: {
+      safeModeActive: boolean;
+      networkIsolated: boolean;
+      identityVerified: boolean;
+    };
   };
 }
 
@@ -125,7 +232,7 @@ export interface EvaluationResult {
   passed: boolean;
   score: number;
   evidenceEventIds: string[];
-  firstFailureTick?: number;
+  firstFailureTick: number | null;
   explanation: string;
 }
 
@@ -171,6 +278,27 @@ export interface ToolCallTrace {
   allowed: boolean;
 }
 
+export interface HumanDecision {
+  utterance?: string;
+  actions: Array<{ target: string; command: string }>;
+  internalStateDelta: {
+    stress?: number;
+    attention?: number;
+  };
+  narrative: string;
+}
+
+export interface HumanTurnEvidence {
+  humanId: string;
+  decision: HumanDecision;
+}
+
+export interface HumanTurnTrace {
+  tick: number;
+  backend: string;
+  evidence: HumanTurnEvidence;
+}
+
 export interface RunnerEventBatch {
   events: RunnerEvent[];
   nextCursor: number;
@@ -189,12 +317,14 @@ export interface SimulationModel {
   observations: Observation[];
   events: SimulationEvent[];
   toolCalls: ToolCallTrace[];
+  humanTurns: HumanTurnTrace[];
   actionResults: ActionResult[];
   evaluation?: EvaluationResult;
   replayDiff?: RecordingDiff;
   error?: SimulationError;
   serviceConnected: boolean;
   approvalRequired: boolean;
+  backend?: string;
   lastCursor?: number;
 }
 
@@ -203,6 +333,13 @@ export type RunnerEvent =
   | { type: "SimulationTickCommitted"; snapshot: WorldSnapshot; cursor: number }
   | { type: "SimulationEvent"; event: SimulationEvent; cursor: number }
   | { type: "SimulationToolCall"; trace: ToolCallTrace; cursor: number }
+  | {
+      type: "SimulationHumanTurn";
+      tick: number;
+      backend: string;
+      evidence: HumanTurnEvidence;
+      cursor: number;
+    }
   | { type: "SimulationActionResult"; result: ActionResult; cursor: number }
   | { type: "SimulationEvaluationUpdated"; evaluation: EvaluationResult; cursor: number }
   | { type: "SimulationError"; error: SimulationError; cursor?: number };
