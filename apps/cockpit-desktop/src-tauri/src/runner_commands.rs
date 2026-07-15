@@ -14,6 +14,12 @@ use cockpit_runner::ipc::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const SLOW_COMMAND_LOG_THRESHOLD: Duration = Duration::from_secs(1);
+
+fn should_log_slow_operation(elapsed: Duration) -> bool {
+    elapsed >= SLOW_COMMAND_LOG_THRESHOLD
+}
+
 fn runner_binary() -> Option<std::ffi::OsString> {
     std::env::var_os("COCKPIT_RUNNER_BIN").or_else(bundled_runner_binary)
 }
@@ -314,9 +320,7 @@ pub fn validate_scenario(
     state: tauri::State<'_, RunnerState>,
     path: String,
 ) -> Result<ScenarioSummary, String> {
-    eprintln!("validate_scenario: input path = {}", path);
     let resolved_path = state.resolve_path(&path);
-    eprintln!("validate_scenario: resolved path = {}", resolved_path);
     serde_json::from_value(state.dispatch(RunnerCommand::ValidateScenario {
         path: resolved_path,
     })?)
@@ -331,10 +335,6 @@ pub async fn create_live_simulation_run(
 ) -> Result<LiveRunSummary, String> {
     let resolved_path = state.resolve_path(&path);
     let started = std::time::Instant::now();
-    eprintln!(
-        "runner command started: CreateLiveSimulationRun path={} timeout_ms={timeout_ms}",
-        resolved_path
-    );
     let owned = state.inner().clone();
     let result: Result<LiveRunSummary, String> = tauri::async_runtime::spawn_blocking(move || {
         owned.dispatch_live_blocking(RunnerCommand::CreateLiveSimulationRun {
@@ -346,16 +346,18 @@ pub async fn create_live_simulation_run(
     .map_err(|error| error.to_string())
     .and_then(|result| result)
     .and_then(|result| serde_json::from_value(result).map_err(|error| error.to_string()));
+    let elapsed = started.elapsed();
     match &result {
-        Ok(run) => eprintln!(
-            "runner command completed: CreateLiveSimulationRun run_id={} backend={} elapsed_ms={}",
+        Ok(run) if should_log_slow_operation(elapsed) => eprintln!(
+            "runner command slow: CreateLiveSimulationRun run_id={} backend={} elapsed_ms={}",
             run.run_id,
             run.backend,
-            started.elapsed().as_millis()
+            elapsed.as_millis()
         ),
+        Ok(_) => {}
         Err(error) => eprintln!(
             "runner command failed: CreateLiveSimulationRun elapsed_ms={} error={error}",
-            started.elapsed().as_millis()
+            elapsed.as_millis()
         ),
     }
     result
@@ -374,7 +376,6 @@ pub fn pause_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), Stri
 #[tauri::command]
 pub async fn step_live_simulation(state: tauri::State<'_, RunnerState>) -> Result<Value, String> {
     let started = std::time::Instant::now();
-    eprintln!("runner command started: StepLiveSimulation");
     let owned = state.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         owned.dispatch_live_blocking(RunnerCommand::StepLiveSimulation)
@@ -382,17 +383,19 @@ pub async fn step_live_simulation(state: tauri::State<'_, RunnerState>) -> Resul
     .await
     .map_err(|error| error.to_string())
     .and_then(|result| result);
+    let elapsed = started.elapsed();
     match &result {
-        Ok(step) => eprintln!(
-            "runner command completed: StepLiveSimulation tick={} elapsed_ms={}",
+        Ok(step) if should_log_slow_operation(elapsed) => eprintln!(
+            "runner command slow: StepLiveSimulation tick={} elapsed_ms={}",
             step.get("tick")
                 .and_then(Value::as_u64)
                 .map_or_else(|| "unknown".to_string(), |tick| tick.to_string()),
-            started.elapsed().as_millis()
+            elapsed.as_millis()
         ),
+        Ok(_) => {}
         Err(error) => eprintln!(
             "runner command failed: StepLiveSimulation elapsed_ms={} error={error}",
-            started.elapsed().as_millis()
+            elapsed.as_millis()
         ),
     }
     result
@@ -509,6 +512,14 @@ pub fn get_simulation_snapshot(state: tauri::State<'_, RunnerState>) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_operation_logging_uses_a_one_second_threshold() {
+        assert!(!should_log_slow_operation(
+            std::time::Duration::from_millis(999)
+        ));
+        assert!(should_log_slow_operation(std::time::Duration::from_secs(1)));
+    }
 
     #[test]
     fn bundled_runner_is_resolved_next_to_the_desktop_executable() {

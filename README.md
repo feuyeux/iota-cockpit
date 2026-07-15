@@ -22,7 +22,7 @@ This repository currently implements the Phase 0 slice, the Phase 1 local agent/
 - Recording payloads are content-addressed SHA-256 files with SQLite storing only payload hashes and sizes.
 - Persistent runner mode saves each committed tick and supports `ResumeSimulation` after process restart, restoring snapshot and event cursor state.
 - `cockpit-runner bench` reports average/p50/p95/p99/peak tick latency, recording size, fixed scenario hash/seed, and the requested entity/event workload.
-- `apps/cockpit-desktop` is an independent React 19 + Vite 7 + TypeScript + Tailwind 4 + Lucide app with a Tauri 2 host, typed runner state, controls, world, timeline, trace, and evaluation panels.
+- `apps/cockpit-desktop` is an independent React 19 + Vite 7 + TypeScript + Tailwind 4 + Lucide app with a Tauri 2 host, typed runner state, and a 1600 × 900 focus workspace: scenario controls, the world view, and the realtime activity feed remain visible together, while evaluation and narrative open on demand in an insights drawer.
 
 The iota-core dependency is pinned to git revision `d29de2e6a65f887c8f5e0e7f0bbb387fd91b6dad`, with `default-features = false`; it is used only by `cockpit-agent-runtime`. This revision exposes the cancellable turn API (`run_cancellable` + `TurnCancelled`), which the runtime policy, ACP adapter, and live driver use to cancel a live turn mid-flight and record a distinct `Cancelled` disposition. The adapter is compile-tested and prompt-isolation tested; external backend startup remains opt-in and is not required for deterministic runs.
 
@@ -40,8 +40,9 @@ cargo run -p cockpit-runner -- run-live scenarios/smoke-in-cockpit.yaml --ticks 
 cargo run -p cockpit-runner --features live-acp -- run-live scenarios/smoke-in-cockpit.yaml --ticks 80
 pwsh ./tools/audit-dependencies.ps1
 cd apps/cockpit-desktop
-npm install
+npm ci
 npm test
+npm run test:tsc
 npm run build
 ```
 

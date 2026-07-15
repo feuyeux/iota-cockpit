@@ -1,5 +1,7 @@
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::{self, Write};
 
 use crate::error::{SimulationError, SimulationResult};
 
@@ -396,10 +398,30 @@ impl WorldSnapshot {
             alarm: &self.alarm,
             cockpit_systems: &self.cockpit_systems,
         };
-        let bytes = serde_json::to_vec(&hashable)
-            .map_err(|err| SimulationError::Serialization(err.to_string()))?;
         let mut hasher = Sha256::new();
-        hasher.update(bytes);
+        // Hash a stable binary representation directly into SHA-256. This is
+        // deliberately independent of the JSON IPC representation: snapshots
+        // are hashed every tick for recording/replay, so allocating and
+        // escaping a complete JSON document here was a significant hot path.
+        hasher.update(b"cockpit-world-snapshot-v2\\0");
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize_into(HashWriter(&mut hasher), &hashable)
+            .map_err(|err| SimulationError::Serialization(err.to_string()))?;
         Ok(format!("{:x}", hasher.finalize()))
+    }
+}
+
+struct HashWriter<'a>(&'a mut Sha256);
+
+impl Write for HashWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

@@ -62,6 +62,28 @@ export function localize(text: LocalizedText, locale: Locale): string {
   return text[locale];
 }
 
+function normalizeScenarioPath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function scenarioFileName(path: string): string {
+  const normalized = normalizeScenarioPath(path);
+  return normalized.slice(normalized.lastIndexOf("/") + 1);
+}
+
+/**
+ * Runner receives a resolved absolute path from Tauri while the built-in
+ * catalog intentionally keeps portable relative paths. Match the full
+ * normalized path first, then the unique scenario filename as a fallback.
+ */
+export function findBenchmarkScenarioByPath(path: string | undefined): BenchmarkScenario | undefined {
+  if (!path) return undefined;
+  const normalized = normalizeScenarioPath(path);
+  const fileName = scenarioFileName(path);
+  return BENCHMARK_SCENARIOS.find((scenario) => normalizeScenarioPath(scenario.path) === normalized)
+    ?? BENCHMARK_SCENARIOS.find((scenario) => scenarioFileName(scenario.path) === fileName);
+}
+
 export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
   {
     id: "smoke-emergency-response",

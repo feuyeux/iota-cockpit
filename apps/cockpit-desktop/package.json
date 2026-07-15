@@ -1,6 +1,6 @@
 {
   "name": "cockpit-desktop",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,9 +9,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:tsc": "tsc -b --noEmit",
+    "version:bundle": "node scripts/bump-bundle-version.mjs",
     "tauri:prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "tauri:dev": "npm run tauri:prepare-sidecar && tauri dev",
-    "tauri:build": "npm run tauri:prepare-sidecar && tauri build"
+    "tauri:build": "npm run version:bundle && npm run tauri:prepare-sidecar && tauri build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.0",

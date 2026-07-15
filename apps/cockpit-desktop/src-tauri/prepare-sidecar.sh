@@ -29,4 +29,8 @@ mkdir -p "$BIN_DIR"
 SRC="$WORKSPACE_ROOT/target/release/cockpit-runner$EXT"
 DST="$BIN_DIR/cockpit-runner-$TRIPLE$EXT"
 cp "$SRC" "$DST"
+# When a previous placeholder already exists, macOS `cp` can preserve that
+# destination's non-executable mode. Tauri copies this file verbatim into the
+# app bundle, so ensure the sidecar can actually be spawned by the desktop app.
+chmod +x "$DST"
 echo "Staged sidecar: $DST"

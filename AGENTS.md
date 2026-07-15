@@ -12,7 +12,8 @@ Run commands from the repository root unless noted:
 - `cargo clippy --workspace --all-targets -- -D warnings` enforces warning-free Rust code.
 - `cargo fmt --all --check` verifies formatting; use `cargo fmt --all` to apply it.
 - `cargo run -p cockpit-runner -- --help` checks the runner CLI and available options.
-- `npm test` in `apps/cockpit-desktop` runs the TypeScript check.
+- `npm test` in `apps/cockpit-desktop` runs the Vitest suite once.
+- `npm run test:tsc` in `apps/cockpit-desktop` performs the strict TypeScript check without emitting files.
 - `npm run build` in `apps/cockpit-desktop` creates the Vite production build.
 
 Use `rtk` before shell commands when available, for example `rtk cargo test --workspace`.

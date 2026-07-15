@@ -8,6 +8,7 @@ import {
   canStop,
 } from "./simulationReducer";
 import type { SimulationAction } from "./simulationReducer";
+import type { SimulationModel } from "../types/simulation";
 
 describe("simulationReducer", () => {
   it("should handle connectRequested", () => {
@@ -39,6 +40,51 @@ describe("simulationReducer", () => {
     expect(state.state).toBe("disconnected");
     expect(state.serviceConnected).toBe(false);
     expect(state.error).toEqual(error);
+  });
+
+  it("clears the prior run session when a new scenario starts loading", () => {
+    const stale: SimulationModel = {
+      ...initialSimulationModel,
+      state: "failed",
+      serviceConnected: true,
+      approvalRequired: true,
+      scenario: { id: "old", path: "/old.yaml", schemaVersion: 1, scenarioHash: "old-hash", seed: 7, agentId: "old-agent" },
+      runId: "old-run",
+      backend: "iota-core-acp",
+      tick: 12,
+      simTimeMs: 1_200,
+      snapshot: {} as SimulationModel["snapshot"],
+      observations: [{}] as SimulationModel["observations"],
+      events: [{}] as SimulationModel["events"],
+      toolCalls: [{}] as SimulationModel["toolCalls"],
+      humanTurns: [{}] as SimulationModel["humanTurns"],
+      actionResults: [{}] as SimulationModel["actionResults"],
+      evaluation: {} as SimulationModel["evaluation"],
+      replayDiff: {} as SimulationModel["replayDiff"],
+      lastCursor: 99,
+      error: { code: "OLD_FAILURE", message: "old run failed", correlationId: "old" },
+    };
+
+    const state = simulationReducer(stale, { type: "scenarioLoading" });
+
+    expect(state.state).toBe("scenarioLoading");
+    expect(state.serviceConnected).toBe(true);
+    expect(state.approvalRequired).toBe(true);
+    expect(state.scenario).toBeUndefined();
+    expect(state.runId).toBeUndefined();
+    expect(state.backend).toBeUndefined();
+    expect(state.tick).toBe(0);
+    expect(state.simTimeMs).toBe(0);
+    expect(state.snapshot).toBeUndefined();
+    expect(state.observations).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.toolCalls).toEqual([]);
+    expect(state.humanTurns).toEqual([]);
+    expect(state.actionResults).toEqual([]);
+    expect(state.evaluation).toBeUndefined();
+    expect(state.replayDiff).toBeUndefined();
+    expect(state.lastCursor).toBeUndefined();
+    expect(state.error).toBeUndefined();
   });
 
   it("should handle scenarioReady", () => {
@@ -100,80 +146,19 @@ describe("simulationReducer", () => {
   });
 
   it("should handle SimulationTickCommitted event", () => {
-    const snapshot = {
+    const event = {
+      type: "SimulationTickCommitted" as const,
       runId: "run-123",
       tick: 5,
       simTimeMs: 500,
       version: 1,
-      environment: {
-        temperatureC: 22,
-        humidityPct: 50,
-        visibility: 0.9,
-        smokeDensity: 0.1,
-        lightingLux: 300,
-        noiseDb: 40,
-        fireActive: false,
-      },
-      outerEnvironment: {
-        externalTemperatureC: 20,
-        altitudeM: 0,
-        windSpeedKmh: 5,
-        precipitation: 0,
-        threatActive: false,
-      },
-      humans: [
-        {
-          id: "pilot-1",
-          persona: {
-            name: "Alex",
-            role: "pilot",
-            background: "",
-            traits: {
-              openness: 0.5,
-              conscientiousness: 0.8,
-              extraversion: 0.4,
-              agreeableness: 0.5,
-              neuroticism: 0.3,
-            },
-            relationships: [],
-          },
-          needs: { comfort: 1, safety: 1, social: 1 },
-          stress: 0.2,
-          fatigue: 0.1,
-          health: 1.0,
-          attention: 0.8,
-          location: "cabin",
-          goal: "maintain safe cockpit state",
-          shortTermMemory: [],
-          longTermMemory: [],
-        },
-      ],
-      devices: [
-        {
-          id: "engine-1",
-          health: 0.95,
-          powerState: "running",
-          lifecycle: "operational",
-          faults: [],
-          capabilities: ["thrust"],
-          shutdown: false,
-        },
-      ],
-      alarm: {
-        active: false,
-        volumeDb: 0,
-      },
-    };
-    const event = {
-      type: "SimulationTickCommitted" as const,
-      snapshot,
       cursor: 10,
     };
     const action: SimulationAction = { type: "runnerEvent", event };
     const state = simulationReducer(initialSimulationModel, action);
     expect(state.tick).toBe(5);
     expect(state.simTimeMs).toBe(500);
-    expect(state.snapshot).toEqual(snapshot);
+    expect(state.snapshot).toBeUndefined();
     expect(state.lastCursor).toBe(10);
   });
 
@@ -222,70 +207,19 @@ describe("simulationReducer", () => {
   });
 
   it("should preserve paused/replaying state across tick commits", () => {
-    const snapshot = {
-      runId: "run-1",
-      tick: 3,
-      simTimeMs: 300,
-      version: 1,
-      environment: {
-        temperatureC: 22,
-        humidityPct: 50,
-        visibility: 0.9,
-        smokeDensity: 0.1,
-        lightingLux: 300,
-        noiseDb: 40,
-        fireActive: false,
-      },
-      outerEnvironment: {
-        externalTemperatureC: 20,
-        altitudeM: 0,
-        windSpeedKmh: 5,
-        precipitation: 0,
-        threatActive: false,
-      },
-      humans: [
-        {
-          id: "pilot-1",
-          persona: {
-            name: "Alex",
-            role: "pilot",
-            background: "",
-            traits: {
-              openness: 0.5,
-              conscientiousness: 0.8,
-              extraversion: 0.4,
-              agreeableness: 0.5,
-              neuroticism: 0.3,
-            },
-            relationships: [],
-          },
-          needs: { comfort: 1, safety: 1, social: 1 },
-          stress: 0.2,
-          fatigue: 0.1,
-          health: 1,
-          attention: 0.8,
-          location: "cabin",
-          goal: "maintain safe cockpit state",
-          shortTermMemory: [],
-          longTermMemory: [],
-        },
-      ],
-      devices: [
-        {
-          id: "engine-1",
-          health: 0.95,
-          powerState: "running",
-          lifecycle: "operational",
-          faults: [],
-          capabilities: ["thrust"],
-          shutdown: false,
-        },
-      ],
-      alarm: { active: false, volumeDb: 0 },
-    };
     const paused = simulationReducer(
       { ...initialSimulationModel, state: "paused" },
-      { type: "runnerEvent", event: { type: "SimulationTickCommitted", snapshot, cursor: 1 } }
+      {
+        type: "runnerEvent",
+        event: {
+          type: "SimulationTickCommitted",
+          runId: "run-1",
+          tick: 3,
+          simTimeMs: 300,
+          version: 1,
+          cursor: 1,
+        }
+      }
     );
     expect(paused.state).toBe("paused");
   });

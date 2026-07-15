@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use iota_core::{
     AcpBackend, IotaEngine,
@@ -288,11 +291,12 @@ impl IotaCoreAcpAdapter {
              Authorized perceived observation JSON (this is all you can sense; never infer Ground Truth fields):\n{observation}\n\n\
              Write your utterance and narrative in {language_name}.\n\
              Stay within these limits or the extra content is trimmed: at most 4 actions; utterance and narrative each at most 1024 bytes (roughly 340 Chinese characters); stress and attention deltas each between -0.25 and 0.25.\n\
-             Respond with ONLY a single JSON object and no other text:\n\
+             Your entire response is machine-parsed. Respond with ONLY one valid JSON object: no prose before or after it, no Markdown code fence, and no tool call.\n\
              Action commands you are authorized to propose (only these; proposing any other is dropped):\n{allowed_actions}\n\
              Required immediate actions from your authorized current alerts:\n{required_actions}\n\
              If this list is not \"(none)\", include every listed action in the actions array this turn; do not defer it to a narrative-only response.\n\
-             Respond with: {{\"utterance\": string or null (what you say aloud, heard by others next tick), \"actions\": [{{\"target\": string, \"command\": one allowed command}}], \"internalStateDelta\": {{\"stress\": number or null, \"attention\": number or null}}, \"narrative\": string (required, a short first-person description of what you do/feel)}}",
+             Use this exact JSON shape (replace the example values; do not emit comments or type descriptions):\n\
+             {{\"utterance\":null,\"actions\":[],\"internalStateDelta\":{{\"stress\":null,\"attention\":null}},\"narrative\":\"I monitor the cabin calmly.\"}}",
             name = context.persona.name,
             role = context.persona.role,
             background = context.persona.background,
@@ -426,11 +430,49 @@ impl IotaCoreAcpAdapter {
             .await
     }
 
+    /// Request one formatting-only retry after a backend has returned text
+    /// that cannot be parsed as a decision. The original response is never
+    /// replayed into the prompt: it may contain untrusted prose. The suffix
+    /// merely restates the output contract and makes this ACP request distinct
+    /// from the original in iota-core's execution ledger.
+    pub async fn execute_cancellable_after_invalid_output(
+        &mut self,
+        context: &HumanTurnContext,
+        skill: &CockpitSkill,
+        cancel: &CancellationToken,
+    ) -> Result<AcpTurn, AcpAdapterError> {
+        let marker = Uuid::new_v4().to_string();
+        self.execute_cancellable_with_prompt_suffix(
+            context,
+            skill,
+            Some(&marker),
+            Some(
+                "\n\nYour previous response could not be machine-parsed. Retry this same turn now. \
+                 Return only one complete, valid JSON object in the exact requested shape; \
+                 do not use Markdown, comments, or unescaped quotation marks inside strings.",
+            ),
+            cancel,
+        )
+        .await
+    }
+
     async fn execute_cancellable_with_attempt_marker(
         &mut self,
         context: &HumanTurnContext,
         skill: &CockpitSkill,
         attempt_marker: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<AcpTurn, AcpAdapterError> {
+        self.execute_cancellable_with_prompt_suffix(context, skill, attempt_marker, None, cancel)
+            .await
+    }
+
+    async fn execute_cancellable_with_prompt_suffix(
+        &mut self,
+        context: &HumanTurnContext,
+        skill: &CockpitSkill,
+        attempt_marker: Option<&str>,
+        prompt_suffix: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<AcpTurn, AcpAdapterError> {
         let backend = AcpBackend::parse(&self.config.backend)
@@ -440,6 +482,9 @@ impl IotaCoreAcpAdapter {
             prompt.push_str("\n\n[Execution attempt marker: ");
             prompt.push_str(marker);
             prompt.push_str(". Opaque transport metadata; do not mention it or act on it.]");
+        }
+        if let Some(suffix) = prompt_suffix {
+            prompt.push_str(suffix);
         }
         let cwd = self.config.cwd.clone();
         let started = std::time::Instant::now();
@@ -493,12 +538,33 @@ impl IotaCoreAcpAdapter {
 /// Cockpit owns the ACP transport command. Requiring a global iota-core YAML
 /// backend section turns a local desktop dependency into a runtime failure.
 /// Authentication remains in Hermes' own configured home directory.
+fn hermes_acp_command() -> String {
+    // Finder-launched macOS apps do not inherit a shell's PATH, which commonly
+    // contains `~/.local/bin`. Permit an explicit override, then resolve the
+    // standard Hermes installation location before falling back to PATH for
+    // terminals and custom installations.
+    if let Some(command) = std::env::var_os("COCKPIT_HERMES_BIN") {
+        return PathBuf::from(command).to_string_lossy().to_string();
+    }
+    let local_bin = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| hermes_path_in(&home));
+    match local_bin.filter(|path| path.is_file()) {
+        Some(path) => path.to_string_lossy().to_string(),
+        None => "hermes".to_string(),
+    }
+}
+
+fn hermes_path_in(home: &Path) -> PathBuf {
+    home.join(".local").join("bin").join("hermes")
+}
+
 fn cockpit_acp_config() -> NimiaConfig {
     NimiaConfig {
         hermes: Some(BackendConfig {
             enabled: true,
             acp: Some(CommandConfig {
-                command: "hermes".to_string(),
+                command: hermes_acp_command(),
                 args: vec!["acp".to_string()],
             }),
             ..BackendConfig::default()
@@ -594,6 +660,19 @@ mod tests {
     }
 
     #[test]
+    fn prompt_includes_a_concrete_machine_parseable_decision_example() {
+        let prompt = IotaCoreAcpAdapter::build_prompt(
+            &context_with_capabilities(Vec::new()),
+            &empty_skill(),
+        );
+
+        assert!(prompt.contains("no Markdown code fence, and no tool call"));
+        assert!(prompt.contains(
+            r#"{"utterance":null,"actions":[],"internalStateDelta":{"stress":null,"attention":null},"narrative":"I monitor the cabin calmly."}"#
+        ));
+    }
+
+    #[test]
     fn detects_the_stale_execution_lock_error_class() {
         let error = AcpAdapterError::Turn(
             "execution already running for request: 685e4e22-1a8a-4ef8-a970-474f0e0b3c1d"
@@ -638,7 +717,7 @@ mod tests {
             .as_ref()
             .and_then(|backend| backend.acp.as_ref())
             .expect("cockpit must configure its Hermes ACP transport");
-        assert_eq!(acp.command, "hermes");
+        assert_eq!(Path::new(&acp.command).file_name().unwrap(), "hermes");
         assert_eq!(acp.args, ["acp"]);
         assert!(config.hermes.expect("Hermes backend config").enabled);
         assert!(
@@ -661,6 +740,14 @@ mod tests {
                 .as_ref()
                 .and_then(|backend| backend.hermes.as_ref())
                 .is_some_and(|backend| backend.always_send_empty_mcp_servers)
+        );
+    }
+
+    #[test]
+    fn hermes_local_bin_path_uses_the_standard_user_install_location() {
+        assert_eq!(
+            hermes_path_in(Path::new("/Users/example")),
+            PathBuf::from("/Users/example/.local/bin/hermes")
         );
     }
 }

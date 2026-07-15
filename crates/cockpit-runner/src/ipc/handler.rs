@@ -16,7 +16,7 @@ use cockpit_recording::{
 };
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{
-    PluginFailureRecord, Simulation, SimulationError, StateDiff, clock::RunStatus,
+    PluginFailureRecord, Simulation, SimulationError, StateDiff, WorldSnapshot, clock::RunStatus,
 };
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -463,10 +463,7 @@ impl RunnerHandler {
             if let Some(target) = self.recording.as_mut() {
                 target.push(step.clone());
             }
-            self.emit(RunnerEvent::SimulationTickCommitted {
-                cursor: 0,
-                snapshot,
-            });
+            self.emit(Self::tick_committed_event(&snapshot));
             for event in step.events {
                 self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
             }
@@ -514,6 +511,17 @@ impl RunnerHandler {
             .simulation
             .take()
             .ok_or_else(|| Box::new(Self::no_run_error()))?;
+        if simulation.status == RunStatus::Completed {
+            let run_id = simulation.run_id().to_string();
+            let tick = simulation.snapshot.tick;
+            self.simulation = Some(simulation);
+            return Ok(json!({
+                "runId": run_id,
+                "tick": tick,
+                "status": RunStatus::Completed,
+                "alreadyCompleted": true
+            }));
+        }
         let (plugin_diffs, plugin_failures) = self.run_plugins(&simulation);
         let result =
             self.agent
@@ -575,10 +583,7 @@ impl RunnerHandler {
             });
         }
         self.persist_recording()?;
-        self.emit(RunnerEvent::SimulationTickCommitted {
-            cursor: 0,
-            snapshot,
-        });
+        self.emit(Self::tick_committed_event(&snapshot));
         for event in step.events {
             self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
         }
@@ -615,6 +620,18 @@ impl RunnerHandler {
                 evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
             });
         }
+        if deadline_reached(
+            simulation.status,
+            tick,
+            simulation.scenario.shutdown_deadline_ticks,
+        ) {
+            simulation.status = RunStatus::Completed;
+            self.emit(RunnerEvent::SimulationStateChanged {
+                cursor: 0,
+                state: RunStatus::Completed,
+                run_id: Some(simulation.run_id().to_string()),
+            });
+        }
         let run_id = simulation.run_id().to_string();
         let status = simulation.status;
         self.simulation = Some(simulation);
@@ -632,6 +649,17 @@ impl RunnerHandler {
             .simulation
             .take()
             .ok_or_else(|| Box::new(Self::no_run_error()))?;
+        if simulation.status == RunStatus::Completed {
+            let run_id = simulation.run_id().to_string();
+            let tick = simulation.snapshot.tick;
+            self.simulation = Some(simulation);
+            return Ok(json!({
+                "runId": run_id,
+                "tick": tick,
+                "status": RunStatus::Completed,
+                "alreadyCompleted": true
+            }));
+        }
         let mut backend = self.live_backend.take().ok_or_else(|| {
             Box::new(IpcError {
                 code: "LIVE_BACKEND_NOT_CREATED".to_string(),
@@ -704,10 +732,7 @@ impl RunnerHandler {
             recording.push_human_turns(human_turns.clone());
         }
         self.persist_recording()?;
-        self.emit(RunnerEvent::SimulationTickCommitted {
-            cursor: 0,
-            snapshot,
-        });
+        self.emit(Self::tick_committed_event(&snapshot));
         for evidence in &human_turns {
             self.emit(RunnerEvent::SimulationHumanTurn {
                 cursor: 0,
@@ -735,6 +760,18 @@ impl RunnerHandler {
             self.emit(RunnerEvent::SimulationEvaluationUpdated {
                 cursor: 0,
                 evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
+            });
+        }
+        if deadline_reached(
+            simulation.status,
+            tick,
+            simulation.scenario.shutdown_deadline_ticks,
+        ) {
+            simulation.status = RunStatus::Completed;
+            self.emit(RunnerEvent::SimulationStateChanged {
+                cursor: 0,
+                state: RunStatus::Completed,
+                run_id: Some(simulation.run_id().to_string()),
             });
         }
         let run_id = simulation.run_id().to_string();
@@ -886,10 +923,7 @@ impl RunnerHandler {
                 .step_with_recorded_inputs(actions, state_diffs)
                 .map_err(|error| Box::new(Self::simulation_error(error, Some(&simulation))))?;
             let snapshot = simulation.snapshot.clone();
-            self.emit(RunnerEvent::SimulationTickCommitted {
-                cursor: 0,
-                snapshot,
-            });
+            self.emit(Self::tick_committed_event(&snapshot));
             for event in step.events {
                 self.emit(RunnerEvent::SimulationEvent { cursor: 0, event });
             }
@@ -933,6 +967,16 @@ impl RunnerHandler {
             .filter(|event| event.cursor() > cursor)
             .cloned()
             .collect()
+    }
+
+    fn tick_committed_event(snapshot: &WorldSnapshot) -> RunnerEvent {
+        RunnerEvent::SimulationTickCommitted {
+            cursor: 0,
+            run_id: snapshot.run_id.clone(),
+            tick: snapshot.tick,
+            sim_time_ms: snapshot.sim_time_ms,
+            version: snapshot.version,
+        }
     }
 
     fn cursor_reset_required(&self, cursor: Option<u64>) -> bool {
@@ -997,9 +1041,19 @@ impl RunnerHandler {
                     run_id,
                 }
             }
-            RunnerEvent::SimulationTickCommitted { snapshot, .. } => {
-                RunnerEvent::SimulationTickCommitted { cursor, snapshot }
-            }
+            RunnerEvent::SimulationTickCommitted {
+                run_id,
+                tick,
+                sim_time_ms,
+                version,
+                ..
+            } => RunnerEvent::SimulationTickCommitted {
+                cursor,
+                run_id,
+                tick,
+                sim_time_ms,
+                version,
+            },
             RunnerEvent::SimulationEvent { event, .. } => {
                 RunnerEvent::SimulationEvent { cursor, event }
             }
@@ -1104,6 +1158,10 @@ impl RunnerHandler {
     }
 }
 
+fn deadline_reached(status: RunStatus, tick: u64, deadline_tick: u64) -> bool {
+    matches!(status, RunStatus::Running) && tick >= deadline_tick
+}
+
 fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRecord {
     PluginFailureRecord {
         plugin_id: failure.plugin_id.clone(),
@@ -1118,7 +1176,17 @@ fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::LiveTurnControl;
+    use super::{LiveTurnControl, deadline_reached};
+    use cockpit_simulation_core::clock::RunStatus;
+
+    #[test]
+    fn deadline_completion_only_applies_to_running_simulations() {
+        assert!(deadline_reached(RunStatus::Running, 16, 16));
+        assert!(deadline_reached(RunStatus::Running, 17, 16));
+        assert!(!deadline_reached(RunStatus::Running, 15, 16));
+        assert!(!deadline_reached(RunStatus::Paused, 16, 16));
+        assert!(!deadline_reached(RunStatus::Failed, 16, 16));
+    }
 
     #[test]
     fn live_turn_control_cancels_without_runner_state_access() {

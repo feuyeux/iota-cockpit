@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { AlertCircle, Flame, RadioTower, Siren, Thermometer, User, Zap } from "lucide-react";
 import type { DeviceState, HumanState, SimulationModel } from "../types/simulation";
-import { CABIN_ZONES, getAnchorPosition, getZoneLayout } from "../config/cabinLayout";
+import { CABIN_ZONES, getZoneLayout } from "../config/cabinLayout";
 import { useI18n } from "../i18n";
 import {
   actionStatusLabel,
@@ -24,18 +24,6 @@ import type { Locale } from "../i18n";
 ///    on the map, so the operator can see *which* part of the world model
 ///    just changed and *why* (event/action label surfaced in a tooltip-like
 ///    badge next to the marker).
-function statBar(label: string, value: number, colorClass: string) {
-  return (
-    <div key={label} className="flex items-center gap-1.5 text-[10px]">
-      <span className="w-14 shrink-0 text-zinc-400">{label}</span>
-      <div className="h-1 flex-1 overflow-hidden rounded bg-zinc-800">
-        <div className={`h-full ${colorClass}`} style={{ width: `${Math.round(value * 100)}%` }} />
-      </div>
-      <span className="w-7 shrink-0 text-right text-zinc-500">{Math.round(value * 100)}%</span>
-    </div>
-  );
-}
-
 interface LastEffect {
   targetId: string;
   label: string;
@@ -67,6 +55,11 @@ function useLastEffect(model: SimulationModel, locale: Locale): LastEffect | und
   }, [locale, model.actionResults, model.events]);
 }
 
+function zoneIdForLocation(locationLabel: string | undefined): string {
+  const zone = getZoneLayout(locationLabel);
+  return zone.id === "__unknown__" ? "cabin" : zone.id;
+}
+
 function HumanMarker({
   human,
   highlighted
@@ -75,35 +68,33 @@ function HumanMarker({
   highlighted: LastEffect | undefined;
 }) {
   const { t } = useI18n();
-  const pos = getAnchorPosition(human.location, human.id);
   const isHighlighted = highlighted?.targetId === human.id;
   return (
-    <div
-      className="absolute -translate-x-1/2 -translate-y-1/2"
-      style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+    <article
+      className={`min-w-0 rounded border p-1.5 ${
+        isHighlighted
+          ? "border-amber-300 bg-amber-950/70 text-amber-100"
+          : "border-emerald-700/60 bg-zinc-950/85 text-emerald-100"
+      }`}
       data-testid={`marker-human-${human.id}`}
+      title={`${human.persona.name} · ${human.persona.role} · ${human.location}`}
     >
-      <div
-        className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] shadow-lg ${
-          isHighlighted
-            ? "border-amber-300 bg-amber-950/80 text-amber-100 animate-pulse"
-            : "border-emerald-700/60 bg-zinc-950/90 text-emerald-100"
-        }`}
-        title={`${human.persona.name} · ${human.persona.role} · ${human.location}`}
-      >
-        <User className="h-3 w-3" />
-        <span className="max-w-[72px] truncate">{human.persona.name}</span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <User className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{human.persona.name}</span>
+        <span className="max-w-16 truncate text-[10px] text-zinc-400">{human.persona.role}</span>
       </div>
-      <div className="mt-1 w-24 space-y-0.5 rounded border border-zinc-800 bg-zinc-950/85 p-1">
-        {statBar(t("stress"), human.stress, "bg-rose-500")}
-        {statBar(t("attention"), human.attention, "bg-cyan-500")}
-      </div>
-      {isHighlighted && (
-        <div className="mt-1 whitespace-nowrap rounded bg-amber-500/90 px-1.5 py-0.5 text-[9px] font-medium text-zinc-950">
+      <dl className="mt-1 grid grid-cols-3 gap-1 text-[10px]">
+        <div><dt className="text-zinc-500">{t("stress")}</dt><dd className="text-rose-200">{Math.round(human.stress * 100)}%</dd></div>
+        <div><dt className="text-zinc-500">{t("attention")}</dt><dd className="text-cyan-200">{Math.round(human.attention * 100)}%</dd></div>
+        <div><dt className="text-zinc-500">{t("health")}</dt><dd className="text-emerald-200">{Math.round(human.health * 100)}%</dd></div>
+      </dl>
+      {isHighlighted ? (
+        <div className="mt-1 truncate border-t border-amber-300/30 pt-1 text-[10px] font-medium text-amber-200" title={highlighted.label}>
           t{highlighted.tick} · {highlighted.label}
         </div>
-      )}
-    </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -115,44 +106,35 @@ function DeviceMarker({
   highlighted: LastEffect | undefined;
 }) {
   const { locale, t } = useI18n();
-  // Devices don't carry a `location` field on WorldSnapshot today; place them
-  // in the zone matching their id when a scenario names a zone after them,
-  // otherwise anchor them in the primary cockpit zone since the current
-  // scenario's only device (engine) lives there.
-  const zone = getZoneLayout(device.id);
-  const fallbackLabel = zone.id === "__unknown__" ? "cockpit" : device.id;
-  const pos = getAnchorPosition(fallbackLabel, device.id);
   const isHighlighted = highlighted?.targetId === device.id;
   const faulted = device.faults.length > 0;
   return (
-    <div
-      className="absolute -translate-x-1/2 -translate-y-1/2"
-      style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+    <article
+      className={`min-w-0 rounded border p-1.5 ${
+        isHighlighted
+          ? "border-amber-300 bg-amber-950/70 text-amber-100"
+          : faulted
+            ? "border-red-500/70 bg-red-950/55 text-red-100"
+            : "border-cyan-700/60 bg-zinc-950/85 text-cyan-100"
+      }`}
       data-testid={`marker-device-${device.id}`}
+      title={`${device.id} · ${lifecycleLabel(device.lifecycle, locale)} · ${t("health")} ${(device.health * 100).toFixed(0)}% · ${device.capabilities.join(", ")}`}
     >
-      <div
-        className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] shadow-lg ${
-          isHighlighted
-            ? "border-amber-300 bg-amber-950/80 text-amber-100 animate-pulse"
-            : faulted
-              ? "border-red-500/70 bg-red-950/60 text-red-100"
-              : "border-cyan-700/60 bg-zinc-950/90 text-cyan-100"
-        }`}
-        title={`${device.id} · ${lifecycleLabel(device.lifecycle, locale)} · ${t("health")} ${(device.health * 100).toFixed(0)}% · ${device.capabilities.join(", ")}`}
-      >
-        {faulted ? <Zap className="h-3 w-3" /> : <RadioTower className="h-3 w-3" />}
-        <span className="max-w-[72px] truncate">{device.id}</span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {faulted ? <Zap className="h-3.5 w-3.5 shrink-0" /> : <RadioTower className="h-3.5 w-3.5 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium">{device.id}</span>
+        <span className="shrink-0 text-[10px] text-zinc-400">{Math.round(device.health * 100)}%</span>
       </div>
-      <div className="mt-1 w-20 rounded border border-zinc-800 bg-zinc-950/85 p-1 text-[9px] text-zinc-400">
-        <div className="uppercase tracking-wide text-zinc-500">{lifecycleLabel(device.lifecycle, locale)}</div>
-        {statBar(t("health"), device.health, device.health < 0.4 ? "bg-red-500" : "bg-emerald-500")}
+      <div className="mt-1 grid grid-cols-[minmax(0,1fr)_auto] gap-1 text-[10px]">
+        <span className="truncate text-zinc-400">{lifecycleLabel(device.lifecycle, locale)}</span>
+        <span className="text-zinc-500">{device.capabilities.length} {t("deviceCapabilities")}</span>
       </div>
-      {isHighlighted && (
-        <div className="mt-1 whitespace-nowrap rounded bg-amber-500/90 px-1.5 py-0.5 text-[9px] font-medium text-zinc-950">
+      {isHighlighted ? (
+        <div className="mt-1 truncate border-t border-amber-300/30 pt-1 text-[10px] font-medium text-amber-200" title={highlighted.label}>
           t{highlighted.tick} · {highlighted.label}
         </div>
-      )}
-    </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -206,10 +188,16 @@ export function SimulationWorldView({ model }: { model: SimulationModel }) {
   };
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900/70">
+    <section className="world-view flex min-h-0 min-w-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900/70">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2 text-sm font-medium shrink-0">
         <span>{t("world")}</span>
         <div className="flex items-center gap-2">
+          {fireActive ? (
+            <span className="flex items-center gap-1 text-xs text-orange-300">
+              <Flame className="h-3 w-3" />
+              {t("fireActive")}
+            </span>
+          ) : null}
           {alarmActive && (
             <span className="flex items-center gap-1 text-xs text-red-300">
               <Siren className="h-3 w-3" />
@@ -225,8 +213,8 @@ export function SimulationWorldView({ model }: { model: SimulationModel }) {
           <span className="text-xs text-zinc-400">{t("groundTruthHidden")}</span>
         </div>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[190px_minmax(0,1fr)]">
-        <aside className="min-h-0 overflow-y-auto border-b border-zinc-800 p-3 text-sm text-zinc-300 md:border-r md:border-b-0">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[170px_minmax(0,1fr)]">
+        <aside className="min-h-0 overflow-y-auto border-b border-zinc-800 p-2.5 text-sm text-zinc-300 md:border-r md:border-b-0">
           <div className="mb-2 text-xs font-medium text-zinc-400">{t("legend")}</div>
           <div className="mb-3 space-y-1.5 text-[10px] text-zinc-400">
             <div className="flex items-center gap-1.5">
@@ -269,6 +257,18 @@ export function SimulationWorldView({ model }: { model: SimulationModel }) {
               )}
             </div>
           )}
+
+          {snapshot ? (
+            <div className="mt-3 space-y-1 border-t border-zinc-800 pt-2 text-xs">
+              <div className="flex items-center gap-1 text-zinc-400"><Thermometer className="h-3 w-3" />{t("outer")}</div>
+              <div>{t("externalTemperature")}: {snapshot.outerEnvironment.externalTemperatureC.toFixed(1)}°C</div>
+              <div>{t("wind")}: {snapshot.outerEnvironment.windSpeedKmh.toFixed(1)} km/h</div>
+              <div className="mt-1 flex items-center gap-1 text-zinc-400"><Thermometer className="h-3 w-3" />{t("cabin")}</div>
+              <div>{t("temperature")}: {snapshot.environment.temperatureC.toFixed(1)}°C</div>
+              <div>{t("smoke")}: {snapshot.environment.smokeDensity.toFixed(2)}</div>
+              {lightingLux !== undefined ? <div>{t("lighting")}: {lightingLux.toFixed(0)} lux</div> : null}
+            </div>
+          ) : null}
 
           {lastEffect && (
             <div className="mt-3 space-y-1 border-t border-zinc-800 pt-2 text-xs">
@@ -328,79 +328,67 @@ export function SimulationWorldView({ model }: { model: SimulationModel }) {
           )}
         </aside>
 
-        <div className="relative min-h-0 overflow-hidden p-4">
-          <div className="absolute inset-4 border border-zinc-700 bg-zinc-950" data-testid="floor-plan">
+        <div className="relative min-h-0 overflow-hidden p-2">
+          <div className="absolute inset-2 border border-zinc-700 bg-zinc-950" data-testid="floor-plan">
             {/* Environment overlays: visibility haze, smoke, fire, alarm tint */}
             <div
               className="pointer-events-none absolute inset-0 bg-zinc-300/10 transition-opacity"
               style={{ opacity: 1 - visibility }}
               data-testid="visibility-overlay"
             />
-            {smokeDensity > 0 && (
+            {smokeDensity > 0 ? (
               <div
                 className="pointer-events-none absolute inset-0 bg-zinc-400/20 transition-opacity"
                 style={{ opacity: Math.min(0.85, smokeDensity) }}
                 data-testid="smoke-overlay"
               />
-            )}
-            {fireActive && (
-              <div className="pointer-events-none absolute inset-0 animate-pulse bg-orange-600/15" />
-            )}
-            {alarmActive && (
-              <div className="pointer-events-none absolute inset-0 animate-pulse border-2 border-red-500/50" />
-            )}
+            ) : null}
+            {fireActive ? <div className="pointer-events-none absolute inset-0 animate-pulse bg-orange-600/15" /> : null}
+            {alarmActive ? <div className="pointer-events-none absolute inset-0 animate-pulse border-2 border-red-500/50" /> : null}
 
-            {/* Room / zone layout */}
-            {CABIN_ZONES.map((zone) => (
-              <div
-                key={zone.id}
-                className="absolute border border-zinc-700/70 bg-zinc-900/30"
-                style={{
-                  left: `${zone.x}%`,
-                  top: `${zone.y}%`,
-                  width: `${zone.width}%`,
-                  height: `${zone.height}%`
-                }}
-              >
-                <span className="absolute left-1 top-1 text-[10px] uppercase tracking-wide text-zinc-500">
-                  {zoneLabels[zone.id] ?? zone.label}
-                </span>
-              </div>
-            ))}
+            {CABIN_ZONES.map((zone) => {
+              const zoneHumans = humans
+                .filter((human) => zoneIdForLocation(human.location) === zone.id)
+                .sort((left, right) => left.persona.name.localeCompare(right.persona.name));
+              const zoneDevices = devices
+                .filter((device) => {
+                  const deviceZone = getZoneLayout(device.id);
+                  return (deviceZone.id === "__unknown__" ? "cockpit" : deviceZone.id) === zone.id;
+                })
+                .sort((left, right) => left.id.localeCompare(right.id));
+              const entityCount = zoneHumans.length + zoneDevices.length;
 
-            {/* Entities */}
-            {humans.map((human) => (
-              <HumanMarker key={human.id} human={human} highlighted={lastEffect} />
-            ))}
-            {devices.map((device) => (
-              <DeviceMarker key={device.id} device={device} highlighted={lastEffect} />
-            ))}
-
-            {fireActive && (
-              <div className="absolute right-3 bottom-3 flex items-center gap-1 rounded bg-orange-950/80 px-2 py-1 text-[10px] text-orange-200">
-                <Flame className="h-3 w-3" />
-                {t("fireActive")}
-              </div>
-            )}
+              return (
+                <section
+                  key={zone.id}
+                  className="absolute flex min-h-0 flex-col overflow-hidden border border-zinc-700/70 bg-zinc-900/50 p-1.5"
+                  data-testid={`cabin-zone-${zone.id}`}
+                  style={{
+                    left: `${zone.x}%`,
+                    top: `${zone.y}%`,
+                    width: `${zone.width}%`,
+                    height: `${zone.height}%`
+                  }}
+                >
+                  <header className="mb-1 flex shrink-0 items-center justify-between gap-2 border-b border-zinc-700/60 pb-1">
+                    <span className="truncate text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                      {zoneLabels[zone.id] ?? zone.label}
+                    </span>
+                    <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-400">{entityCount}</span>
+                  </header>
+                  <div className="grid min-h-0 flex-1 content-start grid-cols-1 gap-1 overflow-y-auto pr-0.5">
+                    {zoneHumans.map((human) => <HumanMarker key={human.id} human={human} highlighted={lastEffect} />)}
+                    {zoneDevices.map((device) => <DeviceMarker key={device.id} device={device} highlighted={lastEffect} />)}
+                    {entityCount === 0 ? (
+                      <div className="flex min-h-16 items-center justify-center rounded border border-dashed border-zinc-800 text-xs text-zinc-600">
+                        {t("emptySeat")}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              );
+            })}
           </div>
-
-          {snapshot && (
-            <div className="absolute right-6 top-6 space-y-1 rounded border border-zinc-800 bg-zinc-900/90 p-2 text-[11px] text-zinc-300">
-              <div className="flex items-center gap-1 text-zinc-400">
-                <Thermometer className="h-3 w-3" />
-                <span>{t("outer")}</span>
-              </div>
-              <div>{t("externalTemperature")}: {snapshot.outerEnvironment.externalTemperatureC.toFixed(1)}°C</div>
-              <div>{t("wind")}: {snapshot.outerEnvironment.windSpeedKmh.toFixed(1)} km/h</div>
-              <div className="mt-1 flex items-center gap-1 text-zinc-400">
-                <Thermometer className="h-3 w-3" />
-                <span>{t("cabin")}</span>
-              </div>
-              <div>{t("temperature")}: {snapshot.environment.temperatureC.toFixed(1)}°C</div>
-              <div>{t("smoke")}: {snapshot.environment.smokeDensity.toFixed(2)}</div>
-              {lightingLux !== undefined && <div>{t("lighting")}: {lightingLux.toFixed(0)} lux</div>}
-            </div>
-          )}
         </div>
       </div>
     </section>

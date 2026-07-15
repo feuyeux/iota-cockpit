@@ -219,12 +219,13 @@ describe("SimulationWorldView", () => {
   it("renders the floor plan with zone rooms", () => {
     const el = render({ ...initialSimulationModel, snapshot: snapshotWith({}) });
     const floorPlan = el.querySelector('[data-testid="floor-plan"]');
+    expect(el.querySelector(".world-view")).not.toBeNull();
     expect(floorPlan).not.toBeNull();
     expect(el.textContent).toContain("Cockpit");
     expect(el.textContent).toContain("Rear Left");
   });
 
-  it("places humans from different location labels into distinct zones", () => {
+  it("groups humans from different location labels into their matching zones", () => {
     const el = render({
       ...initialSimulationModel,
       snapshot: snapshotWith({
@@ -234,11 +235,36 @@ describe("SimulationWorldView", () => {
         ],
       }),
     });
-    const pilotMarker = el.querySelector('[data-testid="marker-human-pilot-1"]') as HTMLElement | null;
-    const passengerMarker = el.querySelector('[data-testid="marker-human-passenger-1"]') as HTMLElement | null;
-    expect(pilotMarker).not.toBeNull();
-    expect(passengerMarker).not.toBeNull();
-    expect(pilotMarker!.style.top).not.toEqual(passengerMarker!.style.top);
+    const pilotMarker = el.querySelector('[data-testid="marker-human-pilot-1"]');
+    const passengerMarker = el.querySelector('[data-testid="marker-human-passenger-1"]');
+    const cockpitZone = el.querySelector('[data-testid="cabin-zone-cockpit"]');
+    const rearLeftZone = el.querySelector('[data-testid="cabin-zone-rear-left"]');
+
+    expect(cockpitZone?.contains(pilotMarker)).toBe(true);
+    expect(rearLeftZone?.contains(passengerMarker)).toBe(true);
+  });
+
+  it("orders occupants before devices within a compact zone list", () => {
+    const el = render({
+      ...initialSimulationModel,
+      snapshot: snapshotWith({
+        humans: [
+          human({ id: "sam-1", persona: { ...human().persona, name: "Sam" }, location: "cockpit" }),
+          human({ id: "alex-1", persona: { ...human().persona, name: "Alex" }, location: "cockpit" }),
+        ],
+      }),
+    });
+    const cockpitZone = el.querySelector('[data-testid="cabin-zone-cockpit"]') as HTMLElement | null;
+    const alex = cockpitZone?.querySelector('[data-testid="marker-human-alex-1"]') as HTMLElement | null;
+    const sam = cockpitZone?.querySelector('[data-testid="marker-human-sam-1"]') as HTMLElement | null;
+    const device = cockpitZone?.querySelector('[data-testid="marker-device-engine-1"]') as HTMLElement | null;
+
+    expect(alex).not.toBeNull();
+    expect(sam).not.toBeNull();
+    expect(device).not.toBeNull();
+    expect(cockpitZone!.textContent!.indexOf("Alex")).toBeLessThan(cockpitZone!.textContent!.indexOf("Sam"));
+    expect(cockpitZone!.textContent!.indexOf("Sam")).toBeLessThan(cockpitZone!.textContent!.indexOf("engine-1"));
+    expect(alex!.className).not.toContain("absolute");
   });
 
   it("shows smoke and fire overlays when present in the snapshot", () => {

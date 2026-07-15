@@ -65,9 +65,9 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
   const guide = model.state === "ready" ? text.ready : model.state === "running" ? text.running : ["stopped", "failed"].includes(model.state) ? text.stopped : text.before;
 
   return (
-    <section className="min-w-0 overflow-hidden border border-zinc-800 bg-zinc-900/70">
-      <div className="border-b border-zinc-800 px-3 py-2 text-sm font-medium">{text.process}</div>
-      <div className="space-y-3 p-3">
+    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900/70">
+      <div className="shrink-0 border-b border-zinc-800 px-3 py-2 text-sm font-medium">{text.process}</div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {scenario ? (
           <div className="border border-cyan-800/60 bg-cyan-950/20 p-2.5 text-xs">
             <div className="font-medium text-cyan-100">{localize(scenario.title, locale)}</div>

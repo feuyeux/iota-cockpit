@@ -23,6 +23,7 @@ export type SimulationAction =
   | { type: "approvalModeChanged"; required: boolean }
   | { type: "replayDiffUpdated"; report: import("../types/simulation").RecordingDiff }
   | { type: "snapshotReset"; snapshot: import("../types/simulation").WorldSnapshot; cursor: number }
+  | { type: "snapshotUpdated"; snapshot: import("../types/simulation").WorldSnapshot; cursor: number }
   | { type: "commandRejected"; error: SimulationError }
   | { type: "runnerEvent"; event: RunnerEvent }
   | { type: "runnerEvents"; events: RunnerEvent[] };
@@ -58,7 +59,25 @@ export function simulationReducer(
         error: action.error
       };
     case "scenarioLoading":
-      return { ...state, state: "scenarioLoading", error: undefined };
+      return {
+        ...state,
+        state: "scenarioLoading",
+        scenario: undefined,
+        runId: undefined,
+        backend: undefined,
+        tick: 0,
+        simTimeMs: 0,
+        snapshot: undefined,
+        observations: [],
+        events: [],
+        toolCalls: [],
+        humanTurns: [],
+        actionResults: [],
+        evaluation: undefined,
+        replayDiff: undefined,
+        lastCursor: undefined,
+        error: undefined
+      };
     case "scenarioInvalid":
       return { ...state, state: "scenarioInvalid", error: action.error };
     case "runCreating":
@@ -70,16 +89,19 @@ export function simulationReducer(
         ...state,
         state: "ready",
         scenario: action.scenario,
-        runId: action.runId ?? state.runId,
+        runId: action.runId,
         backend: action.backend,
-        events: [],
+        tick: 0,
+        simTimeMs: 0,
+        snapshot: undefined,
         observations: [],
+        events: [],
         actionResults: [],
         toolCalls: [],
         humanTurns: [],
         evaluation: undefined,
-        tick: 0,
-        simTimeMs: 0,
+        replayDiff: undefined,
+        lastCursor: undefined,
         error: undefined
       };
     case "approvalModeChanged":
@@ -98,6 +120,15 @@ export function simulationReducer(
         toolCalls: [],
         humanTurns: [],
         actionResults: [],
+        lastCursor: action.cursor
+      };
+    case "snapshotUpdated":
+      return {
+        ...state,
+        runId: action.snapshot.runId,
+        tick: action.snapshot.tick,
+        simTimeMs: action.snapshot.simTimeMs,
+        snapshot: action.snapshot,
         lastCursor: action.cursor
       };
     case "commandRejected":
@@ -124,10 +155,9 @@ function reduceRunnerEvent(state: SimulationModel, event: RunnerEvent): Simulati
       return {
         ...state,
         state: state.state === "paused" || state.state === "replaying" ? state.state : "running",
-        runId: event.snapshot.runId,
-        tick: event.snapshot.tick,
-        simTimeMs: event.snapshot.simTimeMs,
-        snapshot: event.snapshot,
+        runId: event.runId,
+        tick: event.tick,
+        simTimeMs: event.simTimeMs,
         lastCursor: event.cursor
       };
     case "SimulationEvent":

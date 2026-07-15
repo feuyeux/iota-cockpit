@@ -313,8 +313,7 @@ fn runner_replay_emits_real_snapshots_and_terminal_state() {
     assert!(events.iter().any(|event| {
         event.get("type") == Some(&Value::String("SimulationTickCommitted".to_string()))
             && event
-                .get("snapshot")
-                .and_then(|snapshot| snapshot.get("tick"))
+                .get("tick")
                 .and_then(Value::as_u64)
                 .is_some_and(|tick| tick > 0)
     }));
@@ -377,11 +376,22 @@ fn runner_exposes_recording_diff_report() {
 
 #[test]
 fn runner_bounds_event_history_and_marks_stale_cursors_for_reset() {
+    let path = std::env::temp_dir().join(format!(
+        "cockpit-event-history-{}.yaml",
+        uuid::Uuid::new_v4()
+    ));
+    let scenario = std::fs::read_to_string("scenarios/smoke-in-cockpit.yaml")
+        .expect("source scenario")
+        .replace(
+            "deadlineTick: 30",
+            &format!("deadlineTick: {}", MAX_EVENT_HISTORY + 101),
+        );
+    std::fs::write(&path, scenario).expect("long-running scenario");
     let mut handler = RunnerHandler::new("session-1");
     assert!(
         handler
             .dispatch(request(RunnerCommand::CreateSimulationRun {
-                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+                path: path.to_string_lossy().to_string(),
             }))
             .ok
     );
@@ -409,6 +419,7 @@ fn runner_bounds_event_history_and_marks_stale_cursors_for_reset() {
             .and_then(Value::as_u64)
             .is_some_and(|cursor| cursor > 1)
     );
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

@@ -330,7 +330,14 @@ export interface SimulationModel {
 
 export type RunnerEvent =
   | { type: "SimulationStateChanged"; state: RunState; runId?: string }
-  | { type: "SimulationTickCommitted"; snapshot: WorldSnapshot; cursor: number }
+  | {
+      type: "SimulationTickCommitted";
+      runId: string;
+      tick: number;
+      simTimeMs: number;
+      version: number;
+      cursor: number;
+    }
   | { type: "SimulationEvent"; event: SimulationEvent; cursor: number }
   | { type: "SimulationToolCall"; trace: ToolCallTrace; cursor: number }
   | {

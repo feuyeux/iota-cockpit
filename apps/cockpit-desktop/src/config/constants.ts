@@ -23,6 +23,7 @@ export const APP_CONFIG = {
 
   // UI
   DEFAULT_SCENARIO_PATH: "scenarios/smoke-in-cockpit.yaml",
+  AUTO_RUN_EVENT_POLL_INTERVAL_MS: 250,
 } as const;
 
 export const KEYBOARD_SHORTCUTS = {

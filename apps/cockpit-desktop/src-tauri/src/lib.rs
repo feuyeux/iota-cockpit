@@ -2,6 +2,20 @@ mod runner_commands;
 
 use runner_commands::RunnerState;
 use std::path::PathBuf;
+use tauri::Manager;
+
+/// Return the directory that contains the packaged `scenarios/` folder. In a
+/// development checkout, retain the current workspace directory so the same
+/// relative paths continue to work without a bundle step.
+fn scenario_root(app: &tauri::App) -> PathBuf {
+    if let Ok(resources) = app.path().resource_dir()
+        && resources.join("scenarios").is_dir()
+    {
+        return resources;
+    }
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,30 +27,12 @@ pub fn run() {
             .unwrap_or_default()
     );
 
-    // Capture workspace root at startup
-    // In dev mode, CARGO_MANIFEST_DIR points to apps/cockpit-desktop/src-tauri
-    // We need to go up to the repository root (../../..)
-    let workspace_root = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .and_then(|manifest_dir| {
-            // Go up from apps/cockpit-desktop/src-tauri to project root
-            manifest_dir
-                .parent()?
-                .parent()?
-                .parent()
-                .map(|p| p.to_path_buf())
-        })
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    eprintln!(
-        "Cockpit Desktop: workspace_root = {}",
-        workspace_root.display()
-    );
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(RunnerState::new(token, workspace_root))
+        .setup(move |app| {
+            app.manage(RunnerState::new(token, scenario_root(app)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             runner_commands::connect_runner,
             runner_commands::validate_scenario,

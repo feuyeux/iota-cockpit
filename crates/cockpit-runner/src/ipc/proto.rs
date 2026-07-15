@@ -4,12 +4,11 @@ use cockpit_simulation_core::{
     action::ActionResult,
     clock::RunStatus,
     event::{EventEnvelope, ToolCallTrace},
-    world::WorldSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const IPC_VERSION: u16 = 1;
+pub const IPC_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -109,7 +108,10 @@ pub enum RunnerEvent {
     #[serde(rename = "SimulationTickCommitted")]
     SimulationTickCommitted {
         cursor: u64,
-        snapshot: WorldSnapshot,
+        run_id: String,
+        tick: u64,
+        sim_time_ms: u64,
+        version: u64,
     },
     #[serde(rename = "SimulationEvent")]
     SimulationEvent { cursor: u64, event: EventEnvelope },

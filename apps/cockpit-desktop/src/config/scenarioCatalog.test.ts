@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BENCHMARK_SCENARIOS, COCKPIT_DOMAINS, localize } from "./scenarioCatalog";
+import { BENCHMARK_SCENARIOS, COCKPIT_DOMAINS, findBenchmarkScenarioByPath, localize } from "./scenarioCatalog";
 
 describe("benchmark scenario catalog", () => {
   it("contains ten unique runnable scenario entries", () => {
@@ -15,9 +15,19 @@ describe("benchmark scenario catalog", () => {
       expect(scenario.target).toMatch(/-1$/);
       expect(scenario.evidenceEvent).toMatch(/^[A-Z]/);
       expect(scenario.deadlineTick).toBeGreaterThan(0);
+      expect(scenario.deadlineTick).toBeLessThanOrEqual(30);
       expect(scenario.occupants).toBeGreaterThanOrEqual(2);
       expect(scenario.systems).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it("matches a catalog scenario from relative, absolute, and Windows-style Runner paths", () => {
+    const expected = BENCHMARK_SCENARIOS.find((scenario) => scenario.path === "scenarios/smoke-in-cockpit.yaml");
+
+    expect(findBenchmarkScenarioByPath("scenarios/smoke-in-cockpit.yaml")).toBe(expected);
+    expect(findBenchmarkScenarioByPath("/workspace/cockpit-simulator/scenarios/smoke-in-cockpit.yaml")).toBe(expected);
+    expect(findBenchmarkScenarioByPath("C:\\workspace\\cockpit-simulator\\scenarios\\smoke-in-cockpit.yaml")).toBe(expected);
+    expect(findBenchmarkScenarioByPath("/tmp/unknown.yaml")).toBeUndefined();
   });
 
   it("covers the complete cockpit domain taxonomy across the ten scenarios", () => {

@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use cockpit_runner::ipc::proto::IPC_VERSION;
 use serde_json::{Value, json};
 
 const TOKEN: &str = "restart-recovery-token";
@@ -59,7 +60,7 @@ fn request(address: &SocketAddr, command: Value) -> Value {
         .set_read_timeout(Some(Duration::from_millis(5_000)))
         .expect("read timeout");
     let payload = json!({
-        "version": 1,
+        "version": IPC_VERSION,
         "sessionToken": TOKEN,
         "correlationId": "restart-test",
         "command": command,

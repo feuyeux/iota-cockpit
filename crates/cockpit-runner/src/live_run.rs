@@ -291,6 +291,7 @@ pub(crate) mod backend_impl {
         HumanBackend, HumanTurnContext,
         acp_adapter::{AcpAdapterConfig, IotaCoreAcpAdapter},
         iota_core_adapter::{CockpitSkill, IotaCoreAdapter},
+        live::validate_decision_output,
     };
     use cockpit_simulation_core::SimulationScenario;
     use std::path::Path;
@@ -324,15 +325,10 @@ pub(crate) mod backend_impl {
     /// unique request marker, so they do not collide with a stale row.
     const STALE_LOCK_MAX_ATTEMPTS: u32 = 3;
     const SESSION_INITIALIZATION_MAX_ATTEMPTS: u32 = 2;
+    const SLOW_BACKEND_TURN_LOG_MS: u64 = 1_000;
 
     impl HumanBackend for BackendSession {
         async fn run_turn(&mut self, context: &HumanTurnContext) -> Result<String, String> {
-            eprintln!(
-                "live backend turn started: human={} backend={} cwd={}",
-                context.human_id,
-                self.label(),
-                self.adapter_config.cwd.display()
-            );
             let mut last_error = None;
             for attempt in 1..=STALE_LOCK_MAX_ATTEMPTS {
                 let turn = if attempt == 1 {
@@ -350,10 +346,28 @@ pub(crate) mod backend_impl {
                 };
                 match turn {
                     Ok(turn) => {
-                        eprintln!(
-                            "live backend turn completed: human={} backend={} elapsed_ms={}",
-                            context.human_id, turn.backend, turn.elapsed_ms
-                        );
+                        let turn = if let Err(reason) = validate_decision_output(&turn.text) {
+                            eprintln!(
+                                "live backend returned malformed decision output; requesting format retry: human={} backend={} reason={}",
+                                context.human_id, turn.backend, reason
+                            );
+                            self.adapter
+                                .execute_cancellable_after_invalid_output(
+                                    context,
+                                    &self.skill,
+                                    &self.cancellation,
+                                )
+                                .await
+                                .map_err(|error| error.to_string())?
+                        } else {
+                            turn
+                        };
+                        if turn.elapsed_ms >= SLOW_BACKEND_TURN_LOG_MS {
+                            eprintln!(
+                                "live backend turn slow: human={} backend={} elapsed_ms={}",
+                                context.human_id, turn.backend, turn.elapsed_ms
+                            );
+                        }
                         return Ok(turn.text);
                     }
                     Err(error) if error.is_session_initialization_failure() => {

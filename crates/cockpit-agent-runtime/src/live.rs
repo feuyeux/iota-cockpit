@@ -489,17 +489,51 @@ fn clamp_state_delta(delta: &mut Option<f64>) {
 /// Parse a backend's response text as a [`HumanDecision`]. The backend is
 /// expected to return a JSON object (optionally as the entire response text,
 /// or embedded as the first `{...}` block). A missing/null/blank narrative is
-/// normalized to fixed non-semantic evidence; malformed actions and state
-/// remain invalid and go through the ordinary rejection path.
+/// normalized to fixed non-semantic evidence. Malformed action entries are
+/// discarded, matching the later action-gateway behavior for unauthorized or
+/// unknown action proposals; malformed state deltas remain invalid.
 fn parse_decision(text: &str) -> Result<HumanDecision, String> {
     let json_slice = extract_json_object(text)
         .ok_or_else(|| "backend response did not contain a JSON object".to_string())?;
     let mut value: Value = serde_json::from_str(json_slice)
         .map_err(|error| format!("backend response is not valid JSON: {error}"))?;
     normalize_missing_narrative(&mut value)?;
+    normalize_actions(&mut value)?;
     let decision: HumanDecision = serde_json::from_value(value)
         .map_err(|error| format!("backend response does not match the decision shape: {error}"))?;
     Ok(decision)
+}
+
+/// Keep only well-formed action proposals. A model occasionally emits a
+/// partial entry such as `{"command":"engineShutdown"}`; that proposal has
+/// no safe target to submit, but it must not invalidate an otherwise usable
+/// decision or the entire simulation tick.
+fn normalize_actions(value: &mut Value) -> Result<(), String> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "backend response JSON must be an object".to_string())?;
+    let Some(actions) = object.get_mut("actions") else {
+        return Ok(());
+    };
+
+    let valid_actions = actions
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    let Some(action) = entry.as_object() else {
+                        return false;
+                    };
+                    matches!(action.get("target"), Some(Value::String(target)) if !target.trim().is_empty())
+                        && matches!(action.get("command"), Some(Value::String(command)) if !command.trim().is_empty())
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    *actions = Value::Array(valid_actions);
+    Ok(())
 }
 
 fn normalize_missing_narrative(value: &mut Value) -> Result<(), String> {
@@ -558,6 +592,12 @@ impl From<HumanTurnError> for SimulationError {
 #[doc(hidden)]
 pub fn parse_decision_for_tests(text: &str) -> Result<HumanDecision, String> {
     parse_decision(text)
+}
+
+/// Validate a raw backend response before a transport implementation decides
+/// whether it needs to request a formatting-only retry.
+pub fn validate_decision_output(text: &str) -> Result<(), String> {
+    parse_decision(text).map(|_| ())
 }
 
 #[cfg(test)]
@@ -623,6 +663,25 @@ mod tests {
         assert_eq!(decision.internal_state_delta.attention, Some(-0.02));
     }
 
+    #[test]
+    fn parse_decision_discards_partial_actions_but_keeps_valid_ones() {
+        let decision = parse_decision(
+            r#"{
+                "narrative": "I respond to the alert.",
+                "actions": [
+                    {"command": "engineShutdown"},
+                    {"target": "engine-1", "command": "engineShutdown"},
+                    {"target": "hvac-1"}
+                ]
+            }"#,
+        )
+        .expect("partial action proposals must not reject the decision");
+
+        assert_eq!(decision.actions.len(), 1);
+        assert_eq!(decision.actions[0].target, "engine-1");
+        assert_eq!(decision.actions[0].command, "engineShutdown");
+    }
+
     use cockpit_scenario::load_scenario;
     use cockpit_simulation_core::Simulation;
 
@@ -671,7 +730,7 @@ mod tests {
 
     impl HumanBackend for BrokenBackend {
         async fn run_turn(&mut self, _context: &HumanTurnContext) -> Result<String, String> {
-            Ok(r#"{"actions": "not an array"}"#.to_string())
+            Ok(r#"{"internalStateDelta": "not an object"}"#.to_string())
         }
     }
 

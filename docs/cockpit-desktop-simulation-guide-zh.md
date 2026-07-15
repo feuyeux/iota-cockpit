@@ -113,34 +113,35 @@ cargo run -p cockpit-runner --features live-acp -- \
 
 ### 3.1 界面布局
 
+Desktop 的最小完整工作区为 **1600 × 900**：Tauri 初始窗口和最小窗口均采用这一尺寸。运行时以三块常驻区域组织信息，避免旧版“右侧洞察区 + 底部活动流”造成的纵向压叠；窗口放大后，中间世界视图优先获得新增空间。
+
 ```text
 ┌────────────────────────────────────────────────────────────────────┐
-│ Header：连接状态 · 场景 · tick/仿真时间 · backend · 语言 · 帮助    │
-├───────────────┬──────────────────────────────────┬─────────────────┤
-│ Source        │ World 世界平面图                 │ Evaluation      │
-│ Live / Replay │ 人物/设备/环境/系统状态/因果高亮 │ Narrative       │
-├───────────────┴──────────────────────────────────┴─────────────────┤
-│ Activity：世界事件 · HumanTurn · 工具调用 · 动作结果 · 导出       │
-└────────────────────────────────────────────────────────────────────┘
+│ Header：场景/连接状态 · 居中进度条（tick / deadline / 剩余）· 操作 │
+├────────────────┬───────────────────────────────┬───────────────────┤
+│ Source         │ World 世界平面图              │ Activity 实时流   │
+│ Live / Replay  │ 人物/设备/环境/系统状态/高亮  │ 事件/turn/动作    │
+│ 场景与控制     │                               │ 审批/导出         │
+└────────────────┴───────────────────────────────┴───────────────────┘
+                 按需展开：Evaluation + Narrative 洞察抽屉
 ```
 
+- **Header 中部进度**：加载内置场景后显示 `当前 tick / deadline`、百分比和剩余节拍；所有 10 个标杆场景均为 16–30 tick 的有限仿真，抵达 deadline 时 Runner 自动转为 `completed`，不会继续请求后端 turn。
 - **Source / Live**：标杆场景、路径、模型超时、加载与运行控制、处置契约、14 域矩阵。
 - **Source / Replay**：选择录制、执行回放、比较两份录制。
 - **World**：舱室俯视平面图、人物/设备标记、烟雾/雾化/明火/告警叠加、最近影响目标高亮。
-- **Evaluation**：通过状态、得分、解释、证据事件 ID、首个失败 tick。
-- **Narrative**：按人物显示已感知的物理事件和社交发言，以及长期记忆数量。
-- **Activity**：按 tick 合并事件、工具调用、人物 turn 与动作结果。
+- **Activity**：按 tick 合并事件、工具调用、人物 turn 与动作结果；它在运行期间始终可见。
+- **Evaluation / Narrative**：从 Header 的“评测”入口按需展开为底部洞察抽屉，显示通过状态、得分、证据、人物感知与长期记忆；关闭后不保留空白区域。
 
 ### 3.2 加载场景
 
 1. 从 10 个内置标杆场景中选择，或输入/浏览 `.yaml/.yml` 路径；
 2. 设置模型超时，默认 60,000ms，允许 2,000–120,000ms；该值只对下一次加载生效；
-3. 点击加载；前端先调用 `ValidateScenario`；
-4. 校验成功后调用 `CreateLiveSimulationRun`；
+3. 点击加载后，Header 会立即显示“加载场景”状态并锁定重复操作；旧场景的世界视图、Activity、人物/工具轨迹、评测、回放差异和进度会立即清空，明确进入新的运行会话；
+4. 前端异步调用 `ValidateScenario`；校验成功后进入 `CreateLiveSimulationRun`，Header 显示后端准备状态；
 5. Runner 加载 Skill，创建 `IotaCoreAcpAdapter` 并执行 Hermes ACP warm-up；
-6. 成功后状态进入 `ready`，Header 显示 `iota-core-acp`。
-
-快速重复点击由 React ref 锁阻止，避免并发触发多个昂贵的 Hermes warm-up。
+6. 成功后统一拉取一次最新事件，状态进入 `ready`，Header 显示 `iota-core-acp`，新 run 的数据替换先前内容；
+7. 校验、创建和事件同步都不阻塞渲染线程。快速重复点击由 React ref 锁阻止，避免并发触发多个昂贵的 Hermes warm-up。
 
 ### 3.3 运行控制
 
@@ -166,7 +167,7 @@ cargo run -p cockpit-runner --features live-acp -- \
 
 ### 3.4 世界视图
 
-`cabinLayout.ts` 把字符串 `location` 映射到 Cockpit、Rear Left、Rear Right、Cabin 等区域。仿真核心不保存二维坐标；未知 location 使用通用布局。同一区域实体通过稳定哈希偏移防止完全重叠。
+`cabinLayout.ts` 把字符串 `location` 映射到 Cockpit、Rear Left、Rear Right、Cabin 等座位分区。每个分区内部按**人物姓名**排序后展示人物卡片，再按**设备 ID**展示设备卡片；人物卡显示角色、压力、注意力和健康度，设备卡显示生命周期、健康度和能力数量。未知人物位置归入 Cabin，尚未携带 location 的设备归入 Cockpit，确保实体不会消失。空分区显示“空座”，环境读数位于左侧信息栏，不覆盖座位内容；不再用随机偏移的绝对定位卡片，因此同一区域的内容不会堆叠。
 
 - 人物：姓名、角色、stress、attention、health；
 - 设备：ID、生命周期、health、能力数量与故障；
@@ -385,7 +386,7 @@ flowchart TD
 
 ```text
 RunnerRequest {
-  version: 1,
+  version: 2,
   sessionToken: 启动时生成的随机样式 token,
   correlationId: desktop-<单调序号>,
   command: tagged RunnerCommand

@@ -14,6 +14,11 @@ export function useRunner(model: SimulationModel, dispatch: React.Dispatch<Simul
       dispatch({ type: "snapshotReset", snapshot, cursor: batch.firstAvailableCursor - 1 });
     }
     if (batch.events.length > 0) dispatch({ type: "runnerEvents", events: batch.events });
+    if (batch.events.some((event) => event.type === "SimulationTickCommitted")) {
+      const snapshot = await runnerClient.simulationSnapshot();
+      dispatch({ type: "snapshotUpdated", snapshot, cursor: batch.nextCursor });
+    }
+    return batch;
   }, [model.lastCursor, dispatch]);
 
   const runCommand = useCallback(
@@ -23,6 +28,12 @@ export function useRunner(model: SimulationModel, dispatch: React.Dispatch<Simul
         await syncEvents();
         return true;
       } catch (error) {
+        try {
+          const batch = await syncEvents();
+          if (batch.events.some((event) => event.type === "SimulationError")) return false;
+        } catch {
+          // The original command failure remains useful when event recovery is unavailable.
+        }
         dispatch({
           type: "commandRejected",
           error: {

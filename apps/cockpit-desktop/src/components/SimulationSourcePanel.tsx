@@ -125,11 +125,11 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [model, runCommand, liveTurnInFlight]);
 
-  async function loadScenario(path: string) {
+  async function loadScenario(path: string): Promise<boolean> {
     // State updates do not take effect until React's next render. Keep a ref
     // lock as well so rapid clicks cannot enqueue multiple expensive Hermes
     // warm-ups before the Load button becomes disabled.
-    if (scenarioLoadLock.current) return;
+    if (scenarioLoadLock.current) return false;
     scenarioLoadLock.current = true;
     setScenarioLoadInFlight(true);
     dispatch({ type: "scenarioLoading" });
@@ -146,7 +146,7 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
             correlationId: "desktop-scenario-validation"
           }
         });
-        return;
+        return false;
       }
       dispatch({ type: "runCreating" });
       const live = await runnerClient.createLiveRun(path, modelTimeoutMs);
@@ -156,7 +156,7 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
         runId: live.runId,
         backend: live.backend
       });
-      await syncEvents();
+      return true;
     } finally {
       scenarioLoadLock.current = false;
       setScenarioLoadInFlight(false);
@@ -177,15 +177,18 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
     if (autoRunInFlight || liveTurnInFlight || scenarioLoadInFlight) return;
     autoRunCancelled.current = false;
     setAutoRunInFlight(true);
+    let cursor = model.lastCursor;
     try {
-      if (!(await runCommand(() => loadScenario(scenarioPath)))) return;
+      const loaded = await loadScenario(scenarioPath);
+      if (!loaded) return;
+      await syncEvents();
       if (!(await runCommand(runnerClient.start))) return;
 
       // The load/start commands have already synchronized their events. Keep
       // a local cursor for the loop because React state is intentionally not
       // updated synchronously between ACP-backed ticks.
       const initialBatch = await runnerClient.snapshot(model.lastCursor);
-      let cursor = initialBatch.nextCursor;
+      cursor = initialBatch.nextCursor;
       const maxTicks = selectedScenario?.deadlineTick ?? 20;
 
       for (let index = 0; index < maxTicks && !autoRunCancelled.current; index += 1) {
@@ -200,11 +203,30 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
           cursor = batch.firstAvailableCursor - 1;
         }
         if (batch.events.length > 0) dispatch({ type: "runnerEvents", events: batch.events });
+        if (batch.events.some((event) => event.type === "SimulationTickCommitted")) {
+          const snapshot = await runnerClient.simulationSnapshot();
+          dispatch({ type: "snapshotUpdated", snapshot, cursor: batch.nextCursor });
+        }
         cursor = batch.nextCursor;
         if (["completed", "stopped", "failed"].includes(status)) break;
-        await new Promise((resolve) => window.setTimeout(resolve, 150));
+        await new Promise((resolve) => window.setTimeout(resolve, APP_CONFIG.AUTO_RUN_EVENT_POLL_INTERVAL_MS));
       }
     } catch (error) {
+      try {
+        const batch = await runnerClient.snapshot(cursor);
+        if (batch.resetRequired) {
+          const snapshot = await runnerClient.simulationSnapshot();
+          dispatch({ type: "snapshotReset", snapshot, cursor: batch.firstAvailableCursor - 1 });
+        }
+        if (batch.events.length > 0) dispatch({ type: "runnerEvents", events: batch.events });
+        if (batch.events.some((event) => event.type === "SimulationTickCommitted")) {
+          const snapshot = await runnerClient.simulationSnapshot();
+          dispatch({ type: "snapshotUpdated", snapshot, cursor: batch.nextCursor });
+        }
+        if (batch.events.some((event) => event.type === "SimulationError")) return;
+      } catch {
+        // Fall back to the command error when the Runner event stream is unavailable.
+      }
       reportFailure(dispatch, model, error, t("commandFailed"));
     } finally {
       setAutoRunInFlight(false);
@@ -297,14 +319,6 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
               />
             </label>
           </div>
-          <div className="rounded border border-cyan-700/50 bg-cyan-950/20 p-3 text-xs text-cyan-50">
-            <div className="font-medium text-cyan-100">{locale === "zh-CN" ? "三步完成一次可评测仿真" : "Three steps to a measurable run"}</div>
-            <ol className="mt-2 space-y-1 leading-5 text-cyan-100/80">
-              <li><span className="mr-1 font-semibold text-cyan-300">1.</span>{locale === "zh-CN" ? "选择场景，先确认目标、风险和通过条件。" : "Choose a scenario and review its objective, risk, and pass condition."}</li>
-              <li><span className="mr-1 font-semibold text-cyan-300">2.</span>{locale === "zh-CN" ? "加载场景，等待模型后端准备完成。" : "Load it and wait for the model backend to become ready."}</li>
-              <li><span className="mr-1 font-semibold text-cyan-300">3.</span>{locale === "zh-CN" ? "推荐点击“一键运行”；想看细节时再使用单步推进。" : "Use “Run scenario” by default; step manually only when inspecting details."}</li>
-            </ol>
-          </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-zinc-300" htmlFor="benchmark-scenario">
               {locale === "zh-CN" ? "第 1 步：选择场景" : "Step 1: Choose a scenario"}
@@ -337,6 +351,7 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
                 <span className="min-w-0"><span className="block text-sm font-medium">{locale === "zh-CN" ? "第 2 步：加载场景" : "Step 2: Load scenario"}</span><span className="block text-[10px] text-cyan-200/70">{locale === "zh-CN" ? "读取场景并初始化模型后端" : "Read the scenario and initialize the model backend"}</span></span>
               </button>
               <button
+                aria-label={t("autoRun")}
                 className="flex w-full items-center gap-3 border border-emerald-500 bg-emerald-950/50 px-3 py-2.5 text-left text-emerald-50 transition hover:bg-emerald-900/50 disabled:opacity-40"
                 disabled={!model.serviceConnected || liveTurnInFlight || autoRunInFlight || scenarioLoadInFlight}
                 onClick={() => void autoRunScenario()}
@@ -459,7 +474,6 @@ export function SimulationSourcePanel({ model, dispatch }: Props) {
               {t("autoRun")}
             </div>
           ) : null}
-          <p className="text-[10px] leading-4 text-amber-300/80">{t("liveApprovalUnavailable")}</p>
           <dl className="grid grid-cols-2 gap-2 text-xs text-zinc-300">
             <dt>{t("seed")}</dt>
             <dd className="text-right">{model.scenario?.seed ?? "-"}</dd>
