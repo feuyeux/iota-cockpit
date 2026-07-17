@@ -8,6 +8,7 @@ clock: { mode: stepped, tickMs: 100 }
 entities:
   - { id: cabin, type: environment }
   - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
+  - { id: operator-1, type: human, components: { location: cockpit } }
 agents:
   - { id: agent, backend: scripted, observationProfile: default, capabilities: [engine.shutdown] }
 "#;
@@ -29,4 +30,35 @@ fn scenario_parser_rejects_excessive_entities() {
     let source = BASE.replace("agents:", &format!("{entities}\nagents:"));
     let error = parse_scenario_bytes(source.as_bytes()).expect_err("too many entities must fail");
     assert!(error.to_string().contains("entities exceeds"));
+}
+
+#[test]
+fn scenario_parser_rejects_invalid_evaluation_contracts() {
+    for (name, evaluation, expected) in [
+        (
+            "unknown-rule",
+            "evaluation: [{ id: unknown-rule, deadlineTick: 10, rule: invalid }]",
+            "not registered",
+        ),
+        (
+            "duplicate-rule",
+            "evaluation:\n  - { id: shutdown-before-spread, deadlineTick: 10, rule: one }\n  - { id: shutdown-before-spread, deadlineTick: 11, rule: two }",
+            "duplicated",
+        ),
+        (
+            "zero-deadline",
+            "evaluation: [{ id: shutdown-before-spread, deadlineTick: 0, rule: invalid }]",
+            "zero deadlineTick",
+        ),
+        (
+            "unknown-safety-code",
+            "evaluation: [{ id: shutdown-before-spread, deadlineTick: 10, rule: invalid, policy: { safetyRejectionCodes: [TYPO_CODE] } }]",
+            "unknown safety rejection code",
+        ),
+    ] {
+        let source = format!("{BASE}\n{evaluation}\n");
+        let error = parse_scenario_bytes(source.as_bytes())
+            .expect_err("invalid evaluation contract must fail");
+        assert!(error.to_string().contains(expected), "{name}: {error}");
+    }
 }

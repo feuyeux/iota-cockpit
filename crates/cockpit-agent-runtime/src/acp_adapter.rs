@@ -209,75 +209,6 @@ impl IotaCoreAcpAdapter {
         } else {
             allowed_actions
         };
-        let required_action_for_alert = |alert: &str| match alert {
-            "SmokeDetected" => Some(("engineShutdown", "engine-1", "engine.shutdown")),
-            "ThermalComfortRisk" => {
-                Some(("climateComfortRestore", "hvac-1", "climate.restoreComfort"))
-            }
-            "WindshieldVisibilityRisk" => Some((
-                "windshieldDefogActivate",
-                "defogger-1",
-                "visibility.activateDefog",
-            )),
-            "DriverFatigueRisk" => Some((
-                "fatigueInterventionActivate",
-                "dms-1",
-                "driver.activateFatigueIntervention",
-            )),
-            "ChildPresenceHeatRisk" => Some((
-                "childProtectionActivate",
-                "occupant-radar-1",
-                "occupant.activateChildProtection",
-            )),
-            "MedicalEmergencyRisk" => Some((
-                "medicalResponseActivate",
-                "emergency-call-1",
-                "health.activateMedicalResponse",
-            )),
-            "MultiUserPrivacyConflict" => Some((
-                "privacyModeActivate",
-                "voice-array-1",
-                "privacy.activateMode",
-            )),
-            "EvRangeRisk" => Some((
-                "chargingPlanAccept",
-                "navigation-1",
-                "energy.acceptChargingPlan",
-            )),
-            "AdasTakeoverRequired" => Some((
-                "adasTakeoverAcknowledge",
-                "adas-controller-1",
-                "adas.acknowledgeTakeover",
-            )),
-            "CyberControlAnomaly" => Some((
-                "cyberSafeModeActivate",
-                "security-monitor-1",
-                "cybersecurity.enterSafeMode",
-            )),
-            _ => None,
-        };
-        let required_actions = context
-            .observation
-            .alerts
-            .iter()
-            .filter_map(|alert| {
-                required_action_for_alert(alert)
-                    .filter(|(_, _, capability)| {
-                        context
-                            .action_capabilities
-                            .iter()
-                            .any(|granted| granted.as_str() == *capability)
-                    })
-                    .map(|(command, target, _)| format!("- {alert}: {command} -> {target}"))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let required_actions = if required_actions.is_empty() {
-            "(none)".to_string()
-        } else {
-            required_actions
-        };
-
         format!(
             "You are {name}, the {role} in a cockpit world simulation. Stay in character.\n\
              Background: {background}\n\
@@ -292,9 +223,7 @@ impl IotaCoreAcpAdapter {
              Write your utterance and narrative in {language_name}.\n\
              Stay within these limits or the extra content is trimmed: at most 4 actions; utterance and narrative each at most 1024 bytes (roughly 340 Chinese characters); stress and attention deltas each between -0.25 and 0.25.\n\
              Your entire response is machine-parsed. Respond with ONLY one valid JSON object: no prose before or after it, no Markdown code fence, and no tool call.\n\
-             Action commands you are authorized to propose (only these; proposing any other is dropped):\n{allowed_actions}\n\
-             Required immediate actions from your authorized current alerts:\n{required_actions}\n\
-             If this list is not \"(none)\", include every listed action in the actions array this turn; do not defer it to a narrative-only response.\n\
+             Action commands you are authorized to propose (only these; proposing any other is rejected and recorded):\n{allowed_actions}\n\
              Use this exact JSON shape (replace the example values; do not emit comments or type descriptions):\n\
              {{\"utterance\":null,\"actions\":[],\"internalStateDelta\":{{\"stress\":null,\"attention\":null}},\"narrative\":\"I monitor the cabin calmly.\"}}",
             name = context.persona.name,
@@ -315,7 +244,6 @@ impl IotaCoreAcpAdapter {
             memory = memory,
             observation = observation,
             language_name = language_name,
-            required_actions = required_actions,
         )
     }
 

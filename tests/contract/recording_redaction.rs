@@ -36,6 +36,7 @@ fn recording_payloads_redact_nested_secrets_before_writing_to_disk() {
             utterance: Some("token-must-not-persist".to_string()),
             ..HumanDecision::default()
         },
+        latency_ms: None,
     }]);
 
     let mut store = RecordingStore::open(&database_path).expect("store");

@@ -35,7 +35,8 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
         waitingProof: "尚未捕获能证明通过的事件", expected: "通过所需证据", deadline: "截止进度", guide: "如何观察",
         before: "先从左侧完成“选择 → 加载 → 一键运行”。", ready: "场景已就绪：推荐点击“一键运行”，再在此查看全过程。",
         running: "按顺序查看：风险出现 → 模型提出动作 → 系统执行 → 证据通过。", stopped: "本次运行已停止；重新加载后可再次运行。",
-        evidence: "已捕获证据", detail: "原始证据 ID"
+        evidence: "已捕获证据", detail: "原始证据 ID", trajectory: "轨迹指标", actionRequests: "动作请求", rejectedActions: "拒绝动作", riskExposure: "风险暴露", firstAction: "首次动作",
+        executionFailure: "执行失败", safetyFailure: "安全门槛未通过", failedRules: "未通过规则", trajectoryFailure: "轨迹门槛未通过"
       }
     : {
         process: "Simulation process & evaluation", risk: "Risk sensing", decision: "Model decision", action: "System action", proof: "Evaluation evidence",
@@ -43,7 +44,8 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
         waitingProof: "No passing evidence has been captured", expected: "Evidence required to pass", deadline: "Deadline progress", guide: "How to observe",
         before: "Complete Select → Load → Run scenario on the left.", ready: "The scenario is ready. Use Run scenario, then follow this process.",
         running: "Follow the order: risk → model decision → system action → passing evidence.", stopped: "This run stopped. Reload the scenario to run it again.",
-        evidence: "Captured evidence", detail: "Raw evidence ID"
+        evidence: "Captured evidence", detail: "Raw evidence ID", trajectory: "Trajectory metrics", actionRequests: "Action requests", rejectedActions: "Rejected actions", riskExposure: "Risk exposure", firstAction: "First action",
+        executionFailure: "Execution failure", safetyFailure: "Safety gate failed", failedRules: "Failed rules", trajectoryFailure: "Trajectory gate failed"
       };
   const alerts = model.observations[0]?.alerts ?? [];
   const riskEvent = model.events.find((event) => event.eventType === "SmokeDetected" || event.eventType === "EngineFire");
@@ -63,6 +65,8 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
     ? evidenceEvents.map(({ event, id }) => event ? `${eventLabel(event.eventType, locale)} · t${event.tick}` : id).join("；")
     : text.waitingProof;
   const guide = model.state === "ready" ? text.ready : model.state === "running" ? text.running : ["stopped", "failed"].includes(model.state) ? text.stopped : text.before;
+  const failedRules = evaluation?.ruleResults?.filter((rule) => !rule.result.passed) ?? [];
+  const safetyCodes = evaluation?.safetyViolations?.map((violation) => `${violation.code} · t${violation.tick}`) ?? [];
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900/70">
@@ -97,6 +101,11 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
               <div className="mt-2 h-1.5 overflow-hidden rounded bg-zinc-800"><div className={evaluation.passed ? "h-full bg-emerald-400" : "h-full bg-rose-400"} style={{ width: `${evaluation.score * 100}%` }} /></div>
               <p className="mt-2 text-xs leading-5 text-zinc-300">{evaluationExplanation(evaluation.explanation, locale)}</p>
               {evaluation.firstFailureTick != null ? <div className="mt-1 text-xs text-rose-300">{t("firstFailureTick")}: t{evaluation.firstFailureTick}</div> : null}
+              {evaluation.executionPassed === false ? <div className="mt-2 border-l-2 border-rose-400 pl-2 text-xs text-rose-200"><span className="font-medium">{text.executionFailure}:</span> {evaluation.executionError ?? "-"}</div> : null}
+              {evaluation.safetyPassed === false ? <div className="mt-2 border-l-2 border-rose-400 pl-2 text-xs text-rose-200"><span className="font-medium">{text.safetyFailure}:</span> {safetyCodes.join("；") || "-"}</div> : null}
+              {evaluation.trajectoryPassed === false ? <div className="mt-2 border-l-2 border-amber-400 pl-2 text-xs text-amber-200"><span className="font-medium">{text.trajectoryFailure}</span></div> : null}
+              {failedRules.length > 0 ? <div className="mt-2 text-xs text-rose-200"><span className="font-medium">{text.failedRules}:</span> {failedRules.map((rule) => `${rule.ruleId} (t${rule.deadlineTick})`).join("；")}</div> : null}
+              {evaluation.trajectory ? <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-zinc-800 pt-2 text-[11px] text-zinc-400"><span>{text.trajectory}</span><span /><span>{text.actionRequests}: {evaluation.trajectory.actionRequests}</span><span>{text.rejectedActions}: {evaluation.trajectory.rejectedActions}</span><span>{text.riskExposure}: {evaluation.trajectory.alertTickExposure ?? 0}</span><span>{text.firstAction}: {evaluation.trajectory.firstAppliedActionTick == null ? "-" : `t${evaluation.trajectory.firstAppliedActionTick}`}</span></div> : null}
               {evidenceEvents.length > 0 ? <div className="mt-2 space-y-1 border-t border-zinc-800 pt-2 text-[11px]">{evidenceEvents.map(({ id, event }) => <div key={id} className="flex items-center gap-2 text-emerald-200"><CircleDot className="h-3 w-3 shrink-0" /><span>{event ? `${eventLabel(event.eventType, locale)} · t${event.tick}` : id}</span><code className="ml-auto max-w-24 truncate text-[9px] text-zinc-600" title={id}>{id}</code></div>)}</div> : null}
             </>
           ) : <div className="text-xs text-zinc-500">{t("noEvaluation")}</div>}

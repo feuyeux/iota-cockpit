@@ -16,4 +16,4 @@ influences:
   - { ruleId: parked-heat-rise, ruleVersion: 1, schedule: { kind: every, start: 1, interval: 3 }, entityId: cabin, componentPath: environment.temperatureC, op: { op: delta, value: 1.1 }, priority: 9 }
   - { ruleId: child-stress-rise, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 4 }, entityId: child-1, componentPath: pilot.stress, op: { op: delta, value: 0.08 }, priority: 8 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: guardian-default, capabilities: [occupant.activateChildProtection] }]
-evaluation: [{ id: child-protection-activated, deadlineTick: 22, rule: Emergency cooling reduces cabin temperature to 30C or below }]
+evaluation: [{ id: child-protection-activated, deadlineTick: 22, rule: Emergency cooling reduces cabin temperature to 30C or below, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

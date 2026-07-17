@@ -1,4 +1,5 @@
 pub mod benchmark;
+pub mod evaluation;
 pub mod ipc;
 pub mod live_run;
 pub mod memory;

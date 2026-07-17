@@ -42,7 +42,7 @@ fn acp_prompt_contains_persona_and_only_perceived_observation_data() {
 }
 
 #[test]
-fn acp_prompt_requires_the_authorized_action_for_a_visible_alert() {
+fn acp_prompt_exposes_authorized_tools_without_leaking_the_benchmark_action() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
     let simulation = Simulation::new("acp-required-action", scenario);
     let skill = IotaCoreAdapter::new(env!("CARGO_MANIFEST_DIR"))
@@ -53,6 +53,7 @@ fn acp_prompt_requires_the_authorized_action_for_a_visible_alert() {
 
     let prompt = IotaCoreAcpAdapter::build_prompt(&context, &skill);
 
-    assert!(prompt.contains("- SmokeDetected: engineShutdown -> engine-1"));
-    assert!(prompt.contains("include every listed action in the actions array this turn"));
+    assert!(prompt.contains("- engineShutdown -> engine-1"));
+    assert!(!prompt.contains("SmokeDetected: engineShutdown -> engine-1"));
+    assert!(!prompt.contains("include every listed action in the actions array this turn"));
 }

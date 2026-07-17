@@ -1,7 +1,7 @@
 use cockpit_agent_runtime::{HumanDecision, HumanTurnEvidence};
 use cockpit_recording::{
     AsyncRecordingSink, Recording, RecordingQueueOutcome, RecordingQueuePolicy, RecordingStore,
-    run_rule_agent_recording,
+    RunProvenance, run_rule_agent_recording,
 };
 use cockpit_scenario::load_scenario;
 
@@ -31,6 +31,12 @@ fn sqlite_recording_round_trip_preserves_tick_evidence() {
 fn sqlite_recording_round_trip_preserves_live_human_turns() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
     let mut recording = Recording::new("sqlite-live-run", &scenario);
+    recording.provenance = RunProvenance {
+        suite_id: Some("release-suite".to_string()),
+        split: Some("hiddenRelease".to_string()),
+        backend: Some("iota-core-acp".to_string()),
+        ..RunProvenance::default()
+    };
     recording.push_human_turns(vec![HumanTurnEvidence {
         human_id: "pilot-1".to_string(),
         decision: HumanDecision {
@@ -38,6 +44,7 @@ fn sqlite_recording_round_trip_preserves_live_human_turns() {
             utterance: Some("status check".to_string()),
             ..HumanDecision::default()
         },
+        latency_ms: None,
     }]);
 
     let mut store = RecordingStore::in_memory().expect("store opens");
@@ -45,6 +52,7 @@ fn sqlite_recording_round_trip_preserves_live_human_turns() {
     let restored = store.load("sqlite-live-run").expect("recording loads");
 
     assert_eq!(restored.human_turns.len(), 1);
+    assert_eq!(restored.provenance, recording.provenance);
     assert_eq!(restored.human_turns[0][0].human_id, "pilot-1");
     assert_eq!(restored.human_turns[0][0].decision.narrative, "[REDACTED]");
     assert_eq!(

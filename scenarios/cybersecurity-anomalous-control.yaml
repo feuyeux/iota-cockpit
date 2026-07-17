@@ -17,4 +17,4 @@ entities:
 influences:
   - { ruleId: security-alert-stress, ruleVersion: 1, schedule: { kind: atTick, tick: 6 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.18 }, priority: 9 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [cybersecurity.enterSafeMode] }]
-evaluation: [{ id: cyber-incident-contained, deadlineTick: 16, rule: Safe mode restores driver attention to at least 85 percent }]
+evaluation: [{ id: cyber-incident-contained, deadlineTick: 16, rule: Safe mode restores driver attention to at least 85 percent, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

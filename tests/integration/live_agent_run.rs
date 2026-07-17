@@ -98,7 +98,7 @@ async fn live_acp_backend_unavailable_aborts_the_run_without_a_fallback() {
 
 #[cfg(not(feature = "live-acp"))]
 #[tokio::test(flavor = "current_thread")]
-async fn synthetic_live_backend_completes_every_bundled_scenario_evaluation() {
+async fn bundled_live_scenarios_are_either_synthetic_successes_or_fail_closed_acp_runs() {
     const SCENARIOS: &[&str] = &[
         "scenarios/smoke-in-cockpit.yaml",
         "scenarios/heatwave-thermal-comfort.yaml",
@@ -124,6 +124,15 @@ async fn synthetic_live_backend_completes_every_bundled_scenario_evaluation() {
         let evaluation: cockpit_evaluation::EvaluationResult =
             serde_json::from_value(report.evaluation).expect("evaluation serializes");
 
+        // Cargo workspace feature unification can enable the runner's
+        // `live-acp` dependency through the desktop crate even when this root
+        // package does not have its own `live-acp` feature. In that case an
+        // unavailable external backend must fail closed rather than be judged
+        // as a synthetic success.
+        if report.backend == "iota-core-acp" {
+            assert!(report.error.is_some(), "{path}: ACP must fail closed");
+            continue;
+        }
         assert_eq!(report.backend, "synthetic", "{path}");
         assert!(report.error.is_none(), "{path}: {:?}", report.error);
         assert!(evaluation.passed, "{path}: {}", evaluation.explanation);

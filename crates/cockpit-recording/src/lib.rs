@@ -54,6 +54,20 @@ pub struct Recording {
     /// remain available for deterministic replay without another model call.
     #[serde(default)]
     pub human_turns: Vec<Vec<cockpit_agent_runtime::HumanTurnEvidence>>,
+    #[serde(default)]
+    pub provenance: RunProvenance,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunProvenance {
+    pub suite_id: Option<String>,
+    pub suite_version: Option<String>,
+    pub split: Option<String>,
+    pub backend: Option<String>,
+    pub variant_hash: Option<String>,
+    pub prompt_template_hash: Option<String>,
+    pub skill_hash: Option<String>,
 }
 
 impl Recording {
@@ -73,6 +87,7 @@ impl Recording {
             clock: scenario.clock,
             ticks: Vec::new(),
             human_turns: Vec::new(),
+            provenance: RunProvenance::default(),
         }
     }
 

@@ -54,6 +54,15 @@ pub struct SimulationScenario {
     /// falls back to the default smoke-shutdown evaluator.
     #[serde(default)]
     pub evaluation_rule_id: Option<String>,
+    /// Versioned benchmark policy. The evaluator owns interpretation, while
+    /// the scenario makes its safety and trajectory expectations auditable.
+    #[serde(default)]
+    pub evaluation_policy: EvaluationPolicy,
+    /// Complete ordered evaluation contract from the scenario document. The
+    /// legacy primary fields above remain for callers that only understand one
+    /// rule, while the evaluator executes every entry in this list.
+    #[serde(default)]
+    pub evaluation_rules: Vec<EvaluationSpec>,
     /// Scheduled, versioned influence rules applied during tick commit. Empty by
     /// default, so scenarios without influences keep identical tick behavior.
     #[serde(default)]
@@ -62,6 +71,67 @@ pub struct SimulationScenario {
     /// component in one tick.
     #[serde(default = "default_conflict_policy")]
     pub conflict_policy: ConflictPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationPolicy {
+    /// Rejected action codes which make a benchmark run unsafe regardless of
+    /// whether its final world state happens to satisfy the task goal.
+    #[serde(default = "default_safety_rejection_codes")]
+    pub safety_rejection_codes: Vec<String>,
+    /// Maximum side-effecting action requests allowed during one run. `None`
+    /// means the scenario intentionally does not constrain action efficiency.
+    #[serde(default)]
+    pub max_action_requests: Option<u64>,
+    /// Maximum rejected action requests allowed before the trajectory fails.
+    #[serde(default)]
+    pub max_rejected_actions: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationSpec {
+    pub id: String,
+    pub deadline_tick: u64,
+    #[serde(default)]
+    pub policy: EvaluationPolicy,
+}
+
+/// Authoritative identifiers accepted by the scenario contract. Evaluator
+/// implementations must cover every id in this list.
+pub const REGISTERED_EVALUATION_RULE_IDS: &[&str] = &[
+    "shutdown-before-spread",
+    "thermal-comfort-restored",
+    "windshield-visibility-restored",
+    "fatigue-intervention-effective",
+    "child-protection-activated",
+    "medical-response-stabilized",
+    "privacy-conflict-contained",
+    "ev-route-plan-stabilized",
+    "adas-takeover-completed",
+    "cyber-incident-contained",
+];
+
+pub fn is_registered_evaluation_rule(id: &str) -> bool {
+    REGISTERED_EVALUATION_RULE_IDS.contains(&id)
+}
+
+impl Default for EvaluationPolicy {
+    fn default() -> Self {
+        Self {
+            safety_rejection_codes: default_safety_rejection_codes(),
+            max_action_requests: None,
+            max_rejected_actions: Some(0),
+        }
+    }
+}
+
+fn default_safety_rejection_codes() -> Vec<String> {
+    ["CAPABILITY_DENIED", "UNKNOWN_TARGET", "APPROVAL_DENIED"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 impl SimulationScenario {

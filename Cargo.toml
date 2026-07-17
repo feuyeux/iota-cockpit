@@ -142,6 +142,10 @@ name = "benchmark_actions"
 path = "tests/contract/benchmark_actions.rs"
 
 [[test]]
+name = "evaluation_policy"
+path = "tests/contract/evaluation_policy.rs"
+
+[[test]]
 name = "rule_agent_smoke"
 path = "tests/integration/rule_agent_smoke.rs"
 

@@ -54,7 +54,6 @@ pub struct LiveRunReport {
 /// required dependency for a live run, not an optional enhancement.
 pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
     let scenario = load_scenario(&config.scenario_path)?;
-    let deadline = scenario.shutdown_deadline_ticks;
     let run_id = format!("live-run-{}", scenario.id);
     let mut simulation = Simulation::new(run_id.clone(), scenario.clone());
     simulation.start()?;
@@ -92,12 +91,11 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
         }
     }
 
-    let evaluation = serde_json::to_value(cockpit_evaluation::evaluate(
-        &recording,
-        scenario.evaluation_rule_id.as_deref(),
-        deadline,
-        &scenario.language,
-    ))?;
+    let mut evaluation = cockpit_evaluation::evaluate_scenario(&recording, &scenario);
+    if let Some(error) = &run_error {
+        evaluation = cockpit_evaluation::mark_execution_failed(evaluation, error);
+    }
+    let evaluation = serde_json::to_value(evaluation)?;
 
     Ok(LiveRunReport {
         run_id,
@@ -163,6 +161,8 @@ pub async fn replay_live(
 // all.
 #[cfg(not(feature = "live-acp"))]
 pub(crate) mod backend_impl {
+    use std::collections::BTreeSet;
+
     use cockpit_agent_runtime::{HumanBackend, HumanTurnContext};
     use cockpit_simulation_core::SimulationScenario;
     use tokio_util::sync::CancellationToken;
@@ -176,6 +176,7 @@ pub(crate) mod backend_impl {
     /// report so this is never mistaken for a real hermes/ACP call.
     pub struct BackendSession {
         cancellation: CancellationToken,
+        handled_alerts: BTreeSet<String>,
     }
 
     impl HumanBackend for BackendSession {
@@ -192,8 +193,9 @@ pub(crate) mod backend_impl {
                 .alerts
                 .iter()
                 .chain(context.delivered_perception.iter().map(|event| &event.kind))
-                .find_map(|alert| action_for_alert(alert))
-                .filter(|action| {
+                .filter(|alert| !self.handled_alerts.contains(*alert))
+                .find_map(|alert| action_for_alert(alert).map(|action| (alert.clone(), action)))
+                .filter(|(_, action)| {
                     context
                         .action_capabilities
                         .iter()
@@ -206,7 +208,8 @@ pub(crate) mod backend_impl {
             } else {
                 "monitored the cabin calmly"
             };
-            let action_json = action.map_or_else(String::new, |(target, command, _)| {
+            let action_json = action.map_or_else(String::new, |(alert, (target, command, _))| {
+                self.handled_alerts.insert(alert);
                 format!(r#", "actions": [{{"target": "{target}", "command": "{command}"}}]"#)
             });
             Ok(format!(r#"{{"narrative": "{narrative}"{action_json}}}"#))
@@ -281,6 +284,7 @@ pub(crate) mod backend_impl {
     ) -> anyhow::Result<BackendSession> {
         Ok(BackendSession {
             cancellation: CancellationToken::new(),
+            handled_alerts: BTreeSet::new(),
         })
     }
 }

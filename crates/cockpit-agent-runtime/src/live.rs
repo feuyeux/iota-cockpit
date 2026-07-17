@@ -93,6 +93,8 @@ pub enum HumanTurnError {
 pub struct HumanTurnEvidence {
     pub human_id: String,
     pub decision: HumanDecision,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 /// The per-human, per-tick context handed to the backend. Bundles the human's
@@ -242,6 +244,7 @@ impl HumanAgentDriver {
                     language: simulation.scenario.language.clone(),
                 }
             };
+            let turn_started = std::time::Instant::now();
             let text =
                 backend
                     .run_turn(&context)
@@ -257,6 +260,7 @@ impl HumanAgentDriver {
                     reason,
                 })?;
             sanitize_decision(&mut decision);
+            let latency_ms = Some(turn_started.elapsed().as_millis() as u64);
             let transient_utterance = decision.utterance.clone();
             redact_decision_prose(&mut decision);
 
@@ -321,6 +325,7 @@ impl HumanAgentDriver {
             evidence.push(HumanTurnEvidence {
                 human_id: human_id.clone(),
                 decision,
+                latency_ms,
             });
         }
 
@@ -489,9 +494,10 @@ fn clamp_state_delta(delta: &mut Option<f64>) {
 /// Parse a backend's response text as a [`HumanDecision`]. The backend is
 /// expected to return a JSON object (optionally as the entire response text,
 /// or embedded as the first `{...}` block). A missing/null/blank narrative is
-/// normalized to fixed non-semantic evidence. Malformed action entries are
-/// discarded, matching the later action-gateway behavior for unauthorized or
-/// unknown action proposals; malformed state deltas remain invalid.
+/// normalized to fixed non-semantic evidence. A malformed action is an output
+/// contract failure, not a no-op: retaining it would hide a model tool-use
+/// failure from benchmark results. Authorization is still enforced separately
+/// by the Action Gateway.
 fn parse_decision(text: &str) -> Result<HumanDecision, String> {
     let json_slice = extract_json_object(text)
         .ok_or_else(|| "backend response did not contain a JSON object".to_string())?;
@@ -504,10 +510,9 @@ fn parse_decision(text: &str) -> Result<HumanDecision, String> {
     Ok(decision)
 }
 
-/// Keep only well-formed action proposals. A model occasionally emits a
-/// partial entry such as `{"command":"engineShutdown"}`; that proposal has
-/// no safe target to submit, but it must not invalidate an otherwise usable
-/// decision or the entire simulation tick.
+/// Reject malformed action proposals. A model occasionally emits a partial
+/// entry such as `{"command":"engineShutdown"}`; accepting the remaining
+/// output would hide a tool-use failure from the benchmark.
 fn normalize_actions(value: &mut Value) -> Result<(), String> {
     let object = value
         .as_object_mut()
@@ -516,23 +521,18 @@ fn normalize_actions(value: &mut Value) -> Result<(), String> {
         return Ok(());
     };
 
-    let valid_actions = actions
+    let entries = actions
         .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|entry| {
-                    let Some(action) = entry.as_object() else {
-                        return false;
-                    };
-                    matches!(action.get("target"), Some(Value::String(target)) if !target.trim().is_empty())
-                        && matches!(action.get("command"), Some(Value::String(command)) if !command.trim().is_empty())
-                })
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    *actions = Value::Array(valid_actions);
+        .ok_or_else(|| "actions must be an array".to_string())?;
+    if entries.iter().any(|entry| {
+        let Some(action) = entry.as_object() else {
+            return true;
+        };
+        !matches!(action.get("target"), Some(Value::String(target)) if !target.trim().is_empty())
+            || !matches!(action.get("command"), Some(Value::String(command)) if !command.trim().is_empty())
+    }) {
+        return Err("actions contains an entry without a non-empty target and command".to_string());
+    }
     Ok(())
 }
 
@@ -620,6 +620,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_decision_rejects_malformed_action_instead_of_silently_dropping_it() {
+        let error = parse_decision(r#"{"actions":[{"command":"engineShutdown"}]}"#)
+            .expect_err("partial tool request must be visible as invalid output");
+        assert!(error.contains("non-empty target and command"));
+    }
+
+    #[test]
     fn parse_decision_accepts_minimal_valid_output() {
         let decision =
             parse_decision(r#"{"narrative": "stayed calm and watched the panel"}"#).expect("ok");
@@ -664,8 +671,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_decision_discards_partial_actions_but_keeps_valid_ones() {
-        let decision = parse_decision(
+    fn parse_decision_rejects_a_mixed_valid_and_partial_action_list() {
+        let error = parse_decision(
             r#"{
                 "narrative": "I respond to the alert.",
                 "actions": [
@@ -675,11 +682,8 @@ mod tests {
                 ]
             }"#,
         )
-        .expect("partial action proposals must not reject the decision");
-
-        assert_eq!(decision.actions.len(), 1);
-        assert_eq!(decision.actions[0].target, "engine-1");
-        assert_eq!(decision.actions[0].command, "engineShutdown");
+        .expect_err("a malformed action must remain visible to the evaluator");
+        assert!(error.contains("non-empty target and command"));
     }
 
     use cockpit_scenario::load_scenario;

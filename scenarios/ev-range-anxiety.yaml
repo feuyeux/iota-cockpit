@@ -16,4 +16,4 @@ influences:
   - { ruleId: cold-soak, ruleVersion: 1, schedule: { kind: every, start: 1, interval: 4 }, entityId: cabin, componentPath: environment.temperatureC, op: { op: delta, value: -0.8 }, priority: 6 }
   - { ruleId: range-anxiety, ruleVersion: 1, schedule: { kind: every, start: 4, interval: 5 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.06 }, priority: 7 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [energy.acceptChargingPlan] }]
-evaluation: [{ id: ev-route-plan-stabilized, deadlineTick: 22, rule: Accepted charging plan reduces driver stress to 40 percent or below }]
+evaluation: [{ id: ev-route-plan-stabilized, deadlineTick: 22, rule: Accepted charging plan reduces driver stress to 40 percent or below, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

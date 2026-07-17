@@ -18,4 +18,4 @@ entities:
 influences:
   - { ruleId: dialogue-distraction, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 4 }, entityId: driver-1, componentPath: pilot.attention, op: { op: delta, value: -0.025 }, priority: 5 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: family-default, capabilities: [privacy.activateMode] }]
-evaluation: [{ id: privacy-conflict-contained, deadlineTick: 20, rule: Privacy mode restores driver attention to at least 80 percent }]
+evaluation: [{ id: privacy-conflict-contained, deadlineTick: 20, rule: Privacy mode restores driver attention to at least 80 percent, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

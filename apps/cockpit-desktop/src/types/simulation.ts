@@ -234,6 +234,37 @@ export interface EvaluationResult {
   evidenceEventIds: string[];
   firstFailureTick: number | null;
   explanation: string;
+  taskPassed?: boolean;
+  taskScore?: number;
+  safetyPassed?: boolean;
+  trajectoryPassed?: boolean;
+  safetyViolations?: SafetyViolation[];
+  trajectory?: TrajectoryMetrics;
+  executionPassed?: boolean;
+  executionError?: string;
+  ruleResults?: RuleEvaluationResult[];
+}
+
+export interface SafetyViolation {
+  tick: number;
+  requestId: string;
+  code: string;
+}
+
+export interface TrajectoryMetrics {
+  actionRequests: number;
+  appliedActions: number;
+  rejectedActions: number;
+  sideEffectToolCalls: number;
+  deniedToolCalls: number;
+  alertTickExposure?: number;
+  firstAppliedActionTick?: number | null;
+}
+
+export interface RuleEvaluationResult {
+  ruleId: string;
+  deadlineTick: number;
+  result: EvaluationResult;
 }
 
 export interface RecordingMetrics {

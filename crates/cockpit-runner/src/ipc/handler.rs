@@ -6,7 +6,6 @@ use std::{
 };
 
 use cockpit_agent_runtime::{HumanAgentDriver, LocalMcpServer, RuleAgent};
-use cockpit_evaluation::evaluate;
 use cockpit_plugin::{
     PluginExecutor, PluginFailure, PluginFailurePolicy, PluginHost, PluginPolicy, PluginTickOutcome,
 };
@@ -16,7 +15,8 @@ use cockpit_recording::{
 };
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{
-    PluginFailureRecord, Simulation, SimulationError, StateDiff, WorldSnapshot, clock::RunStatus,
+    PluginFailureRecord, Simulation, SimulationError, SimulationScenario, StateDiff, WorldSnapshot,
+    clock::RunStatus,
 };
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -609,12 +609,7 @@ impl RunnerHandler {
             });
         }
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation = evaluate(
-                recording,
-                simulation.scenario.evaluation_rule_id.as_deref(),
-                simulation.scenario.shutdown_deadline_ticks,
-                &simulation.scenario.language,
-            );
+            let evaluation = cockpit_evaluation::evaluate_scenario(recording, &simulation.scenario);
             self.emit(RunnerEvent::SimulationEvaluationUpdated {
                 cursor: 0,
                 evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
@@ -702,6 +697,7 @@ impl RunnerHandler {
             Ok(result) => result,
             Err(error) => {
                 simulation.fail();
+                self.emit_execution_failure_evaluation(&simulation.scenario, error.to_string());
                 let ipc_error = IpcError {
                     code: "LIVE_BACKEND_TURN_FAILED".to_string(),
                     message: error.to_string(),
@@ -751,12 +747,7 @@ impl RunnerHandler {
             self.emit(RunnerEvent::SimulationActionResult { cursor: 0, result });
         }
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation = evaluate(
-                recording,
-                simulation.scenario.evaluation_rule_id.as_deref(),
-                simulation.scenario.shutdown_deadline_ticks,
-                &simulation.scenario.language,
-            );
+            let evaluation = cockpit_evaluation::evaluate_scenario(recording, &simulation.scenario);
             self.emit(RunnerEvent::SimulationEvaluationUpdated {
                 cursor: 0,
                 evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
@@ -785,6 +776,19 @@ impl RunnerHandler {
             "backend": backend_label,
             "humanTurns": human_turns.len()
         }))
+    }
+
+    fn emit_execution_failure_evaluation(&mut self, scenario: &SimulationScenario, error: String) {
+        if let Some(recording) = self.recording.as_ref() {
+            let evaluation = cockpit_evaluation::mark_execution_failed(
+                cockpit_evaluation::evaluate_scenario(recording, scenario),
+                error,
+            );
+            self.emit(RunnerEvent::SimulationEvaluationUpdated {
+                cursor: 0,
+                evaluation: serde_json::to_value(evaluation).unwrap_or(Value::Null),
+            });
+        }
     }
 
     fn stop(&mut self) -> HandlerResult {
@@ -1176,7 +1180,9 @@ fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveTurnControl, deadline_reached};
+    use super::{LiveTurnControl, RunnerEvent, RunnerHandler, deadline_reached};
+    use cockpit_recording::run_rule_agent_recording;
+    use cockpit_scenario::load_scenario;
     use cockpit_simulation_core::clock::RunStatus;
 
     #[test]
@@ -1198,5 +1204,28 @@ mod tests {
 
         control.finish();
         assert!(!control.cancel());
+    }
+
+    #[test]
+    fn live_failure_emits_an_execution_failed_evaluation() {
+        let scenario = load_scenario("../../scenarios/smoke-in-cockpit.yaml").expect("scenario");
+        let recording = run_rule_agent_recording(
+            "failed-live-evaluation",
+            scenario.clone(),
+            scenario.shutdown_deadline_ticks + 1,
+        )
+        .expect("recording");
+        let mut handler = RunnerHandler::new("session");
+        handler.recording = Some(recording);
+        handler.emit_execution_failure_evaluation(&scenario, "backend timeout".to_string());
+
+        let RunnerEvent::SimulationEvaluationUpdated { evaluation, .. } =
+            handler.events.last().expect("evaluation event")
+        else {
+            panic!("last event must be an evaluation update");
+        };
+        assert_eq!(evaluation["passed"], false);
+        assert_eq!(evaluation["executionPassed"], false);
+        assert_eq!(evaluation["executionError"], "backend timeout");
     }
 }

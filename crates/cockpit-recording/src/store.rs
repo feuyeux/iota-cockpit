@@ -184,7 +184,7 @@ impl RecordingStore {
         let human_turns_json = serde_json::to_string(&human_turns_value)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json, human_turns_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json, human_turns_json, provenance_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 recording.run_id,
                 recording.schema_version,
@@ -196,7 +196,8 @@ impl RecordingStore {
                 recording.scenario_hash,
                 recording.seed,
                 serde_json::to_string(&recording.clock)?,
-                human_turns_json
+                human_turns_json,
+                serde_json::to_string(&recording.provenance)?
             ],
         )?;
         transaction.execute(
@@ -225,7 +226,7 @@ impl RecordingStore {
         let metadata = self
             .connection
             .query_row(
-                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json, human_turns_json FROM recordings WHERE run_id = ?1",
+                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json, human_turns_json, provenance_json FROM recordings WHERE run_id = ?1",
                 params![run_id],
                 |row| {
                     Ok((
@@ -238,7 +239,7 @@ impl RecordingStore {
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
                         row.get::<_, String>(8)?,
-                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(9)?, row.get::<_, String>(10)?,
                     ))
                 },
             )
@@ -268,6 +269,7 @@ impl RecordingStore {
             clock: serde_json::from_str(&metadata.8)?,
             ticks,
             human_turns: serde_json::from_str(&metadata.9)?,
+            provenance: serde_json::from_str(&metadata.10)?,
         })
     }
 
@@ -285,7 +287,8 @@ impl RecordingStore {
                 scenario_hash TEXT NOT NULL,
                 seed INTEGER NOT NULL,
                 clock_json TEXT NOT NULL,
-                human_turns_json TEXT NOT NULL DEFAULT '[]'
+                human_turns_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '{}'
              );
              CREATE TABLE IF NOT EXISTS recording_ticks (
                 run_id TEXT NOT NULL REFERENCES recordings(run_id) ON DELETE CASCADE,
@@ -308,6 +311,19 @@ impl RecordingStore {
         if !has_human_turns {
             self.connection.execute(
                 "ALTER TABLE recordings ADD COLUMN human_turns_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        let has_provenance = self
+            .connection
+            .prepare("PRAGMA table_info(recordings)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|name| name == "provenance_json");
+        if !has_provenance {
+            self.connection.execute(
+                "ALTER TABLE recordings ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'",
                 [],
             )?;
         }

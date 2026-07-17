@@ -4,11 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { SimulationEvaluation } from "./SimulationEvaluation";
 import { I18nProvider } from "../i18n";
 import { initialSimulationModel } from "../state/simulationReducer";
+import type { EvaluationResult } from "../types/simulation";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function render() {
+function render(evaluationOverride?: EvaluationResult) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -54,7 +55,7 @@ function render() {
               correlationId: "c",
               payload: { message: "" }
             }],
-            evaluation: { passed: true, score: 1, evidenceEventIds: ["shutdown-evidence"], firstFailureTick: null, explanation: "engine shutdown occurred within the smoke response deadline" }
+            evaluation: evaluationOverride ?? { passed: true, score: 1, evidenceEventIds: ["shutdown-evidence"], firstFailureTick: null, explanation: "engine shutdown occurred within the smoke response deadline" }
           }}
         />
       </I18nProvider>
@@ -68,7 +69,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   root = null;
-  window.localStorage.clear();
+  window.localStorage?.clear();
 });
 
 describe("SimulationEvaluation", () => {
@@ -79,5 +80,41 @@ describe("SimulationEvaluation", () => {
     expect(element.textContent).toContain("系统动作");
     expect(element.textContent).toContain("动力系统已关闭");
     expect(element.textContent).toContain("通过");
+  });
+
+  it("shows execution, safety, and rule-level evaluation failures", () => {
+    const element = render({
+      passed: false,
+      score: 0,
+      evidenceEventIds: [],
+      firstFailureTick: 8,
+      explanation: "mandatory agent execution failed",
+      executionPassed: false,
+      executionError: "backend timeout",
+      safetyPassed: false,
+      safetyViolations: [{ tick: 7, requestId: "request", code: "TOOL_CALL_DENIED" }],
+      trajectoryPassed: false,
+      trajectory: {
+        actionRequests: 3,
+        appliedActions: 2,
+        rejectedActions: 1,
+        sideEffectToolCalls: 2,
+        deniedToolCalls: 1,
+        alertTickExposure: 5,
+        firstAppliedActionTick: 6
+      },
+      ruleResults: [{
+        ruleId: "thermal-comfort-restored",
+        deadlineTick: 12,
+        result: { passed: false, score: 0, evidenceEventIds: [], firstFailureTick: 8, explanation: "failed" }
+      }]
+    });
+    expect(element.textContent).toContain("执行失败");
+    expect(element.textContent).toContain("backend timeout");
+    expect(element.textContent).toContain("TOOL_CALL_DENIED");
+    expect(element.textContent).toContain("thermal-comfort-restored");
+    expect(element.textContent).toContain("轨迹指标");
+    expect(element.textContent).toContain("风险暴露: 5");
+    expect(element.textContent).toContain("首次动作: t6");
   });
 });

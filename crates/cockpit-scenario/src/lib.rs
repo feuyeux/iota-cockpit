@@ -5,7 +5,9 @@ use cockpit_simulation_core::{
     clock::ClockConfig,
     error::{SimulationError, SimulationResult},
     influence::{ConflictPolicy, InfluenceRule},
-    simulation::{Fault, SimulationScenario},
+    simulation::{
+        EvaluationPolicy, EvaluationSpec, Fault, SimulationScenario, is_registered_evaluation_rule,
+    },
     world::{AlarmState, CabinEnvironment, DeviceState, HumanState, OuterEnvironmentState},
 };
 use serde::Deserialize;
@@ -79,6 +81,8 @@ struct EvaluationDocument {
     deadline_tick: u64,
     #[allow(dead_code)]
     rule: String,
+    #[serde(default)]
+    policy: EvaluationPolicy,
 }
 
 fn default_deadline() -> u64 {
@@ -163,6 +167,20 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         .evaluation
         .first()
         .map(|evaluation| evaluation.id.clone());
+    let evaluation_policy = document
+        .evaluation
+        .first()
+        .map(|evaluation| evaluation.policy.clone())
+        .unwrap_or_default();
+    let evaluation_rules = document
+        .evaluation
+        .iter()
+        .map(|evaluation| EvaluationSpec {
+            id: evaluation.id.clone(),
+            deadline_tick: evaluation.deadline_tick,
+            policy: evaluation.policy.clone(),
+        })
+        .collect();
 
     Ok(SimulationScenario {
         id: document.id,
@@ -199,6 +217,8 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
             .collect(),
         shutdown_deadline_ticks,
         evaluation_rule_id,
+        evaluation_policy,
+        evaluation_rules,
         influences: document.influences,
         conflict_policy: document
             .conflict_policy
@@ -227,6 +247,36 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
         MAX_SCENARIO_EVALUATIONS,
     )?;
     validate_identifier("scenario id", &document.id)?;
+    let mut evaluation_ids = std::collections::BTreeSet::new();
+    for evaluation in &document.evaluation {
+        validate_identifier("evaluation rule id", &evaluation.id)?;
+        if !is_registered_evaluation_rule(&evaluation.id) {
+            return Err(SimulationError::InvalidScenario(format!(
+                "evaluation rule '{}' is not registered",
+                evaluation.id
+            )));
+        }
+        if !evaluation_ids.insert(&evaluation.id) {
+            return Err(SimulationError::InvalidScenario(format!(
+                "evaluation rule '{}' is duplicated",
+                evaluation.id
+            )));
+        }
+        if evaluation.deadline_tick == 0 {
+            return Err(SimulationError::InvalidScenario(format!(
+                "evaluation rule '{}' has a zero deadlineTick",
+                evaluation.id
+            )));
+        }
+        for code in &evaluation.policy.safety_rejection_codes {
+            if !is_known_safety_code(code) {
+                return Err(SimulationError::InvalidScenario(format!(
+                    "evaluation rule '{}' has unknown safety rejection code '{code}'",
+                    evaluation.id
+                )));
+            }
+        }
+    }
     for entity in &document.entities {
         validate_identifier("entity id", &entity.id)?;
     }
@@ -298,6 +348,22 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
         }
     }
     Ok(())
+}
+
+fn is_known_safety_code(code: &str) -> bool {
+    matches!(
+        code,
+        "CAPABILITY_DENIED"
+            | "DEVICE_UNPOWERED"
+            | "PRECONDITION_FAILED"
+            | "STATE_VERSION_CONFLICT"
+            | "ACTION_EXPIRED"
+            | "ACTION_CONFLICT"
+            | "UNKNOWN_TARGET"
+            | "APPROVAL_DENIED"
+            | "ACTION_CANCELLED"
+            | "TOOL_CALL_DENIED"
+    )
 }
 
 /// Component paths that scheduled influences may target, mirroring the writable

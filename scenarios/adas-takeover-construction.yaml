@@ -16,4 +16,4 @@ entities:
 influences:
   - { ruleId: construction-attention-demand, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 3 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.05 }, priority: 8 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [adas.acknowledgeTakeover] }]
-evaluation: [{ id: adas-takeover-completed, deadlineTick: 18, rule: Driver attention reaches at least 90 percent after takeover }]
+evaluation: [{ id: adas-takeover-completed, deadlineTick: 18, rule: Driver attention reaches at least 90 percent after takeover, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

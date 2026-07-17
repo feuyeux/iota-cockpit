@@ -16,4 +16,4 @@ influences:
   - { ruleId: fog-visibility-loss, ruleVersion: 1, schedule: { kind: every, start: 2, interval: 4 }, entityId: cabin, componentPath: environment.visibility, op: { op: delta, value: -0.12 }, priority: 6 }
   - { ruleId: defog-recovery, ruleVersion: 1, schedule: { kind: every, start: 4, interval: 4 }, entityId: cabin, componentPath: environment.visibility, op: { op: delta, value: 0.08 }, priority: 8 }
 agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [visibility.activateDefog] }]
-evaluation: [{ id: windshield-visibility-restored, deadlineTick: 24, rule: Windshield visibility recovers to at least 80 percent }]
+evaluation: [{ id: windshield-visibility-restored, deadlineTick: 24, rule: Windshield visibility recovers to at least 80 percent, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]

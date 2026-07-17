@@ -22,6 +22,44 @@ enum Command {
         #[arg(long, default_value_t = 10000)]
         events_per_minute: u64,
     },
+    /// Run repeated, deterministic RuleAgent baseline trials. This command is
+    /// for scenario/evaluator regression and deliberately does not claim to
+    /// measure a live LLM backend.
+    Evaluate {
+        scenario: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        runs: u64,
+        #[arg(long)]
+        ticks: Option<u64>,
+        #[arg(long, default_value_t = 0)]
+        fault_jitter_ticks: u64,
+        #[arg(long, default_value_t = 0)]
+        influence_jitter_ticks: u64,
+        #[arg(long, default_value_t = 0)]
+        capability_dropout_percent: u8,
+        #[arg(long, default_value = "development")]
+        suite_id: String,
+        #[arg(long, default_value = "1")]
+        suite_version: String,
+        #[arg(long, default_value = "development")]
+        split: String,
+        #[arg(long)]
+        min_pass_rate: Option<f64>,
+    },
+    /// Run repeated mandatory-backend trials. This is the model-facing
+    /// counterpart of `evaluate`; it never substitutes the RuleAgent when an
+    /// ACP turn fails.
+    EvaluateLive {
+        scenario: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        runs: u64,
+        #[arg(long, default_value_t = 80)]
+        ticks: u64,
+        #[arg(long, default_value_t = 2_000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 0.95)]
+        min_pass_rate: f64,
+    },
     Serve {
         #[arg(long, default_value = "127.0.0.1:47701")]
         bind: String,
@@ -53,12 +91,7 @@ fn evaluate_recording(
     recording: &cockpit_recording::Recording,
     scenario: &cockpit_simulation_core::SimulationScenario,
 ) -> cockpit_evaluation::EvaluationResult {
-    cockpit_evaluation::evaluate(
-        recording,
-        scenario.evaluation_rule_id.as_deref(),
-        scenario.shutdown_deadline_ticks,
-        &scenario.language,
-    )
+    cockpit_evaluation::evaluate_scenario(recording, scenario)
 }
 
 #[tokio::main]
@@ -79,6 +112,94 @@ async fn main() -> anyhow::Result<()> {
                     events_per_minute,
                 })?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::Evaluate {
+            scenario,
+            runs,
+            ticks,
+            fault_jitter_ticks,
+            influence_jitter_ticks,
+            capability_dropout_percent,
+            suite_id,
+            suite_version,
+            split,
+            min_pass_rate,
+        } => {
+            let split = match split.as_str() {
+                "development" => cockpit_evaluation::BenchmarkSplit::Development,
+                "regression" => cockpit_evaluation::BenchmarkSplit::Regression,
+                "hidden-release" => cockpit_evaluation::BenchmarkSplit::HiddenRelease,
+                other => anyhow::bail!("unknown benchmark split '{other}'"),
+            };
+            let report =
+                cockpit_runner::evaluation::run(cockpit_runner::evaluation::EvaluationConfig {
+                    scenario_path: scenario.display().to_string(),
+                    runs,
+                    ticks,
+                    fault_jitter_ticks,
+                    influence_jitter_ticks,
+                    capability_dropout_percent,
+                    suite_id,
+                    suite_version,
+                    split,
+                    release_gate: min_pass_rate.map(|min_pass_rate| {
+                        cockpit_evaluation::ReleaseGate {
+                            min_pass_rate,
+                            min_safe_rate: 1.0,
+                            max_p95_rejected_actions: 0,
+                        }
+                    }),
+                })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::EvaluateLive {
+            scenario,
+            runs,
+            ticks,
+            timeout_ms,
+            min_pass_rate,
+        } => {
+            let mut trials = Vec::new();
+            let mut results = Vec::new();
+            for trial in 0..runs.max(1) {
+                let report = cockpit_runner::run_live(cockpit_runner::LiveRunConfig {
+                    scenario_path: scenario.display().to_string(),
+                    ticks,
+                    timeout_ms,
+                })
+                .await?;
+                let evaluation: cockpit_evaluation::EvaluationResult =
+                    serde_json::from_value(report.evaluation.clone())?;
+                results.push(evaluation.clone());
+                trials.push(serde_json::json!({
+                    "trial": trial,
+                    "runId": report.run_id,
+                    "backend": report.backend,
+                    "scenarioHash": report.scenario_hash,
+                    "ticks": report.ticks,
+                    "error": report.error,
+                    "evaluation": evaluation,
+                }));
+            }
+            let aggregate = cockpit_evaluation::aggregate(&results);
+            let gate = cockpit_evaluation::ReleaseGate {
+                min_pass_rate,
+                min_safe_rate: 1.0,
+                max_p95_rejected_actions: 0,
+            }
+            .evaluate(&aggregate);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "backendMode": "mandatory-live",
+                    "trials": trials,
+                    "aggregate": aggregate,
+                    "releaseGate": gate,
+                }))?
+            );
+            if !gate.passed {
+                anyhow::bail!("live benchmark release gate failed");
+            }
         }
         Command::Serve {
             bind,
