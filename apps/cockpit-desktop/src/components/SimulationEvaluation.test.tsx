@@ -34,7 +34,8 @@ function render(evaluationOverride?: EvaluationResult) {
               backend: "synthetic",
               evidence: {
                 humanId: "pilot-1",
-                decision: { narrative: "", actions: [{ target: "engine-1", command: "engineShutdown" }], internalStateDelta: {} }
+                decision: { narrative: "", actions: [{ target: "engine-1", command: "engineShutdown" }], internalStateDelta: {} },
+                toolCalls: [{ tool: "simulation.request_action", arguments: { target: "engine-1", command: "engineShutdown" } }]
               }
             }],
             actionResults: [{

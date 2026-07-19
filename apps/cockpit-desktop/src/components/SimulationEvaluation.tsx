@@ -4,6 +4,7 @@ import type { SimulationModel } from "../types/simulation";
 import { useI18n } from "../i18n";
 import { evaluationExplanation, commandLabel, eventLabel, alertLabel, actionStatusLabel } from "../utils/domainPresentation";
 import { BENCHMARK_SCENARIOS, localize } from "../config/scenarioCatalog";
+import { IndependentEvaluationPanel } from "./IndependentEvaluationPanel";
 
 interface ProcessRowProps {
   icon: React.ReactNode;
@@ -110,6 +111,8 @@ export function SimulationEvaluation({ model }: { model: SimulationModel }) {
             </>
           ) : <div className="text-xs text-zinc-500">{t("noEvaluation")}</div>}
         </div>
+
+        <IndependentEvaluationPanel model={model} />
 
         <div className="rounded border border-zinc-800 bg-zinc-950/50 p-2.5 text-[11px] leading-5 text-zinc-400"><span className="mr-1 font-medium text-zinc-200">{text.guide}：</span>{guide}</div>
       </div>

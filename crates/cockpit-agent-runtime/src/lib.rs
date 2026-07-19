@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use cockpit_simulation_core::{
-    action::{ActionRequest, ActionResult, ActionStatus, Command},
+    action::{ActionRequest, ActionResult, ActionStatus},
     error::{SimulationError, SimulationResult},
     event::ToolCallTrace,
     sensor::Observation,
@@ -14,15 +14,23 @@ pub mod acp_adapter;
 pub mod iota_core_adapter;
 pub mod live;
 pub mod multi_agent;
+pub mod native_mcp;
+pub mod open_world;
 pub mod policy;
 pub mod skill;
 pub mod translation;
 
 pub use live::{
-    HumanAgentDriver, HumanBackend, HumanDecision, HumanTurnContext, HumanTurnError,
-    HumanTurnEvidence, InternalStateDelta, RecordedHumanBackend, RequestedAction,
+    BackendConversationUpdate, HumanAgentDriver, HumanBackend, HumanDecision, HumanToolCall,
+    HumanToolExchange, HumanTurnContext, HumanTurnError, HumanTurnEvidence, InternalStateDelta,
+    RecordedHumanBackend, RequestedAction,
 };
 pub use multi_agent::{AgentActionBatch, MultiAgentCoordinator};
+pub use open_world::{
+    AcpConversationTurn, AgentBudget, AgentLifecycle, AgentSessionState, EpisodicMemory, GoalState,
+    GoalStatus, OpenWorldCheckpoint, OpenWorldRuntime, PlanStep, PlanStepStatus, RelationshipState,
+    ResourceLifecycle, SkillState, ToolState,
+};
 pub use policy::{AgentRuntimePolicy, AgentTurnError};
 pub use translation::{IdentityTranslator, Translator, normalize_language, same_language};
 
@@ -32,6 +40,8 @@ pub const TOOL_INSPECT_SENSOR_QUALITY: &str = "simulation.inspect_sensor_quality
 pub const TOOL_REQUEST_ACTION: &str = "simulation.request_action";
 pub const TOOL_GET_ACTION_RESULT: &str = "simulation.get_action_result";
 pub const TOOL_GET_RUN_STATUS: &str = "simulation.get_run_status";
+pub const TOOL_ADD_GOAL: &str = "simulation.add_goal";
+pub const TOOL_WAIT_UNTIL: &str = "simulation.wait_until";
 pub const MAX_TOOL_RESPONSE_BYTES: usize = 1_048_576;
 pub const REDACTED_SECRET: &str = "[REDACTED]";
 
@@ -50,6 +60,10 @@ pub struct ToolRequest {
     pub call_id: String,
     pub run_id: String,
     pub agent_id: String,
+    /// Runtime-authenticated human scope. The model never supplies this;
+    /// the live driver injects it for perception and capability isolation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_id: Option<String>,
     pub tick: u64,
     pub tool_name: String,
     pub arguments: Value,
@@ -73,16 +87,37 @@ pub struct ToolResponse {
     pub error: Option<ToolError>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum OpenWorldControlRequest {
+    AddGoal {
+        human_id: String,
+        description: String,
+        priority: i32,
+    },
+    WaitUntil {
+        human_id: String,
+        wake_tick: u64,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LocalMcpServer {
     action_results: BTreeMap<String, ActionResult>,
+    action_owners: BTreeMap<String, Option<String>>,
     pending_actions: BTreeMap<String, ActionRequest>,
+    #[serde(default)]
+    control_requests: Vec<OpenWorldControlRequest>,
     approval_required: bool,
 }
 
 impl LocalMcpServer {
     pub fn set_approval_required(&mut self, required: bool) {
         self.approval_required = required;
+    }
+
+    pub fn take_control_requests(&mut self) -> Vec<OpenWorldControlRequest> {
+        std::mem::take(&mut self.control_requests)
     }
 
     pub fn approve_action(
@@ -161,15 +196,26 @@ impl LocalMcpServer {
                 false,
                 json!({
                     "type": "object",
-                    "properties": { "sensorId": { "type": "string" } },
+                    "properties": {
+                        "sensorId": { "type": "string" },
+                        "cursor": { "type": "integer", "minimum": 0 },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    },
                     "additionalProperties": false
                 }),
             ),
             definition(
                 TOOL_LIST_VISIBLE_ENTITIES,
-                "List entities visible to the agent sensor profile.",
+                "List entities visible to the agent sensor profile using cursor pagination.",
                 false,
-                object_schema(),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cursor": { "type": "integer", "minimum": 0 },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    },
+                    "additionalProperties": false
+                }),
             ),
             definition(
                 TOOL_INSPECT_SENSOR_QUALITY,
@@ -186,19 +232,12 @@ impl LocalMcpServer {
                     "required": ["target", "command", "expectedStateVersion", "expiresAtTick"],
                     "properties": {
                         "target": { "type": "string" },
-                        "command": { "type": "string", "enum": [
-                            "engineShutdown",
-                            "alarmActivate",
-                            "climateComfortRestore",
-                            "windshieldDefogActivate",
-                            "fatigueInterventionActivate",
-                            "childProtectionActivate",
-                            "medicalResponseActivate",
-                            "privacyModeActivate",
-                            "chargingPlanAccept",
-                            "adasTakeoverAcknowledge",
-                            "cyberSafeModeActivate"
-                        ] },
+                        "command": { "type": "string", "enum":
+                            cockpit_simulation_core::capability::CapabilityCatalog::load_default()
+                                .definitions()
+                                .map(|capability| Value::String(capability.wire_name.clone()))
+                                .collect::<Vec<_>>()
+                        },
                         "expectedStateVersion": { "type": "integer", "minimum": 0 },
                         "expiresAtTick": { "type": "integer", "minimum": 0 }
                     },
@@ -222,6 +261,33 @@ impl LocalMcpServer {
                 false,
                 object_schema(),
             ),
+            definition(
+                TOOL_ADD_GOAL,
+                "Add a bounded goal to the authenticated human's own plan state.",
+                true,
+                json!({
+                    "type": "object",
+                    "required": ["description"],
+                    "properties": {
+                        "description": { "type": "string", "minLength": 1, "maxLength": 512 },
+                        "priority": { "type": "integer", "minimum": -100, "maximum": 100 }
+                    },
+                    "additionalProperties": false
+                }),
+            ),
+            definition(
+                TOOL_WAIT_UNTIL,
+                "Put the authenticated human's runtime session to sleep until a future tick.",
+                true,
+                json!({
+                    "type": "object",
+                    "required": ["wakeAtTick"],
+                    "properties": {
+                        "wakeAtTick": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }),
+            ),
         ]
     }
 
@@ -230,7 +296,10 @@ impl LocalMcpServer {
         simulation: &mut Simulation,
         request: ToolRequest,
     ) -> (ToolResponse, ToolCallTrace) {
-        let side_effect = request.tool_name == TOOL_REQUEST_ACTION;
+        let side_effect = matches!(
+            request.tool_name.as_str(),
+            TOOL_REQUEST_ACTION | TOOL_ADD_GOAL | TOOL_WAIT_UNTIL
+        );
         let mut allowed = true;
         let result = if request.run_id != simulation.run_id() {
             allowed = false;
@@ -244,6 +313,9 @@ impl LocalMcpServer {
                 code: "AGENT_IDENTITY_DENIED".to_string(),
                 message: "agent identity is not authorized for this run".to_string(),
             })
+        } else if let Err(error) = Self::validate_human_scope(simulation, &request) {
+            allowed = false;
+            Err(error)
         } else {
             self.dispatch(simulation, &request)
         };
@@ -290,16 +362,85 @@ impl LocalMcpServer {
     ) -> Result<Value, ToolError> {
         match request.tool_name.as_str() {
             TOOL_GET_OBSERVATION => {
-                serde_json::to_value(simulation.observation()).map_err(serialization_error)
+                let mut observation =
+                    serde_json::to_value(Self::observation_for_request(simulation, request))
+                        .map_err(serialization_error)?;
+                let cursor = request
+                    .arguments
+                    .get("cursor")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let limit = request
+                    .arguments
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(200)
+                    .clamp(1, 200) as usize;
+                let entities = observation
+                    .get_mut("visibleEntities")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| ToolError {
+                        code: "SERIALIZATION_ERROR".to_string(),
+                        message: "observation visibleEntities is not an array".to_string(),
+                    })?;
+                let total = entities.len();
+                let page = entities
+                    .iter()
+                    .skip(cursor)
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let next_cursor = (cursor + page.len() < total).then_some(cursor + page.len());
+                *entities = page;
+                if let Some(object) = observation.as_object_mut() {
+                    object.insert(
+                        "page".to_string(),
+                        json!({
+                            "cursor": cursor,
+                            "limit": limit,
+                            "total": total,
+                            "nextCursor": next_cursor
+                        }),
+                    );
+                }
+                Ok(observation)
             }
             TOOL_LIST_VISIBLE_ENTITIES => {
-                let observation = simulation.observation();
-                Ok(
-                    json!({ "runId": simulation.run_id(), "tick": simulation.snapshot.tick, "entities": observation.visible_entities }),
-                )
+                let observation = Self::observation_for_request(simulation, request);
+                let cursor = request
+                    .arguments
+                    .get("cursor")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let limit = request
+                    .arguments
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50)
+                    .clamp(1, 200) as usize;
+                let total = observation.visible_entities.len();
+                let entities = observation
+                    .visible_entities
+                    .into_iter()
+                    .skip(cursor)
+                    .take(limit)
+                    .collect::<Vec<_>>();
+                let next_cursor =
+                    (cursor + entities.len() < total).then_some(cursor + entities.len());
+                Ok(json!({
+                    "runId": simulation.run_id(),
+                    "tick": simulation.snapshot.tick,
+                    "entities": entities,
+                    "page": {
+                        "cursor": cursor,
+                        "limit": limit,
+                        "total": total,
+                        "nextCursor": next_cursor
+                    }
+                }))
             }
             TOOL_INSPECT_SENSOR_QUALITY => {
-                let observation = simulation.observation();
+                let observation = Self::observation_for_request(simulation, request);
                 Ok(
                     json!({ "runId": simulation.run_id(), "tick": simulation.snapshot.tick, "quality": observation.quality }),
                 )
@@ -311,13 +452,83 @@ impl LocalMcpServer {
                     .get("requestId")
                     .and_then(Value::as_str)
                     .ok_or_else(|| invalid_arguments("requestId is required"))?;
-                self.action_results
+                let result = self
+                    .action_results
                     .get(request_id)
-                    .map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
                     .ok_or_else(|| ToolError {
                         code: "ACTION_NOT_FOUND".to_string(),
                         message: "action result was not found".to_string(),
-                    })
+                    })?;
+                if request.human_id.is_some()
+                    && self.action_owners.get(request_id) != Some(&request.human_id)
+                {
+                    return Err(ToolError {
+                        code: "ACTION_RESULT_IDENTITY_DENIED".to_string(),
+                        message: "action result belongs to a different human".to_string(),
+                    });
+                }
+                serde_json::to_value(result).map_err(serialization_error)
+            }
+            TOOL_ADD_GOAL => {
+                let human_id = request.human_id.clone().ok_or_else(|| ToolError {
+                    code: "HUMAN_SCOPE_REQUIRED".to_string(),
+                    message: "open-world control tools require an authenticated human".to_string(),
+                })?;
+                let description = request
+                    .arguments
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && value.len() <= 512)
+                    .ok_or_else(|| invalid_arguments("description must contain 1..=512 bytes"))?;
+                let priority = request
+                    .arguments
+                    .get("priority")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                if !(-100..=100).contains(&priority) {
+                    return Err(invalid_arguments("priority must be in -100..=100"));
+                }
+                self.control_requests
+                    .push(OpenWorldControlRequest::AddGoal {
+                        human_id,
+                        description: description.to_string(),
+                        priority: priority as i32,
+                    });
+                Ok(json!({
+                    "accepted": true,
+                    "controlId": request.call_id,
+                    "kind": "addGoal"
+                }))
+            }
+            TOOL_WAIT_UNTIL => {
+                let human_id = request.human_id.clone().ok_or_else(|| ToolError {
+                    code: "HUMAN_SCOPE_REQUIRED".to_string(),
+                    message: "open-world control tools require an authenticated human".to_string(),
+                })?;
+                let wake_tick = request
+                    .arguments
+                    .get("wakeAtTick")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| invalid_arguments("wakeAtTick is required"))?;
+                if wake_tick <= simulation.snapshot.tick
+                    || wake_tick > simulation.snapshot.tick.saturating_add(1_000_000)
+                {
+                    return Err(invalid_arguments(
+                        "wakeAtTick must be a future tick within 1,000,000 ticks",
+                    ));
+                }
+                self.control_requests
+                    .push(OpenWorldControlRequest::WaitUntil {
+                        human_id,
+                        wake_tick,
+                    });
+                Ok(json!({
+                    "accepted": true,
+                    "controlId": request.call_id,
+                    "kind": "waitUntil",
+                    "wakeAtTick": wake_tick
+                }))
             }
             TOOL_GET_RUN_STATUS => Ok(json!({
                 "runId": simulation.run_id(),
@@ -333,6 +544,58 @@ impl LocalMcpServer {
         }
     }
 
+    fn observation_for_request(simulation: &Simulation, request: &ToolRequest) -> Observation {
+        request.human_id.as_deref().map_or_else(
+            || simulation.observation(),
+            |human_id| Observation::for_human(simulation.run_id(), human_id, &simulation.snapshot),
+        )
+    }
+
+    fn validate_human_scope(
+        simulation: &Simulation,
+        request: &ToolRequest,
+    ) -> Result<(), ToolError> {
+        let Some(human_id) = request.human_id.as_deref() else {
+            if matches!(request.tool_name.as_str(), TOOL_ADD_GOAL | TOOL_WAIT_UNTIL) {
+                return Err(ToolError {
+                    code: "HUMAN_SCOPE_REQUIRED".to_string(),
+                    message: "open-world control tools require an authenticated human".to_string(),
+                });
+            }
+            return Ok(());
+        };
+        let human = simulation
+            .snapshot
+            .human(human_id)
+            .ok_or_else(|| ToolError {
+                code: "HUMAN_IDENTITY_DENIED".to_string(),
+                message: "human identity is not present in the active world".to_string(),
+            })?;
+        if request.tool_name != TOOL_REQUEST_ACTION {
+            return Ok(());
+        }
+        let Some(capability) = request
+            .arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .and_then(|wire_name| simulation.capabilities().get_by_wire_name(wire_name))
+        else {
+            return Ok(());
+        };
+        if human
+            .action_capabilities
+            .iter()
+            .any(|owned| owned == &capability.id)
+        {
+            Ok(())
+        } else {
+            Err(ToolError {
+                code: "HUMAN_CAPABILITY_DENIED".to_string(),
+                message: "human is not authorized to request this action".to_string(),
+            })
+        }
+    }
+
     fn request_action(
         &mut self,
         simulation: &mut Simulation,
@@ -343,12 +606,14 @@ impl LocalMcpServer {
             .get("target")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid_arguments("target is required"))?;
-        let command = request
+        let capability_id = request
             .arguments
             .get("command")
             .and_then(Value::as_str)
-            .and_then(Command::from_wire_name)
-            .ok_or_else(|| invalid_arguments("command is not a registered cockpit action"))?;
+            .and_then(|wire_name| simulation.capabilities().get_by_wire_name(wire_name))
+            .ok_or_else(|| invalid_arguments("command is not a registered cockpit action"))?
+            .id
+            .clone();
         let expected_state_version = request
             .arguments
             .get("expectedStateVersion")
@@ -363,11 +628,13 @@ impl LocalMcpServer {
             request_id: request.call_id.clone(),
             agent_id: request.agent_id.clone(),
             target: target.to_string(),
-            command,
+            capability_id,
             expected_state_version,
             expires_at_tick,
             correlation_id: request.correlation_id.clone(),
         };
+        self.action_owners
+            .insert(action.request_id.clone(), request.human_id.clone());
         if self.approval_required {
             let result = ActionResult {
                 request: action.clone(),
@@ -559,6 +826,7 @@ impl RuleAgent {
             call_id: format!("{}-tool-{}", simulation.run_id(), self.sequence),
             run_id: simulation.run_id().to_string(),
             agent_id: simulation.scenario.agent.agent_id.clone(),
+            human_id: None,
             tick: simulation.snapshot.tick,
             tool_name: tool_name.to_string(),
             arguments,

@@ -1,0 +1,348 @@
+# Capability catalog: the authoritative, resource-driven definition of every
+# action a scenario agent may be granted. This file replaces the previous
+# hardcoded `Command` enum in `cockpit-simulation-core::action`. Adding a new
+# scenario capability requires only a new entry here plus a scenario YAML
+# reference under `agents[].capabilities` -- no Rust code changes.
+#
+# Entity id fields support fixed placeholders resolved at effect-application
+# time against the action request and the live world snapshot:
+#   $target       -> the ActionRequest.target field (the action's declared target)
+#   $actor        -> the human entity operated by the requesting agent grant
+#   $primaryHuman -> the scenario's first human entity (humans[0])
+# Any other value is treated as a literal entity id (e.g. "cabin", "hvac-1"),
+# which is appropriate for shared world singletons that are the same across
+# every scenario.
+schemaVersion: 1
+capabilities:
+  - id: engine.shutdown
+    wireName: engineShutdown
+    targetId: engine-1
+    writeSet:
+      - engine-1.shutdown
+      - cabin.fireActive
+    resolver: device-capability+combustion
+    requiresCapability: shutdown
+    operations:
+      - entityId: engine-1
+        path: shutdown
+        value: true
+      - entityId: engine-1
+        path: lifecycle
+        value: recovering
+      - entityId: cabin
+        path: environment.fireActive
+        value: false
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: engine shutdown action applied
+      - type: EngineShutdown
+        source: device-system
+        target: $target
+        message: engine shutdown stopped smoke source
+
+  - id: alarm.activate
+    wireName: alarmActivate
+    targetId: alarm-1
+    writeSet:
+      - alarm-1.active
+      - cabin.noiseDb
+    resolver: alarm
+    operations:
+      - entityId: alarm-1
+        path: active
+        value: true
+      - entityId: alarm-1
+        path: volumeDb
+        value: 85.0
+      - entityId: cabin
+        path: environment.noiseDb
+        value: 85.0
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: alarm activation action applied
+
+  - id: climate.restoreComfort
+    wireName: climateComfortRestore
+    targetId: hvac-1
+    writeSet:
+      - climate.cooling
+      - cabin.temperatureC
+    resolver: climate-comfort
+    operations:
+      - entityId: hvac-1
+        path: cockpitSystems.climate.comfortTargetC
+        value: 25.5
+      - entityId: hvac-1
+        path: cockpitSystems.climate.coolingActive
+        value: true
+      - entityId: hvac-1
+        path: cockpitSystems.climate.seatVentilationActive
+        value: true
+      - entityId: cabin
+        path: environment.temperatureC
+        value: 25.5
+      - entityId: cabin
+        path: environment.zonesTemperatureC
+        value: 25.5
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: climate comfort restoration action applied
+      - type: ThermalComfortRestored
+        source: hvac-1
+        target: cabin
+        value: 25.5
+        message: HVAC restored the cabin comfort target
+
+  - id: visibility.activateDefog
+    wireName: windshieldDefogActivate
+    targetId: defogger-1
+    writeSet:
+      - climate.defog
+      - cabin.visibility
+    resolver: visibility
+    operations:
+      - entityId: defogger-1
+        path: cockpitSystems.climate.defogActive
+        value: true
+      - entityId: cabin
+        path: environment.visibility
+        value: 0.85
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: windshield defog action applied
+      - type: WindshieldVisibilityRestored
+        source: defogger-1
+        target: cabin
+        value: 0.85
+        message: defogger restored windshield visibility
+
+  - id: driver.activateFatigueIntervention
+    wireName: fatigueInterventionActivate
+    targetId: dms-1
+    writeSet:
+      - driver-1.attention
+    resolver: driver-fatigue
+    operations:
+      - entityId: dms-1
+        path: cockpitSystems.driverAssistance.fatigueInterventionActive
+        value: true
+      - entityId: driver-1
+        path: pilot.attention
+        value: 0.72
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: fatigue intervention action applied
+      - type: DriverAttentionRestored
+        source: dms-1
+        target: driver-1
+        value: 0.72
+        message: fatigue intervention restored driver attention
+
+  - id: occupant.activateChildProtection
+    wireName: childProtectionActivate
+    targetId: occupant-radar-1
+    writeSet:
+      - occupant.childProtection
+      - cabin.temperatureC
+      - child-1.stress
+    resolver: occupant-child-protection
+    operations:
+      - entityId: occupant-radar-1
+        path: cockpitSystems.occupantCare.childProtectionActive
+        value: true
+      - entityId: occupant-radar-1
+        path: cockpitSystems.occupantCare.emergencyContacted
+        value: true
+      - entityId: occupant-radar-1
+        path: cockpitSystems.occupantCare.guardianNotified
+        value: true
+      - entityId: occupant-radar-1
+        path: cockpitSystems.occupantCare.remoteUnlockRequested
+        value: true
+      - entityId: cabin
+        path: environment.temperatureC
+        value: 29.0
+      - entityId: cabin
+        path: environment.zonesTemperatureC
+        value: 29.0
+      - entityId: child-1
+        path: pilot.stress
+        value: 0.3
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: child protection action applied
+      - type: ChildProtectionActivated
+        source: occupant-radar-1
+        target: cabin
+        value: 29.0
+        message: child protection cooled the cabin and contacted emergency support
+
+  - id: health.activateMedicalResponse
+    wireName: medicalResponseActivate
+    targetId: emergency-call-1
+    writeSet:
+      - occupant.medicalResponse
+      - patient-1.stress
+    resolver: occupant-medical-response
+    operations:
+      - entityId: emergency-call-1
+        path: cockpitSystems.occupantCare.medicalResponseActive
+        value: true
+      - entityId: emergency-call-1
+        path: cockpitSystems.occupantCare.emergencyContacted
+        value: true
+      - entityId: emergency-call-1
+        path: cockpitSystems.connectivity.emergencyCallActive
+        value: true
+      - entityId: emergency-call-1
+        path: cockpitSystems.mobility.emergencyRouteActive
+        value: true
+      - entityId: patient-1
+        path: pilot.stress
+        value: 0.35
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: medical response action applied
+      - type: MedicalResponseActivated
+        source: emergency-call-1
+        target: patient-1
+        value: 0.35
+        message: medical response stabilized the patient and shared location
+
+  - id: privacy.activateMode
+    wireName: privacyModeActivate
+    targetId: voice-array-1
+    writeSet:
+      - driver-1.attention
+    resolver: experience-privacy
+    operations:
+      - entityId: voice-array-1
+        path: cockpitSystems.experience.privacyModeActive
+        value: true
+      - entityId: voice-array-1
+        path: cockpitSystems.experience.mediaSessionsIsolated
+        value: true
+      - entityId: voice-array-1
+        path: cockpitSystems.experience.occupantProfilesIsolated
+        value: true
+      - entityId: driver-1
+        path: pilot.attention
+        value: 0.82
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: privacy mode action applied
+      - type: PrivacyConflictContained
+        source: voice-array-1
+        target: driver-1
+        value: 0.82
+        message: voice privacy mode isolated private content and reduced distraction
+
+  - id: energy.acceptChargingPlan
+    wireName: chargingPlanAccept
+    targetId: navigation-1
+    writeSet:
+      - mobility.chargingRoute
+      - driver-1.stress
+    resolver: mobility-charging
+    operations:
+      - entityId: navigation-1
+        path: cockpitSystems.experience.chargingPlanAccepted
+        value: true
+      - entityId: navigation-1
+        path: cockpitSystems.mobility.chargingRouteActive
+        value: true
+      - entityId: navigation-1
+        path: cockpitSystems.mobility.chargerServiceConnected
+        value: true
+      - entityId: driver-1
+        path: pilot.stress
+        value: 0.35
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: charging plan acceptance action applied
+      - type: ChargingPlanAccepted
+        source: navigation-1
+        target: driver-1
+        value: 0.35
+        message: navigation accepted a safe charging route and reduced range anxiety
+
+  - id: adas.acknowledgeTakeover
+    wireName: adasTakeoverAcknowledge
+    targetId: adas-controller-1
+    writeSet:
+      - driver-1.attention
+    resolver: driver-assistance-takeover
+    operations:
+      - entityId: adas-controller-1
+        path: cockpitSystems.driverAssistance.takeoverAcknowledged
+        value: true
+      - entityId: adas-controller-1
+        path: cockpitSystems.driverAssistance.takeoverHmiActive
+        value: true
+      - entityId: driver-1
+        path: pilot.attention
+        value: 0.92
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: ADAS takeover acknowledgement applied
+      - type: AdasTakeoverCompleted
+        source: adas-controller-1
+        target: driver-1
+        value: 0.92
+        message: driver acknowledged takeover and restored manual attention
+
+  - id: cybersecurity.enterSafeMode
+    wireName: cyberSafeModeActivate
+    targetId: security-monitor-1
+    writeSet:
+      - driver-1.attention
+    resolver: cybersecurity-safe-mode
+    operations:
+      - entityId: security-monitor-1
+        path: cockpitSystems.cybersecurity.safeModeActive
+        value: true
+      - entityId: security-monitor-1
+        path: cockpitSystems.cybersecurity.networkIsolated
+        value: true
+      - entityId: security-monitor-1
+        path: cockpitSystems.cybersecurity.identityVerified
+        value: true
+      - entityId: security-monitor-1
+        path: cockpitSystems.connectivity.remoteServicesIsolated
+        value: true
+      - entityId: security-monitor-1
+        path: cockpitSystems.connectivity.trustedLocalAlertActive
+        value: true
+      - entityId: driver-1
+        path: pilot.attention
+        value: 0.88
+    events:
+      - type: ActionApplied
+        source: action-gateway
+        target: $target
+        message: cybersecurity safe mode action applied
+      - type: CyberIncidentContained
+        source: security-monitor-1
+        target: driver-1
+        value: 0.88
+        message: security monitor isolated remote control and retained safe functions

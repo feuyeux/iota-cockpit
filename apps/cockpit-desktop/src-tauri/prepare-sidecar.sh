@@ -22,15 +22,15 @@ case "$TRIPLE" in
   *windows*) EXT=".exe" ;;
 esac
 
-echo "Building cockpit-runner (release) for $TRIPLE"
-cargo build --release -p cockpit-runner --features live-acp --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
+echo "Building cockpit-runner and cockpit-evaluator (release) for $TRIPLE"
+cargo build --release -p cockpit-runner -p cockpit-evaluator --features cockpit-runner/live-acp --manifest-path "$WORKSPACE_ROOT/Cargo.toml"
 
 mkdir -p "$BIN_DIR"
-SRC="$WORKSPACE_ROOT/target/release/cockpit-runner$EXT"
-DST="$BIN_DIR/cockpit-runner-$TRIPLE$EXT"
-cp "$SRC" "$DST"
-# When a previous placeholder already exists, macOS `cp` can preserve that
-# destination's non-executable mode. Tauri copies this file verbatim into the
-# app bundle, so ensure the sidecar can actually be spawned by the desktop app.
-chmod +x "$DST"
-echo "Staged sidecar: $DST"
+for NAME in cockpit-runner cockpit-evaluator; do
+  SRC="$WORKSPACE_ROOT/target/release/$NAME$EXT"
+  DST="$BIN_DIR/$NAME-$TRIPLE$EXT"
+  cp "$SRC" "$DST"
+  # Tauri copies these files verbatim into the app bundle.
+  chmod +x "$DST"
+  echo "Staged sidecar: $DST"
+done

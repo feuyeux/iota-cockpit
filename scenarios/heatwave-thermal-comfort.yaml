@@ -2,23 +2,122 @@ schemaVersion: 1
 id: heatwave-thermal-comfort
 seed: 101
 language: zh-CN
-clock: { mode: stepped, tickMs: 100 }
+clock:
+  mode: stepped
+  tickMs: 100
 conflictPolicy: highestPriorityWins
 entities:
-  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 43.0 } } }
-  - { id: outer-heatwave, type: outerEnvironment, components: { temperature: { celsius: 39.0 }, altitude: { meters: 30.0 }, wind: { speedKmh: 2.0 }, weather: { precipitation: 0.0 } } }
+  - id: cabin
+    type: environment
+    components:
+      smoke:
+        density: 0.0
+      temperature:
+        celsius: 43.0
+  - id: outer-heatwave
+    type: outerEnvironment
+    components:
+      temperature:
+        celsius: 39.0
+      humidity:
+        relativePct: 68.0
+      solar:
+        irradianceWm2: 900.0
+      altitude:
+        meters: 30.0
+      wind:
+        speedKmh: 2.0
+      weather:
+        precipitation: 0.0
   - id: driver-1
     type: human
-    components: { attention: { value: 0.78 }, location: cockpit, name: 林岚, role: driver, background: 高温通勤中的驾驶员，需要兼顾安全与能耗。, traits: { openness: 0.55, conscientiousness: 0.82, extraversion: 0.45, agreeableness: 0.62, neuroticism: 0.38 } }
+    components:
+      attention:
+        value: 0.78
+      location: cockpit
+      name: 林岚
+      role: driver
+      background: 高温通勤中的驾驶员，需要兼顾安全与能耗。
+      traits:
+        openness: 0.55
+        conscientiousness: 0.82
+        extraversion: 0.45
+        agreeableness: 0.62
+        neuroticism: 0.38
   - id: child-1
     type: human
-    components: { attention: { value: 0.65 }, location: rear-left, name: 小禾, role: child passenger, background: 对高温敏感的后排儿童。, relationships: [driver-1 is the guardian], traits: { openness: 0.7, conscientiousness: 0.3, extraversion: 0.6, agreeableness: 0.7, neuroticism: 0.6 } }
-  - { id: passenger-1, type: human, components: { attention: { value: 0.72 }, location: rear-right, name: 陈予, role: passenger, background: 关注儿童舒适度的同行家长。 } }
-  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
-  - { id: hvac-1, type: device, components: { capabilities: [zoned-cooling, air-recirculation] } }
-  - { id: seat-climate-1, type: device, components: { capabilities: [seat-ventilation, occupant-zone-preference] } }
+    components:
+      attention:
+        value: 0.65
+      location: rear-left
+      name: 小禾
+      role: child passenger
+      background: 对高温敏感的后排儿童。
+      relationships:
+        - driver-1 is the guardian
+      traits:
+        openness: 0.7
+        conscientiousness: 0.3
+        extraversion: 0.6
+        agreeableness: 0.7
+        neuroticism: 0.6
+  - id: passenger-1
+    type: human
+    components:
+      attention:
+        value: 0.72
+      location: rear-right
+      name: 陈予
+      role: passenger
+      background: 关注儿童舒适度的同行家长。
+  - id: engine-1
+    type: device
+    components:
+      capabilities:
+        - shutdown
+  - id: hvac-1
+    type: device
+    components:
+      capabilities:
+        - zoned-cooling
+        - air-recirculation
+  - id: seat-climate-1
+    type: device
+    components:
+      capabilities:
+        - seat-ventilation
+        - occupant-zone-preference
 influences:
-  - { ruleId: heat-attention-decay, ruleVersion: 1, schedule: { kind: every, start: 2, interval: 4 }, entityId: driver-1, componentPath: pilot.attention, op: { op: delta, value: -0.04 }, priority: 5 }
-  - { ruleId: staged-cabin-cooling, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 3 }, entityId: cabin, componentPath: environment.temperatureC, op: { op: delta, value: -1.5 }, priority: 8 }
-agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [climate.restoreComfort] }]
-evaluation: [{ id: thermal-comfort-restored, deadlineTick: 28, rule: Cabin reaches 26C or below before the deadline, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]
+  - ruleId: heat-attention-decay
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 2
+      interval: 4
+    entityId: driver-1
+    componentPath: pilot.attention
+    op:
+      op: delta
+      value: -0.04
+    priority: 5
+  - ruleId: staged-cabin-cooling
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 3
+      interval: 3
+    entityId: cabin
+    componentPath: environment.temperatureC
+    op:
+      op: delta
+      value: -1.5
+    priority: 8
+agents:
+  - id: cockpit-agent
+    backend: scripted
+    observationProfile: driver-default
+    capabilities:
+      - climate.restoreComfort
+goals:
+  - Keep occupants comfortable and attentive during extreme heat.
+maxTicks: 80

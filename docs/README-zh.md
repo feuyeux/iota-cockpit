@@ -16,7 +16,28 @@
 
 ## 专题文档
 
-- [NPC 世界建模](./npc.md)
+### [Desktop 分层架构与 Sidecar](./architecture-zh.md)
 
-**最后更新时间**：2026-07-17
-**统一文档版本**：5.0.0（同步场景操作指南重写后的文档结构）
+用分层架构图和一次 Live 运行时序图说明：
+
+- Tauri Desktop、React WebView、Runner 与 Evaluator 的职责边界；
+- `sidecar` 是什么、为何需要两个独立进程；
+- Hermes Desktop Agent、公开场景、私有 rubric 和 Recording 的数据流；
+- 开发模式与打包安装包中 sidecar 的启动差异。
+- Windows 上 Hermes ACP CLI、`COCKPIT_HERMES_BIN` 与常见 Live 后端错误的配置方式。
+
+### [独立评测与发布门禁](./evaluation-zh.md)
+
+面向开发者说明：
+
+- 单次 Recording 与 10 场景批量 suite 的 evaluator CLI；
+- JSON/JUnit、最低通过率、基线回归和单 case 基础设施错误聚合；
+- Desktop evaluator sidecar、私有 rubric、脱敏输入、durable Recording 校验与历史报告隔离；
+- CI 工作目录、published `iota-sympantos-core` 依赖和双 sidecar 打包契约。
+
+### [NPC 世界建模](./npc.md)
+
+> 更底层的 Runner IPC、ACP 适配和 Recording 数据结构仍以 `crates/cockpit-runner`、`crates/cockpit-agent-runtime`、`crates/cockpit-recording` 源码与模块注释为准。
+
+**最后更新时间**：2026-07-18
+**统一文档版本**：5.1.0（新增独立评测、批量门禁与 Desktop 报告一致性专题）

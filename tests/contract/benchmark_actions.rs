@@ -1,67 +1,73 @@
 use cockpit_agent_runtime::{LocalMcpServer, RuleAgent};
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{
-    ActionRequest, ActionStatus, Command, ErrorCode, Observation, Simulation, clock::RunStatus,
+    ActionRequest, ActionStatus, ErrorCode, Observation, Simulation, clock::RunStatus,
 };
 
-const BENCHMARK_ACTIONS: &[(&str, Command, &str)] = &[
+const BENCHMARK_ACTIONS: &[(&str, &str, &str)] = &[
     (
         "scenarios/heatwave-thermal-comfort.yaml",
-        Command::ClimateComfortRestore,
+        "climate.restoreComfort",
         "ThermalComfortRisk",
     ),
     (
         "scenarios/winter-defog-visibility.yaml",
-        Command::WindshieldDefogActivate,
+        "visibility.activateDefog",
         "WindshieldVisibilityRisk",
     ),
     (
         "scenarios/driver-fatigue-guardian.yaml",
-        Command::FatigueInterventionActivate,
+        "driver.activateFatigueIntervention",
         "DriverFatigueRisk",
     ),
     (
         "scenarios/child-left-behind.yaml",
-        Command::ChildProtectionActivate,
+        "occupant.activateChildProtection",
         "ChildPresenceHeatRisk",
     ),
     (
         "scenarios/medical-emergency.yaml",
-        Command::MedicalResponseActivate,
+        "health.activateMedicalResponse",
         "MedicalEmergencyRisk",
     ),
     (
         "scenarios/voice-privacy-conflict.yaml",
-        Command::PrivacyModeActivate,
+        "privacy.activateMode",
         "MultiUserPrivacyConflict",
     ),
     (
         "scenarios/ev-range-anxiety.yaml",
-        Command::ChargingPlanAccept,
+        "energy.acceptChargingPlan",
         "EvRangeRisk",
     ),
     (
         "scenarios/adas-takeover-construction.yaml",
-        Command::AdasTakeoverAcknowledge,
+        "adas.acknowledgeTakeover",
         "AdasTakeoverRequired",
     ),
     (
         "scenarios/cybersecurity-anomalous-control.yaml",
-        Command::CyberSafeModeActivate,
+        "cybersecurity.enterSafeMode",
         "CyberControlAnomaly",
     ),
 ];
 
 #[test]
 fn every_benchmark_domain_closes_through_a_typed_gateway_action() {
-    for (path, expected_command, resolved_alert) in BENCHMARK_ACTIONS {
+    for (path, expected_capability_id, resolved_alert) in BENCHMARK_ACTIONS {
         let scenario = load_scenario(path).unwrap_or_else(|error| panic!("{path}: {error}"));
-        let deadline = scenario.shutdown_deadline_ticks;
+        let deadline = scenario.max_ticks;
         let mut simulation = Simulation::new(format!("action-{}", scenario.id), scenario);
         simulation.start().expect("simulation starts");
         let mut agent = RuleAgent::default();
         let mut server = LocalMcpServer::default();
         let mut applied = false;
+        let expected_target = simulation
+            .capabilities()
+            .get(expected_capability_id)
+            .expect("capability is registered")
+            .target_id
+            .clone();
 
         for _ in 0..=deadline {
             let step = agent
@@ -69,8 +75,8 @@ fn every_benchmark_domain_closes_through_a_typed_gateway_action() {
                 .unwrap_or_else(|error| panic!("{path}: {error}"));
             applied |= step.action_results.iter().any(|result| {
                 result.status == ActionStatus::Applied
-                    && result.request.command == *expected_command
-                    && result.request.target == expected_command.target_id()
+                    && result.request.capability_id == *expected_capability_id
+                    && result.request.target == expected_target
             });
         }
 
@@ -145,7 +151,7 @@ fn domain_action_without_a_scenario_grant_is_rejected() {
         request_id: "unauthorized-hvac".to_string(),
         agent_id: "cockpit-agent".to_string(),
         target: "hvac-1".to_string(),
-        command: Command::ClimateComfortRestore,
+        capability_id: "climate.restoreComfort".to_string(),
         expected_state_version: simulation.snapshot.version,
         expires_at_tick: simulation.snapshot.tick + 1,
         correlation_id: "unauthorized-hvac-corr".to_string(),
@@ -166,7 +172,7 @@ fn repeated_domain_action_is_rejected_without_reapplying_the_effect() {
         request_id: "first-hvac".to_string(),
         agent_id: "cockpit-agent".to_string(),
         target: "hvac-1".to_string(),
-        command: Command::ClimateComfortRestore,
+        capability_id: "climate.restoreComfort".to_string(),
         expected_state_version: simulation.snapshot.version,
         expires_at_tick: simulation.snapshot.tick + 1,
         correlation_id: "first-hvac-corr".to_string(),
@@ -181,7 +187,7 @@ fn repeated_domain_action_is_rejected_without_reapplying_the_effect() {
         request_id: "second-hvac".to_string(),
         agent_id: "cockpit-agent".to_string(),
         target: "hvac-1".to_string(),
-        command: Command::ClimateComfortRestore,
+        capability_id: "climate.restoreComfort".to_string(),
         expected_state_version: simulation.snapshot.version,
         expires_at_tick: simulation.snapshot.tick + 1,
         correlation_id: "second-hvac-corr".to_string(),

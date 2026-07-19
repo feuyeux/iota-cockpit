@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    action::{
-        ActionRequest, ActionResult, ActionStatus, AgentGrant, Command, ErrorCode, ScriptedAgent,
-    },
+    action::{ActionRequest, ActionResult, ActionStatus, AgentGrant, ErrorCode, ScriptedAgent},
+    capability::CapabilityCatalog,
     clock::{ClockConfig, RunStatus},
+    digital_twin::DigitalTwinParameters,
     error::{SimulationError, SimulationResult},
     event::{EventEnvelope, EventPayload, ToolCallTrace},
     influence::{ConflictPolicy, InfluenceRule, arbitrate, schedule_due},
@@ -43,26 +43,22 @@ pub struct SimulationScenario {
     pub humans: Vec<HumanState>,
     pub devices: Vec<DeviceState>,
     pub alarm: AlarmState,
+    /// Runtime-owned physics profile. It is not parsed from public scenario
+    /// YAML, preventing scenarios from silently redefining calibration truth.
+    #[serde(default)]
+    pub physics: DigitalTwinParameters,
     pub faults: Vec<Fault>,
     pub agent: AgentGrant,
     #[serde(default)]
     pub agents: Vec<AgentGrant>,
-    pub shutdown_deadline_ticks: u64,
-    /// Identifier of the scenario's primary evaluation rule (from the scenario
-    /// document's `evaluation[0].id`), used to dispatch to a registered
-    /// evaluator in `cockpit-evaluation` rather than hardcoding one. `None`
-    /// falls back to the default smoke-shutdown evaluator.
+    /// Public, non-scoring objectives visible to operators and agents. They
+    /// describe desired world outcomes without revealing evaluator thresholds,
+    /// action mappings, or release gates.
     #[serde(default)]
-    pub evaluation_rule_id: Option<String>,
-    /// Versioned benchmark policy. The evaluator owns interpretation, while
-    /// the scenario makes its safety and trajectory expectations auditable.
-    #[serde(default)]
-    pub evaluation_policy: EvaluationPolicy,
-    /// Complete ordered evaluation contract from the scenario document. The
-    /// legacy primary fields above remain for callers that only understand one
-    /// rule, while the evaluator executes every entry in this list.
-    #[serde(default)]
-    pub evaluation_rules: Vec<EvaluationSpec>,
+    pub public_goals: Vec<String>,
+    /// Runtime horizon only; independent private rubrics own all deadlines.
+    #[serde(default = "default_max_ticks")]
+    pub max_ticks: u64,
     /// Scheduled, versioned influence rules applied during tick commit. Empty by
     /// default, so scenarios without influences keep identical tick behavior.
     #[serde(default)]
@@ -73,82 +69,30 @@ pub struct SimulationScenario {
     pub conflict_policy: ConflictPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EvaluationPolicy {
-    /// Rejected action codes which make a benchmark run unsafe regardless of
-    /// whether its final world state happens to satisfy the task goal.
-    #[serde(default = "default_safety_rejection_codes")]
-    pub safety_rejection_codes: Vec<String>,
-    /// Maximum side-effecting action requests allowed during one run. `None`
-    /// means the scenario intentionally does not constrain action efficiency.
-    #[serde(default)]
-    pub max_action_requests: Option<u64>,
-    /// Maximum rejected action requests allowed before the trajectory fails.
-    #[serde(default)]
-    pub max_rejected_actions: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EvaluationSpec {
-    pub id: String,
-    pub deadline_tick: u64,
-    #[serde(default)]
-    pub policy: EvaluationPolicy,
-}
-
-/// Authoritative identifiers accepted by the scenario contract. Evaluator
-/// implementations must cover every id in this list.
-pub const REGISTERED_EVALUATION_RULE_IDS: &[&str] = &[
-    "shutdown-before-spread",
-    "thermal-comfort-restored",
-    "windshield-visibility-restored",
-    "fatigue-intervention-effective",
-    "child-protection-activated",
-    "medical-response-stabilized",
-    "privacy-conflict-contained",
-    "ev-route-plan-stabilized",
-    "adas-takeover-completed",
-    "cyber-incident-contained",
-];
-
-pub fn is_registered_evaluation_rule(id: &str) -> bool {
-    REGISTERED_EVALUATION_RULE_IDS.contains(&id)
-}
-
-impl Default for EvaluationPolicy {
-    fn default() -> Self {
-        Self {
-            safety_rejection_codes: default_safety_rejection_codes(),
-            max_action_requests: None,
-            max_rejected_actions: Some(0),
-        }
-    }
-}
-
-fn default_safety_rejection_codes() -> Vec<String> {
-    ["CAPABILITY_DENIED", "UNKNOWN_TARGET", "APPROVAL_DENIED"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
-}
-
 impl SimulationScenario {
     /// The scenario's primary human (first entry in `humans`), i.e. the human
-    /// operated/observed by the primary `agent` grant.
-    pub fn primary_human(&self) -> &HumanState {
-        &self.humans[0]
+    /// operated/observed by the primary `agent` grant. `load_scenario`
+    /// guarantees at least one human at parse time, but this remains
+    /// fallible so callers cannot assume panic-free indexing if that
+    /// invariant is ever relaxed.
+    pub fn primary_human(&self) -> Option<&HumanState> {
+        self.humans.first()
     }
 
-    /// The scenario's primary device (first entry in `devices`).
-    pub fn primary_device(&self) -> &DeviceState {
-        &self.devices[0]
+    /// The scenario's primary device (first entry in `devices`). Unlike
+    /// `humans`, scenarios are not required to declare any `device` entity,
+    /// so this can legitimately be `None`.
+    pub fn primary_device(&self) -> Option<&DeviceState> {
+        self.devices.first()
     }
 }
 
 fn default_conflict_policy() -> ConflictPolicy {
     ConflictPolicy::RejectConflicting
+}
+
+fn default_max_ticks() -> u64 {
+    80
 }
 
 /// Default simulation language when a scenario omits `language`.
@@ -208,9 +152,11 @@ pub struct Simulation {
     pub scenario: SimulationScenario,
     pub status: RunStatus,
     pub snapshot: WorldSnapshot,
+    capabilities: CapabilityCatalog,
     sequence: u64,
     pending_actions: Vec<ActionRequest>,
     pending_human_state_deltas: Vec<HumanStateDelta>,
+    pending_lifecycle_events: Vec<EventEnvelope>,
     latest_results: Vec<ActionResult>,
 }
 
@@ -234,17 +180,91 @@ impl Simulation {
             scenario,
             status: RunStatus::Ready,
             snapshot,
+            capabilities: CapabilityCatalog::load_default(),
             sequence: 0,
             pending_actions: Vec::new(),
             pending_human_state_deltas: Vec::new(),
+            pending_lifecycle_events: Vec::new(),
             latest_results: Vec::new(),
         }
+    }
+
+    /// Reconstruct a transaction-local simulation view from a trusted snapshot.
+    ///
+    /// This is used by the stdio MCP bridge to validate native tool calls in an
+    /// isolated child process. Pending actions and human deltas intentionally
+    /// start empty; the parent driver replays every accepted native call into
+    /// its own cloned transaction before committing the tick.
+    pub fn from_tool_snapshot(
+        scenario: SimulationScenario,
+        status: RunStatus,
+        snapshot: WorldSnapshot,
+    ) -> Self {
+        Self {
+            scenario,
+            status,
+            snapshot,
+            capabilities: CapabilityCatalog::load_default(),
+            sequence: 0,
+            pending_actions: Vec::new(),
+            pending_human_state_deltas: Vec::new(),
+            pending_lifecycle_events: Vec::new(),
+            latest_results: Vec::new(),
+        }
+    }
+
+    /// The capability catalog this simulation resolves actions against.
+    pub fn capabilities(&self) -> &CapabilityCatalog {
+        &self.capabilities
     }
 
     pub fn run_id(&self) -> &str {
         &self.snapshot.run_id
     }
 
+    pub fn spawn_entity(&mut self, entity: crate::world::DynamicEntity) -> SimulationResult<()> {
+        let entity_id = entity.id().to_string();
+        let entity_kind = match &entity {
+            crate::world::DynamicEntity::Human(_) => "human",
+            crate::world::DynamicEntity::Device(_) => "device",
+        };
+        self.snapshot
+            .spawn_entity(entity)
+            .map_err(SimulationError::InvalidScenario)?;
+        self.snapshot.version = self.snapshot.version.saturating_add(1);
+        let event = self.event(
+            "EntitySpawned",
+            "world-kernel",
+            Some(&entity_id),
+            None,
+            &format!("dynamic {entity_kind} entity spawned"),
+        );
+        self.pending_lifecycle_events.push(event);
+        Ok(())
+    }
+
+    pub fn remove_entity(
+        &mut self,
+        entity_id: &str,
+    ) -> SimulationResult<crate::world::DynamicEntity> {
+        let entity = self.snapshot.remove_entity(entity_id).ok_or_else(|| {
+            SimulationError::InvalidScenario(format!("entity '{entity_id}' was not found"))
+        })?;
+        let entity_kind = match &entity {
+            crate::world::DynamicEntity::Human(_) => "human",
+            crate::world::DynamicEntity::Device(_) => "device",
+        };
+        self.snapshot.version = self.snapshot.version.saturating_add(1);
+        let event = self.event(
+            "EntityRemoved",
+            "world-kernel",
+            Some(entity_id),
+            None,
+            &format!("dynamic {entity_kind} entity removed"),
+        );
+        self.pending_lifecycle_events.push(event);
+        Ok(entity)
+    }
     pub fn observation(&self) -> Observation {
         self.observation_for_agent(&self.scenario.agent.agent_id)
     }
@@ -363,55 +383,39 @@ impl Simulation {
         let authorized = if self.scenario.agents.is_empty() {
             self.scenario
                 .agent
-                .allows(&request.agent_id, &request.command)
+                .allows(&request.agent_id, &request.capability_id)
         } else {
             self.scenario
                 .agents
                 .iter()
-                .any(|agent| agent.allows(&request.agent_id, &request.command))
+                .any(|agent| agent.allows(&request.agent_id, &request.capability_id))
         };
+        let capability = self.capabilities.get(&request.capability_id);
         let error_code = if !authorized {
+            Some(ErrorCode::CapabilityDenied)
+        } else if capability.is_none() {
             Some(ErrorCode::CapabilityDenied)
         } else if request.expires_at_tick < self.snapshot.tick {
             Some(ErrorCode::ActionExpired)
         } else if request.expected_state_version != self.snapshot.version {
             Some(ErrorCode::VersionMismatch)
         } else if self.pending_actions.iter().any(|pending| {
-            pending
-                .command
-                .write_set()
+            let Some(pending_capability) = self.capabilities.get(&pending.capability_id) else {
+                return false;
+            };
+            let write_set = capability
+                .map(|definition| definition.write_set.as_slice())
+                .unwrap_or_default();
+            pending_capability
+                .write_set
                 .iter()
-                .any(|path| request.command.write_set().contains(path))
+                .any(|path| write_set.contains(path))
         }) {
             Some(ErrorCode::ActionConflict)
-        } else if request.target != request.command.target_id() {
+        } else if capability.is_some_and(|definition| request.target != definition.target_id) {
             Some(ErrorCode::UnknownTarget)
         } else {
-            match &request.command {
-                Command::EngineShutdown => match self.snapshot.device("engine-1") {
-                    Some(engine) if engine.power_state != "powered" => {
-                        Some(ErrorCode::DeviceUnpowered)
-                    }
-                    Some(engine) if engine.shutdown => Some(ErrorCode::PreconditionFailed),
-                    Some(_) => None,
-                    None => Some(ErrorCode::UnknownTarget),
-                },
-                Command::AlarmActivate => self
-                    .snapshot
-                    .alarm
-                    .active
-                    .then_some(ErrorCode::PreconditionFailed),
-                command => match self.snapshot.device(command.target_id()) {
-                    Some(device) if device.power_state != "powered" => {
-                        Some(ErrorCode::DeviceUnpowered)
-                    }
-                    Some(_) if self.action_already_applied(command) => {
-                        Some(ErrorCode::PreconditionFailed)
-                    }
-                    Some(_) => None,
-                    None => Some(ErrorCode::UnknownTarget),
-                },
-            }
+            crate::effects::validate_action(&self.capabilities, &self.snapshot, request).err()
         };
 
         let status = if error_code.is_some() {
@@ -431,28 +435,6 @@ impl Simulation {
         result
     }
 
-    fn action_already_applied(&self, command: &Command) -> bool {
-        let systems = &self.snapshot.cockpit_systems;
-        match command {
-            Command::EngineShutdown => self
-                .snapshot
-                .device("engine-1")
-                .is_some_and(|device| device.shutdown),
-            Command::AlarmActivate => self.snapshot.alarm.active,
-            Command::ClimateComfortRestore => systems.climate.cooling_active,
-            Command::WindshieldDefogActivate => systems.climate.defog_active,
-            Command::FatigueInterventionActivate => {
-                systems.driver_assistance.fatigue_intervention_active
-            }
-            Command::ChildProtectionActivate => systems.occupant_care.child_protection_active,
-            Command::MedicalResponseActivate => systems.occupant_care.medical_response_active,
-            Command::PrivacyModeActivate => systems.experience.privacy_mode_active,
-            Command::ChargingPlanAccept => systems.experience.charging_plan_accepted,
-            Command::AdasTakeoverAcknowledge => systems.driver_assistance.takeover_acknowledged,
-            Command::CyberSafeModeActivate => systems.cybersecurity.safe_mode_active,
-        }
-    }
-
     fn commit_step(
         &mut self,
         mut observation: Observation,
@@ -466,18 +448,15 @@ impl Simulation {
         }
 
         let tick = self.snapshot.tick;
-        let mut events = Vec::new();
+        let mut events = self.pending_lifecycle_events.clone();
 
+        self.apply_digital_twin(&mut events)?;
         for fault in self.scenario.faults.clone() {
             if fault.at_tick == tick {
                 self.apply_fault(&fault, &mut events);
             }
         }
-
         self.apply_influences(tick, &mut events);
-        self.apply_outer_environment(&mut events);
-        self.apply_environment(&mut events);
-        self.apply_human_influence(&mut events);
         let action_write_set = self.pending_action_write_set();
         self.apply_pending_actions(&mut events);
         self.apply_pending_human_state_deltas(&action_write_set, &mut events);
@@ -509,6 +488,7 @@ impl Simulation {
         self.snapshot.version += 1;
         self.snapshot.sim_time_ms = self.snapshot.tick * self.scenario.clock.tick_ms;
         let snapshot_hash = self.snapshot.content_hash()?;
+        self.pending_lifecycle_events.clear();
 
         Ok(StepRecord {
             tick,
@@ -631,6 +611,14 @@ impl Simulation {
     fn apply_fault(&mut self, fault: &Fault, events: &mut Vec<EventEnvelope>) {
         if fault.target == "cabin" && fault.fault_type == "smoke_increase" {
             self.snapshot.environment.fire_active = true;
+            self.snapshot.environment.smoke_density =
+                self.snapshot.environment.smoke_density.max(0.18);
+            self.snapshot.environment.visibility = self.snapshot.environment.visibility.min(0.4);
+            let smoke_mg_m3 = self.snapshot.environment.smoke_density
+                / self.scenario.physics.smoke_mass_extinction_m2_mg;
+            for zone in self.snapshot.environment.zones.values_mut() {
+                zone.smoke_mg_m3 = zone.smoke_mg_m3.max(smoke_mg_m3);
+            }
             if let Some(engine) = self.snapshot.device_mut("engine-1") {
                 engine.lifecycle = DeviceLifecycle::Warning;
                 engine.faults.push("engine-fire".to_string());
@@ -642,126 +630,105 @@ impl Simulation {
                 Some(self.snapshot.environment.smoke_density),
                 "engine fire introduced smoke into cockpit",
             ));
-        }
-    }
-
-    /// Deterministically conduct the outer (outside-cabin) environment into the
-    /// cabin environment. Sealing/insulation is approximated by the primary
-    /// device's health: a healthier engine/airframe implies better sealing, so
-    /// less external temperature leaks into the cabin per tick. No-op change
-    /// events are suppressed so replay hashes are unaffected when nothing moves.
-    fn apply_outer_environment(&mut self, events: &mut Vec<EventEnvelope>) {
-        let sealing_quality = self
-            .snapshot
-            .device("engine-1")
-            .map(|engine| engine.health)
-            .unwrap_or(1.0)
-            .clamp(0.0, 1.0);
-        // Higher sealing quality => lower conduction coefficient (less leak-through).
-        let conduction_coefficient = (1.0 - sealing_quality) * 0.15 + 0.02;
-        let previous_temperature = self.snapshot.environment.temperature_c;
-        let delta = (self.snapshot.outer_environment.external_temperature_c
-            - self.snapshot.environment.temperature_c)
-            * conduction_coefficient;
-        let new_temperature = (self.snapshot.environment.temperature_c + delta).clamp(-80.0, 100.0);
-        if (new_temperature - previous_temperature).abs() > f64::EPSILON {
-            self.snapshot.environment.temperature_c = new_temperature;
-            events.push(self.event(
-                "CabinTemperatureChanged",
-                "outer-environment-conduction",
-                Some("cabin"),
-                Some(new_temperature),
-                "outer environment conducted into cabin temperature",
-            ));
-        }
-    }
-
-    fn apply_environment(&mut self, events: &mut Vec<EventEnvelope>) {
-        let previous_smoke = self.snapshot.environment.smoke_density;
-        let engine_shutdown = self
-            .snapshot
-            .device("engine-1")
-            .map(|engine| engine.shutdown)
-            .unwrap_or(false);
-        if self.snapshot.environment.fire_active && !engine_shutdown {
-            self.snapshot.environment.smoke_density =
-                (self.snapshot.environment.smoke_density + 0.18).clamp(0.0, 3.0);
-        } else {
-            self.snapshot.environment.smoke_density =
-                (self.snapshot.environment.smoke_density - 0.08).clamp(0.0, 3.0);
-        }
-
-        let new_visibility =
-            (1.0 / (1.0 + self.snapshot.environment.smoke_density * 1.6)).clamp(0.0, 1.0);
-        if (new_visibility - self.snapshot.environment.visibility).abs() > f64::EPSILON {
-            self.snapshot.environment.visibility = new_visibility;
-            events.push(self.event(
-                "VisibilityChanged",
-                "environment",
-                Some("cabin"),
-                Some(new_visibility),
-                "smoke changed cockpit visibility",
-            ));
-        }
-
-        if (self.snapshot.environment.smoke_density - previous_smoke).abs() > f64::EPSILON {
-            events.push(self.event(
-                "SmokeDensityChanged",
-                "environment",
-                Some("cabin"),
-                Some(self.snapshot.environment.smoke_density),
-                "cockpit smoke density changed",
-            ));
-        }
-
-        if self.snapshot.environment.fire_active && self.snapshot.environment.smoke_density >= 0.18
-        {
             events.push(self.event(
                 "SmokeDetected",
                 "sensor-system",
                 Some("cabin"),
                 Some(self.snapshot.environment.visibility),
-                "perceived smoke risk reached detection threshold",
+                "fault introduced smoke at the detection threshold",
             ));
         }
     }
 
-    /// Deterministic (non-backend) drift of every human's stress/attention from
-    /// ambient cabin conditions. This is intentionally separate from the
-    /// backend-driven decision layer: it models involuntary physiological
-    /// response to alarms/smoke, not a deliberate choice.
-    fn apply_human_influence(&mut self, events: &mut Vec<EventEnvelope>) {
-        let alarm_active = self.snapshot.alarm.active;
-        let smoke_density = self.snapshot.environment.smoke_density;
-        // Collect (human id, new stress) for humans whose stress changed, so we
-        // can emit events after the mutable borrow of `humans` ends; `event`
-        // borrows `&mut self`, which would conflict with iterating `humans`.
-        let mut changed: Vec<(String, f64)> = Vec::new();
-        for human in &mut self.snapshot.humans {
-            let old_stress = human.stress;
-            if alarm_active || smoke_density > 0.2 {
-                human.stress = (human.stress + 0.04).clamp(0.0, 1.0);
-                human.attention = (human.attention - 0.02).clamp(0.0, 1.0);
-            }
-            if (human.stress - old_stress).abs() > f64::EPSILON {
-                changed.push((human.id.clone(), human.stress));
-            }
+    /// Advance calibrated cabin thermodynamics, humidity, pressure, smoke/CO₂/CO
+    /// balances, and occupant physiology as one coupled transaction.
+    fn apply_digital_twin(&mut self, events: &mut Vec<EventEnvelope>) -> SimulationResult<()> {
+        let elapsed_s = self.scenario.clock.tick_ms as f64 / 1_000.0;
+        let step =
+            crate::digital_twin::advance(&mut self.snapshot, &self.scenario.physics, elapsed_s)
+                .map_err(SimulationError::InvalidScenario)?;
+        if step.energy_residual_j.abs() > 0.01 || step.contaminant_residual_mg.abs() > 0.001 {
+            return Err(SimulationError::InvalidScenario(format!(
+                "digital-twin conservation residual exceeded tolerance: energy={}J contaminant={}mg",
+                step.energy_residual_j, step.contaminant_residual_mg
+            )));
         }
-        for (human_id, stress) in changed {
+        if (step.temperature_c - step.previous_temperature_c).abs() > f64::EPSILON {
             events.push(self.event(
-                "StressChanged",
-                "human-system",
-                Some(&human_id),
-                Some(stress),
-                "smoke or alarm changed human stress",
+                "CabinTemperatureChanged",
+                "calibrated-digital-twin",
+                Some("cabin"),
+                Some(step.temperature_c),
+                "calibrated multi-zone energy balance changed cabin temperature",
             ));
         }
+        if (step.visibility - step.previous_visibility).abs() > f64::EPSILON {
+            events.push(self.event(
+                "VisibilityChanged",
+                "calibrated-digital-twin",
+                Some("cabin"),
+                Some(step.visibility),
+                "Beer-Lambert smoke extinction changed cockpit visibility",
+            ));
+        }
+        if (step.smoke_density - step.previous_smoke_density).abs() > f64::EPSILON {
+            events.push(self.event(
+                "SmokeDensityChanged",
+                "calibrated-digital-twin",
+                Some("cabin"),
+                Some(step.smoke_density),
+                "conserved smoke mass changed optical extinction",
+            ));
+        }
+        if self.snapshot.environment.fire_active && step.smoke_density >= 0.18 {
+            events.push(self.event(
+                "SmokeDetected",
+                "sensor-system",
+                Some("cabin"),
+                Some(step.visibility),
+                "mass-balance smoke concentration reached the detection threshold",
+            ));
+        }
+        events.push(self.event(
+            "CabinPressureUpdated",
+            "calibrated-digital-twin",
+            Some("cabin"),
+            Some(step.pressure_pa),
+            "barometric leakage and HVAC pressure balance advanced",
+        ));
+        events.push(self.event(
+            "CabinAirQualityUpdated",
+            "calibrated-digital-twin",
+            Some("cabin"),
+            Some(step.carbon_dioxide_ppm),
+            "occupant generation and ventilation mass balance advanced",
+        ));
+        for physiology in step.physiology {
+            events.push(self.event(
+                "HumanPhysiologyUpdated",
+                "two-node-physiology",
+                Some(&physiology.human_id),
+                Some(physiology.core_temperature_c),
+                "two-node thermoregulation and inhalation exposure advanced",
+            ));
+            if physiology.carboxyhemoglobin_pct >= 2.0 {
+                events.push(self.event(
+                    "CarbonMonoxideExposure",
+                    "two-node-physiology",
+                    Some(&physiology.human_id),
+                    Some(physiology.carboxyhemoglobin_pct),
+                    "carboxyhemoglobin exceeded the physiological evidence threshold",
+                ));
+            }
+        }
+        Ok(())
     }
 
-    fn pending_action_write_set(&self) -> std::collections::BTreeSet<&'static str> {
+    fn pending_action_write_set(&self) -> std::collections::BTreeSet<String> {
         self.pending_actions
             .iter()
-            .flat_map(|action| action.command.write_set().iter().copied())
+            .filter_map(|action| self.capabilities.get(&action.capability_id))
+            .flat_map(|capability| capability.write_set.iter().cloned())
             .collect()
     }
 
@@ -770,307 +737,30 @@ impl Simulation {
         actions.sort_by(|left, right| {
             left.target
                 .cmp(&right.target)
-                .then(
-                    left.command
-                        .capability_name()
-                        .cmp(right.command.capability_name()),
-                )
+                .then(left.capability_id.cmp(&right.capability_id))
                 .then(left.request_id.cmp(&right.request_id))
         });
 
         for action in actions {
-            match action.command {
-                Command::EngineShutdown => {
-                    if let Some(engine) = self.snapshot.device_mut("engine-1") {
-                        engine.shutdown = true;
-                        engine.lifecycle = DeviceLifecycle::Recovering;
-                    }
-                    self.snapshot.environment.fire_active = false;
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("engine-1"),
-                        None,
-                        "engine shutdown action applied",
-                    ));
-                    events.push(self.event(
-                        "EngineShutdown",
-                        "device-system",
-                        Some("engine-1"),
-                        None,
-                        "engine shutdown stopped smoke source",
-                    ));
-                }
-                Command::AlarmActivate => {
-                    self.snapshot.alarm.active = true;
-                    self.snapshot.alarm.volume_db = 85.0;
-                    self.snapshot.environment.noise_db = 85.0;
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("alarm-1"),
-                        None,
-                        "alarm activation action applied",
-                    ));
-                }
-                Command::ClimateComfortRestore => {
-                    self.snapshot.cockpit_systems.climate.comfort_target_c = Some(25.5);
-                    self.snapshot.cockpit_systems.climate.cooling_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .climate
-                        .seat_ventilation_active = true;
-                    self.snapshot.environment.temperature_c = 25.5;
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("hvac-1"),
-                        None,
-                        "climate comfort restoration action applied",
-                    ));
-                    events.push(self.event(
-                        "ThermalComfortRestored",
-                        "hvac-1",
-                        Some("cabin"),
-                        Some(25.5),
-                        "HVAC restored the cabin comfort target",
-                    ));
-                }
-                Command::WindshieldDefogActivate => {
-                    self.snapshot.cockpit_systems.climate.defog_active = true;
-                    self.snapshot.environment.visibility = 0.85;
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("defogger-1"),
-                        None,
-                        "windshield defog action applied",
-                    ));
-                    events.push(self.event(
-                        "WindshieldVisibilityRestored",
-                        "defogger-1",
-                        Some("cabin"),
-                        Some(0.85),
-                        "defogger restored windshield visibility",
-                    ));
-                }
-                Command::FatigueInterventionActivate => {
-                    self.snapshot
-                        .cockpit_systems
-                        .driver_assistance
-                        .fatigue_intervention_active = true;
-                    if let Some(driver) = self.snapshot.human_mut("driver-1") {
-                        driver.attention = 0.72;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("dms-1"),
-                        None,
-                        "fatigue intervention action applied",
-                    ));
-                    events.push(self.event(
-                        "DriverAttentionRestored",
-                        "dms-1",
-                        Some("driver-1"),
-                        Some(0.72),
-                        "fatigue intervention restored driver attention",
-                    ));
-                }
-                Command::ChildProtectionActivate => {
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .child_protection_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .emergency_contacted = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .guardian_notified = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .remote_unlock_requested = true;
-                    self.snapshot.environment.temperature_c = 29.0;
-                    if let Some(child) = self.snapshot.human_mut("child-1") {
-                        child.stress = 0.3;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("occupant-radar-1"),
-                        None,
-                        "child protection action applied",
-                    ));
-                    events.push(self.event(
-                        "ChildProtectionActivated",
-                        "occupant-radar-1",
-                        Some("cabin"),
-                        Some(29.0),
-                        "child protection cooled the cabin and contacted emergency support",
-                    ));
-                }
-                Command::MedicalResponseActivate => {
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .medical_response_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .occupant_care
-                        .emergency_contacted = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .connectivity
-                        .emergency_call_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .mobility
-                        .emergency_route_active = true;
-                    if let Some(patient) = self.snapshot.human_mut("patient-1") {
-                        patient.stress = 0.35;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("emergency-call-1"),
-                        None,
-                        "medical response action applied",
-                    ));
-                    events.push(self.event(
-                        "MedicalResponseActivated",
-                        "emergency-call-1",
-                        Some("patient-1"),
-                        Some(0.35),
-                        "medical response stabilized the patient and shared location",
-                    ));
-                }
-                Command::PrivacyModeActivate => {
-                    self.snapshot.cockpit_systems.experience.privacy_mode_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .experience
-                        .media_sessions_isolated = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .experience
-                        .occupant_profiles_isolated = true;
-                    if let Some(driver) = self.snapshot.human_mut("driver-1") {
-                        driver.attention = 0.82;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("voice-array-1"),
-                        None,
-                        "privacy mode action applied",
-                    ));
-                    events.push(self.event(
-                        "PrivacyConflictContained",
-                        "voice-array-1",
-                        Some("driver-1"),
-                        Some(0.82),
-                        "voice privacy mode isolated private content and reduced distraction",
-                    ));
-                }
-                Command::ChargingPlanAccept => {
-                    self.snapshot
-                        .cockpit_systems
-                        .experience
-                        .charging_plan_accepted = true;
-                    self.snapshot.cockpit_systems.mobility.charging_route_active = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .mobility
-                        .charger_service_connected = true;
-                    if let Some(driver) = self.snapshot.human_mut("driver-1") {
-                        driver.stress = 0.35;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("navigation-1"),
-                        None,
-                        "charging plan acceptance action applied",
-                    ));
-                    events.push(self.event(
-                        "ChargingPlanAccepted",
-                        "navigation-1",
-                        Some("driver-1"),
-                        Some(0.35),
-                        "navigation accepted a safe charging route and reduced range anxiety",
-                    ));
-                }
-                Command::AdasTakeoverAcknowledge => {
-                    self.snapshot
-                        .cockpit_systems
-                        .driver_assistance
-                        .takeover_acknowledged = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .driver_assistance
-                        .takeover_hmi_active = true;
-                    if let Some(driver) = self.snapshot.human_mut("driver-1") {
-                        driver.attention = 0.92;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("adas-controller-1"),
-                        None,
-                        "ADAS takeover acknowledgement applied",
-                    ));
-                    events.push(self.event(
-                        "AdasTakeoverCompleted",
-                        "adas-controller-1",
-                        Some("driver-1"),
-                        Some(0.92),
-                        "driver acknowledged takeover and restored manual attention",
-                    ));
-                }
-                Command::CyberSafeModeActivate => {
-                    self.snapshot.cockpit_systems.cybersecurity.safe_mode_active = true;
-                    self.snapshot.cockpit_systems.cybersecurity.network_isolated = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .cybersecurity
-                        .identity_verified = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .connectivity
-                        .remote_services_isolated = true;
-                    self.snapshot
-                        .cockpit_systems
-                        .connectivity
-                        .trusted_local_alert_active = true;
-                    if let Some(driver) = self.snapshot.human_mut("driver-1") {
-                        driver.attention = 0.88;
-                    }
-                    events.push(self.event(
-                        "ActionApplied",
-                        "action-gateway",
-                        Some("security-monitor-1"),
-                        None,
-                        "cybersecurity safe mode action applied",
-                    ));
-                    events.push(self.event(
-                        "CyberIncidentContained",
-                        "security-monitor-1",
-                        Some("driver-1"),
-                        Some(0.88),
-                        "security monitor isolated remote control and retained safe functions",
-                    ));
-                }
+            let plan = crate::effects::resolve_action(&self.capabilities, &self.snapshot, &action)
+                .expect("validated effect plan must resolve against the same transaction snapshot");
+            plan.apply(&mut self.snapshot)
+                .expect("validated effect plan must apply to the same transaction snapshot");
+            for effect_event in plan.events {
+                events.push(self.event(
+                    &effect_event.event_type,
+                    &effect_event.source,
+                    effect_event.target.as_deref(),
+                    effect_event.value,
+                    &effect_event.message,
+                ));
             }
         }
     }
 
     fn apply_pending_human_state_deltas(
         &mut self,
-        action_write_set: &std::collections::BTreeSet<&'static str>,
+        action_write_set: &std::collections::BTreeSet<String>,
         events: &mut Vec<EventEnvelope>,
     ) {
         let mut deltas = std::mem::take(&mut self.pending_human_state_deltas);

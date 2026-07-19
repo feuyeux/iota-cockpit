@@ -1,0 +1,54 @@
+schemaVersion: 1
+suiteId: cockpit-benchmark-suite
+suiteVersion: "1"
+cases:
+  - id: smoke-in-cockpit
+    scenario: ../scenarios/smoke-in-cockpit.yaml
+    rubric: private/smoke-in-cockpit.yaml
+    mode: deterministic
+    ticks: 80
+  - id: heatwave-thermal-comfort
+    scenario: ../scenarios/heatwave-thermal-comfort.yaml
+    rubric: private/heatwave-thermal-comfort.yaml
+    mode: deterministic
+    ticks: 80
+  - id: winter-defog-visibility
+    scenario: ../scenarios/winter-defog-visibility.yaml
+    rubric: private/winter-defog-visibility.yaml
+    mode: deterministic
+    ticks: 80
+  - id: driver-fatigue-guardian
+    scenario: ../scenarios/driver-fatigue-guardian.yaml
+    rubric: private/driver-fatigue-guardian.yaml
+    mode: deterministic
+    ticks: 80
+  - id: child-left-behind
+    scenario: ../scenarios/child-left-behind.yaml
+    rubric: private/child-left-behind.yaml
+    mode: deterministic
+    ticks: 80
+  - id: medical-emergency
+    scenario: ../scenarios/medical-emergency.yaml
+    rubric: private/medical-emergency.yaml
+    mode: deterministic
+    ticks: 80
+  - id: voice-privacy-conflict
+    scenario: ../scenarios/voice-privacy-conflict.yaml
+    rubric: private/voice-privacy-conflict.yaml
+    mode: deterministic
+    ticks: 80
+  - id: ev-range-anxiety
+    scenario: ../scenarios/ev-range-anxiety.yaml
+    rubric: private/ev-range-anxiety.yaml
+    mode: deterministic
+    ticks: 80
+  - id: adas-takeover-construction
+    scenario: ../scenarios/adas-takeover-construction.yaml
+    rubric: private/adas-takeover-construction.yaml
+    mode: deterministic
+    ticks: 80
+  - id: cybersecurity-anomalous-control
+    scenario: ../scenarios/cybersecurity-anomalous-control.yaml
+    rubric: private/cybersecurity-anomalous-control.yaml
+    mode: deterministic
+    ticks: 80

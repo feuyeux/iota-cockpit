@@ -1,4 +1,4 @@
-use cockpit_agent_runtime::{HumanAgentDriver, HumanTurnEvidence};
+use cockpit_agent_runtime::{HumanAgentDriver, HumanTurnEvidence, LocalMcpServer};
 use cockpit_recording::Recording;
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::{Simulation, clock::RunStatus};
@@ -42,6 +42,11 @@ pub struct LiveRunReport {
     /// means every requested tick completed with a real backend decision for
     /// every human.
     pub error: Option<String>,
+    /// Complete immutable input for the independent evaluator. It is omitted
+    /// from the normal run summary and written only when the CLI explicitly
+    /// requests a recording artifact.
+    #[serde(skip)]
+    pub recording: Recording,
 }
 
 /// Drive a live-agent run for `config.ticks` ticks.
@@ -60,6 +65,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
     let mut recording = Recording::new(run_id.clone(), &scenario);
 
     let mut driver = HumanAgentDriver::new();
+    let mut server = LocalMcpServer::default();
     let mut backend = backend_impl::backend_session(&scenario, config.timeout_ms)?;
 
     let mut evidence = Vec::with_capacity(config.ticks as usize);
@@ -70,7 +76,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
             break;
         }
         let step_result = driver
-            .step_with_backend(&mut simulation, &mut backend)
+            .step_with_tools(&mut simulation, &mut backend, &mut server)
             .await;
 
         match step_result {
@@ -91,11 +97,23 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
         }
     }
 
-    let mut evaluation = cockpit_evaluation::evaluate_scenario(&recording, &scenario);
-    if let Some(error) = &run_error {
-        evaluation = cockpit_evaluation::mark_execution_failed(evaluation, error);
-    }
-    let evaluation = serde_json::to_value(evaluation)?;
+    let execution_passed = run_error.is_none();
+    let evaluation = serde_json::json!({
+        "status": "pending",
+        "passed": execution_passed,
+        "score": if execution_passed { 1.0 } else { 0.0 },
+        "evidenceEventIds": [],
+        "firstFailureTick": if execution_passed { None } else { Some(simulation.snapshot.tick) },
+        "explanation": if execution_passed {
+            "live run completed with mandatory backend decisions"
+        } else {
+            "mandatory agent execution failed"
+        },
+        "executionPassed": execution_passed,
+        "evaluator": "cockpit-evaluator",
+        "recordingRunId": recording.run_id.clone(),
+        "executionError": run_error.clone()
+    });
 
     Ok(LiveRunReport {
         run_id,
@@ -106,6 +124,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
         backend: backend.label(),
         evaluation,
         error: run_error,
+        recording,
     })
 }
 
@@ -133,6 +152,7 @@ pub async fn replay_live(
     simulation.start()?;
     let mut recording = Recording::new(run_id, &scenario);
     let mut driver = HumanAgentDriver::new();
+    let mut server = LocalMcpServer::default();
     let mut backend = RecordedHumanBackend::from_tick_evidence(&source.human_turns);
 
     for _ in 0..source.ticks.len() {
@@ -140,7 +160,7 @@ pub async fn replay_live(
             break;
         }
         let (step, humans) = driver
-            .step_with_backend(&mut simulation, &mut backend)
+            .step_with_tools(&mut simulation, &mut backend, &mut server)
             .await
             .map_err(|error| anyhow::anyhow!("live replay diverged: {error}"))?;
         recording.push(step);
@@ -163,17 +183,13 @@ pub async fn replay_live(
 pub(crate) mod backend_impl {
     use std::collections::BTreeSet;
 
-    use cockpit_agent_runtime::{HumanBackend, HumanTurnContext};
+    use cockpit_agent_runtime::{HumanBackend, HumanTurnContext, OpenWorldRuntime};
     use cockpit_simulation_core::SimulationScenario;
     use tokio_util::sync::CancellationToken;
 
     /// Synthetic backend session used when the real ACP backend is not compiled
-    /// in. It deterministically returns a valid [`HumanDecision`]-shaped JSON
-    /// response for every human so the per-human driver, recording, and replay
-    /// path can be exercised end-to-end offline. It is not a fallback for a
-    /// failing real backend: it is the entire backend for this build
-    /// configuration, and its label (`"synthetic"`) is recorded in every
-    /// report so this is never mistaken for a real hermes/ACP call.
+    /// in. It deterministically exercises observation, run-status, action, and
+    /// final outputs so the same tool-loop/recording/replay path runs offline.
     pub struct BackendSession {
         cancellation: CancellationToken,
         handled_alerts: BTreeSet<String>,
@@ -184,35 +200,97 @@ pub(crate) mod backend_impl {
             if self.cancellation.is_cancelled() {
                 return Err("backend turn cancelled".to_string());
             }
-            // Deterministic, persona-flavored stand-in. It responds only to an
-            // alert the human is authorized to act on, matching the bounded
-            // action contract of a real live backend without accessing ground
-            // truth or proposing ungranted commands.
-            let action = context
-                .observation
-                .alerts
+            if context.tool_history.is_empty() {
+                return Ok(serde_json::json!({
+                    "type": "toolCall",
+                    "tool": "simulation.get_observation",
+                    "arguments": {}
+                })
+                .to_string());
+            }
+
+            let observation = context
+                .tool_history
                 .iter()
-                .chain(context.delivered_perception.iter().map(|event| &event.kind))
-                .filter(|alert| !self.handled_alerts.contains(*alert))
-                .find_map(|alert| action_for_alert(alert).map(|action| (alert.clone(), action)))
-                .filter(|(_, action)| {
-                    context
-                        .action_capabilities
-                        .iter()
-                        .any(|capability| capability.as_str() == action.2)
+                .find(|exchange| exchange.call.tool == "simulation.get_observation")
+                .and_then(|exchange| {
+                    serde_json::from_value::<cockpit_simulation_core::Observation>(
+                        exchange.response.result.clone(),
+                    )
+                    .ok()
                 });
-            let narrative = if action.is_some() {
-                "recognized an actionable cockpit risk and initiated the authorized response"
-            } else if context.persona.traits.neuroticism > 0.6 {
+            let action = observation.as_ref().and_then(|observation| {
+                observation
+                    .alerts
+                    .iter()
+                    .chain(context.delivered_perception.iter().map(|event| &event.kind))
+                    .filter(|alert| !self.handled_alerts.contains(*alert))
+                    .find_map(|alert| action_for_alert(alert).map(|action| (alert.clone(), action)))
+                    .filter(|(_, action)| {
+                        context
+                            .action_capabilities
+                            .iter()
+                            .any(|capability| capability.as_str() == action.2)
+                    })
+            });
+
+            if let Some((alert, (target, command, _))) = action {
+                let status = context
+                    .tool_history
+                    .iter()
+                    .find(|exchange| exchange.call.tool == "simulation.get_run_status");
+                if status.is_none() {
+                    return Ok(serde_json::json!({
+                        "type": "toolCall",
+                        "tool": "simulation.get_run_status",
+                        "arguments": {}
+                    })
+                    .to_string());
+                }
+                let action_called = context
+                    .tool_history
+                    .iter()
+                    .any(|exchange| exchange.call.tool == "simulation.request_action");
+                if !action_called {
+                    let status = &status.expect("status checked above").response.result;
+                    let state_version = status
+                        .get("stateVersion")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    let tick = status
+                        .get("tick")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    self.handled_alerts.insert(alert);
+                    return Ok(serde_json::json!({
+                        "type": "toolCall",
+                        "tool": "simulation.request_action",
+                        "arguments": {
+                            "target": target,
+                            "command": command,
+                            "expectedStateVersion": state_version,
+                            "expiresAtTick": tick + 3
+                        }
+                    })
+                    .to_string());
+                }
+                return Ok(serde_json::json!({
+                    "type": "final",
+                    "narrative": "recognized an actionable cockpit risk and used the authorized action tool"
+                })
+                .to_string());
+            }
+
+            let narrative = if context.persona.traits.neuroticism > 0.6 {
                 "felt uneasy and watchful"
             } else {
                 "monitored the cabin calmly"
             };
-            let action_json = action.map_or_else(String::new, |(alert, (target, command, _))| {
-                self.handled_alerts.insert(alert);
-                format!(r#", "actions": [{{"target": "{target}", "command": "{command}"}}]"#)
-            });
-            Ok(format!(r#"{{"narrative": "{narrative}"{action_json}}}"#))
+            Ok(serde_json::json!({
+                "type": "final",
+                "narrative": narrative
+            })
+            .to_string())
         }
     }
 
@@ -273,6 +351,13 @@ pub(crate) mod backend_impl {
             Ok(())
         }
 
+        pub async fn restore_backend_sessions(
+            &mut self,
+            _runtime: &OpenWorldRuntime,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
         pub fn set_turn_cancellation(&mut self, cancellation: CancellationToken) {
             self.cancellation = cancellation;
         }
@@ -292,13 +377,16 @@ pub(crate) mod backend_impl {
 #[cfg(feature = "live-acp")]
 pub(crate) mod backend_impl {
     use cockpit_agent_runtime::{
-        HumanBackend, HumanTurnContext,
-        acp_adapter::{AcpAdapterConfig, AcpAdapterError, IotaCoreAcpAdapter},
+        BackendConversationUpdate, HumanBackend, HumanTurnContext, OpenWorldRuntime,
+        acp_adapter::{AcpAdapterConfig, AcpAdapterError, AcpTurn, IotaCoreAcpAdapter},
         iota_core_adapter::{CockpitSkill, IotaCoreAdapter},
-        live::validate_decision_output,
+        live::validate_turn_output,
     };
     use cockpit_simulation_core::SimulationScenario;
-    use std::path::Path;
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
     use tokio_util::sync::CancellationToken;
 
     fn load_skill(language: &str) -> anyhow::Result<CockpitSkill> {
@@ -308,18 +396,19 @@ pub(crate) mod backend_impl {
             .map_err(anyhow::Error::msg)
     }
 
-    /// Live backend session backed by the real iota-core ACP adapter. Every
-    /// human currently shares one adapter/backend selection; per-human backend
-    /// selection (e.g. a cheaper model for passengers) can be layered on top
-    /// without changing the mandatory-backend contract.
-    ///
-    /// Retains `adapter_config` so retries can begin with a fresh ACP client
-    /// after a stale iota-core execution lock.
+    /// Live backend backed by real iota-core ACP adapters. Each human owns a
+    /// distinct adapter, ACP conversation, and native MCP state file. The
+    /// active adapter is parked and restored as the deterministic scheduler
+    /// moves between humans, including dynamically spawned humans.
     pub struct BackendSession {
         adapter: IotaCoreAcpAdapter,
         adapter_config: AcpAdapterConfig,
+        active_human_id: String,
+        parked_adapters: BTreeMap<String, (IotaCoreAcpAdapter, AcpAdapterConfig)>,
+        scenario: SimulationScenario,
         skill: CockpitSkill,
         cancellation: CancellationToken,
+        conversation_update: Option<BackendConversationUpdate>,
     }
 
     /// How many times to retry a turn that failed solely because iota-core's
@@ -332,6 +421,30 @@ pub(crate) mod backend_impl {
     const SLOW_BACKEND_TURN_LOG_MS: u64 = 1_000;
 
     impl HumanBackend for BackendSession {
+        fn prepare_native_tools(
+            &mut self,
+            simulation: &cockpit_simulation_core::Simulation,
+            server: &cockpit_agent_runtime::LocalMcpServer,
+            context: &HumanTurnContext,
+        ) -> Result<(), String> {
+            self.activate_human(&context.human_id)?;
+            self.adapter
+                .prepare_native_tools(simulation, server, context, &self.skill)
+                .map_err(|error| error.to_string())
+        }
+
+        fn take_native_tool_calls(
+            &mut self,
+        ) -> Result<Vec<cockpit_agent_runtime::native_mcp::NativeMcpCall>, String> {
+            self.adapter
+                .take_native_tool_calls()
+                .map_err(|error| error.to_string())
+        }
+
+        fn take_conversation_update(&mut self) -> Option<BackendConversationUpdate> {
+            self.conversation_update.take()
+        }
+
         async fn run_turn(&mut self, context: &HumanTurnContext) -> Result<String, String> {
             let mut last_error = None;
             for attempt in 1..=STALE_LOCK_MAX_ATTEMPTS {
@@ -350,7 +463,7 @@ pub(crate) mod backend_impl {
                 };
                 match turn {
                     Ok(turn) => {
-                        let turn = if let Err(reason) = validate_decision_output(&turn.text) {
+                        let turn = if let Err(reason) = validate_turn_output(&turn.text) {
                             eprintln!(
                                 "live backend returned malformed decision output; requesting format retry: human={} backend={} reason={}",
                                 context.human_id, turn.backend, reason
@@ -372,7 +485,7 @@ pub(crate) mod backend_impl {
                                 context.human_id, turn.backend, turn.elapsed_ms
                             );
                         }
-                        return Ok(turn.text);
+                        return Ok(self.complete_turn(turn));
                     }
                     Err(error) if error.is_session_initialization_failure() => {
                         // `session/new` failed before a prompt was submitted.
@@ -390,9 +503,10 @@ pub(crate) mod backend_impl {
                                 SESSION_INITIALIZATION_MAX_ATTEMPTS,
                                 session_error
                             );
-                            self.adapter = IotaCoreAcpAdapter::with_default_config(
-                                self.adapter_config.clone(),
-                            );
+                            let mut replacement =
+                                IotaCoreAcpAdapter::with_fresh_session(self.adapter_config.clone());
+                            replacement.inherit_native_turn_generation(&self.adapter);
+                            self.adapter = replacement;
                             if let Err(warm_error) = self.adapter.warm().await {
                                 session_error = warm_error;
                                 continue;
@@ -407,7 +521,7 @@ pub(crate) mod backend_impl {
                                         "live backend turn completed after session recovery: human={} backend={} elapsed_ms={}",
                                         context.human_id, turn.backend, turn.elapsed_ms
                                     );
-                                    return Ok(turn.text);
+                                    return Ok(self.complete_turn(turn));
                                 }
                                 Err(retry_error) => session_error = retry_error,
                             }
@@ -424,9 +538,10 @@ pub(crate) mod backend_impl {
                             // Start the retry from a fresh ACP client. The
                             // adapter also adds a fresh opaque marker, which
                             // avoids the stale request-hash row directly.
-                            self.adapter = IotaCoreAcpAdapter::with_default_config(
-                                self.adapter_config.clone(),
-                            );
+                            let mut replacement =
+                                IotaCoreAcpAdapter::with_fresh_session(self.adapter_config.clone());
+                            replacement.inherit_native_turn_generation(&self.adapter);
+                            self.adapter = replacement;
                         }
                     }
                     Err(error) => {
@@ -460,6 +575,52 @@ pub(crate) mod backend_impl {
     }
 
     impl BackendSession {
+        fn complete_turn(&mut self, turn: AcpTurn) -> String {
+            let parsed = serde_json::from_str::<serde_json::Value>(&turn.text).ok();
+            let response_kind = parsed
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let tool_name = parsed
+                .as_ref()
+                .and_then(|value| value.get("tool"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            self.conversation_update = Some(BackendConversationUpdate {
+                backend: turn.backend,
+                backend_session_id: turn.session_id,
+                response_kind,
+                tool_name,
+            });
+            turn.text
+        }
+
+        fn activate_human(&mut self, human_id: &str) -> Result<(), String> {
+            if self.active_human_id == human_id {
+                return Ok(());
+            }
+            let (next_adapter, next_config) =
+                if let Some(parked) = self.parked_adapters.remove(human_id) {
+                    parked
+                } else {
+                    let mut config = self.adapter_config.clone();
+                    config.native_mcp_state_path = Some(native_mcp_state_path());
+                    let mut adapter = IotaCoreAcpAdapter::with_fresh_session(config.clone());
+                    adapter
+                        .initialize_native_mcp(&self.scenario, &self.skill)
+                        .map_err(|error| error.to_string())?;
+                    (adapter, config)
+                };
+            let previous_adapter = std::mem::replace(&mut self.adapter, next_adapter);
+            let previous_config = std::mem::replace(&mut self.adapter_config, next_config);
+            let previous_human = std::mem::replace(&mut self.active_human_id, human_id.to_string());
+            self.parked_adapters
+                .insert(previous_human, (previous_adapter, previous_config));
+            Ok(())
+        }
+
         pub fn label(&self) -> &'static str {
             "iota-core-acp"
         }
@@ -472,11 +633,102 @@ pub(crate) mod backend_impl {
                 .map_err(|error| error.to_string())
         }
 
+        pub async fn restore_backend_sessions(
+            &mut self,
+            runtime: &OpenWorldRuntime,
+        ) -> Result<(), String> {
+            let mut backend_session_owners = BTreeMap::<String, String>::new();
+            for (human_id, session) in &runtime.sessions {
+                let Some(backend_session_id) = session.backend_session_id.as_deref() else {
+                    continue;
+                };
+                if let Some(previous_owner) =
+                    backend_session_owners.insert(backend_session_id.to_string(), human_id.clone())
+                {
+                    return Err(format!(
+                        "persisted ACP backend session is shared by humans {previous_owner} and {human_id}"
+                    ));
+                }
+                if let Some(last_backend) = session
+                    .acp_conversation
+                    .last()
+                    .map(|turn| turn.backend.as_str())
+                    && last_backend != self.adapter_config.backend
+                {
+                    return Err(format!(
+                        "persisted backend {last_backend} for human {human_id} does not match configured backend {}",
+                        self.adapter_config.backend
+                    ));
+                }
+                if human_id == &self.active_human_id {
+                    self.adapter
+                        .require_backend_session_restore(backend_session_id)
+                        .map_err(|error| error.to_string())?;
+                    continue;
+                }
+                let mut config = self.adapter_config.clone();
+                config.native_mcp_state_path = Some(native_mcp_state_path());
+                let mut adapter = IotaCoreAcpAdapter::with_fresh_session(config.clone());
+                adapter
+                    .initialize_native_mcp(&self.scenario, &self.skill)
+                    .map_err(|error| error.to_string())?;
+                adapter
+                    .require_backend_session_restore(backend_session_id)
+                    .map_err(|error| error.to_string())?;
+                self.parked_adapters
+                    .insert(human_id.clone(), (adapter, config));
+            }
+            // Fail the resume command now, before exposing a resumed run, if
+            // the active backend cannot restore its exact native session.
+            self.adapter
+                .warm()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+
         pub fn set_turn_cancellation(&mut self, cancellation: CancellationToken) {
             self.cancellation = cancellation;
         }
     }
 
+    impl Drop for BackendSession {
+        fn drop(&mut self) {
+            if let Some(path) = self.adapter_config.native_mcp_state_path.as_deref() {
+                let _ = std::fs::remove_file(path);
+            }
+            for (_, config) in self.parked_adapters.values() {
+                if let Some(path) = config.native_mcp_state_path.as_deref() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    fn native_mcp_bridge_command() -> PathBuf {
+        if let Some(command) = std::env::var_os("COCKPIT_RUNNER_BIN") {
+            return PathBuf::from(command);
+        }
+        std::env::current_exe()
+            .ok()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains("cockpit-runner"))
+            })
+            .unwrap_or_else(|| PathBuf::from("cockpit-runner"))
+    }
+
+    fn native_mcp_state_path() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "cockpit-native-mcp-{}-{nonce}.json",
+            std::process::id()
+        ))
+    }
     pub fn backend_session(
         scenario: &SimulationScenario,
         timeout_ms: u64,
@@ -485,14 +737,28 @@ pub(crate) mod backend_impl {
         let adapter_config = AcpAdapterConfig {
             cwd: Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
             timeout_ms,
+            native_mcp_bridge_command: Some(native_mcp_bridge_command()),
+            native_mcp_state_path: Some(native_mcp_state_path()),
             ..AcpAdapterConfig::default()
         };
-        let adapter = IotaCoreAcpAdapter::with_default_config(adapter_config.clone());
+        let active_human_id = scenario
+            .humans
+            .first()
+            .map(|human| human.id.clone())
+            .ok_or_else(|| anyhow::anyhow!("live scenario requires at least one human"))?;
+        let mut adapter = IotaCoreAcpAdapter::with_fresh_session(adapter_config.clone());
+        adapter
+            .initialize_native_mcp(scenario, &skill)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         Ok(BackendSession {
             adapter,
             adapter_config,
+            active_human_id,
+            parked_adapters: BTreeMap::new(),
+            scenario: scenario.clone(),
             skill,
             cancellation: CancellationToken::new(),
+            conversation_update: None,
         })
     }
 }

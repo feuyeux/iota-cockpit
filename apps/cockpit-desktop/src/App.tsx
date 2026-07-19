@@ -175,7 +175,7 @@ export function App() {
               className={`h-8 px-2.5 text-sm ${locale === "zh-CN" ? "bg-cyan-900 text-cyan-100" : "text-zinc-400"}`}
               onClick={() => setLocale("zh-CN")}
             >
-              中文
+              中
             </button>
             <button
               className={`h-8 px-2.5 text-sm ${locale === "en-US" ? "bg-cyan-900 text-cyan-100" : "text-zinc-400"}`}

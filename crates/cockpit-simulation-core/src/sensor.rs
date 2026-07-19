@@ -57,7 +57,9 @@ impl Observation {
             alerts.push("WindshieldVisibilityRisk".to_string());
         }
         if has_device("dms-1")
-            && snapshot.primary_human().attention <= 0.65
+            && snapshot
+                .primary_human()
+                .is_some_and(|human| human.attention <= 0.65)
             && !systems.driver_assistance.fatigue_intervention_active
         {
             alerts.push("DriverFatigueRisk".to_string());

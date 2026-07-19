@@ -49,6 +49,10 @@ async fn live_run_with_the_synthetic_backend_stays_deterministic() {
             !tick.humans.is_empty(),
             "every tick records a decision for at least one human"
         );
+        assert!(
+            tick.humans.iter().all(|human| !human.tool_calls.is_empty()),
+            "the synthetic backend must exercise on-demand simulation tools"
+        );
     }
     assert_eq!(
         first.final_snapshot_hash, second.final_snapshot_hash,
@@ -116,7 +120,7 @@ async fn bundled_live_scenarios_are_either_synthetic_successes_or_fail_closed_ac
         let scenario = load_scenario(path).unwrap_or_else(|error| panic!("{path}: {error}"));
         let report = run_live(LiveRunConfig {
             scenario_path: path.to_string(),
-            ticks: scenario.shutdown_deadline_ticks + 6,
+            ticks: scenario.max_ticks + 6,
             timeout_ms: 100,
         })
         .await

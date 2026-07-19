@@ -1,6 +1,7 @@
 use cockpit_agent_runtime::{
-    LocalMcpServer, TOOL_GET_OBSERVATION, TOOL_REQUEST_ACTION, ToolRequest,
-    iota_core_adapter::IotaCoreAdapter,
+    LocalMcpServer, OpenWorldControlRequest, TOOL_ADD_GOAL, TOOL_GET_ACTION_RESULT,
+    TOOL_GET_OBSERVATION, TOOL_LIST_VISIBLE_ENTITIES, TOOL_REQUEST_ACTION, TOOL_WAIT_UNTIL,
+    ToolRequest, iota_core_adapter::IotaCoreAdapter,
 };
 use cockpit_scenario::load_scenario;
 use cockpit_simulation_core::Simulation;
@@ -16,6 +17,7 @@ fn request(
         call_id: format!("call-{tool_name}"),
         run_id: run_id.to_string(),
         agent_id: agent_id.to_string(),
+        human_id: None,
         tick: 0,
         tool_name: tool_name.to_string(),
         arguments,
@@ -35,13 +37,19 @@ fn exposes_phase_one_tools_and_keeps_ground_truth_out_of_observation() {
         .iter()
         .map(|definition| definition.name.as_str())
         .collect();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 8);
     assert!(names.contains(&"simulation.get_observation"));
     assert!(names.contains(&"simulation.list_visible_entities"));
     assert!(names.contains(&"simulation.inspect_sensor_quality"));
     assert!(names.contains(&"simulation.request_action"));
     assert!(names.contains(&"simulation.get_action_result"));
     assert!(names.contains(&"simulation.get_run_status"));
+    assert!(names.contains(&"simulation.add_goal"));
+    assert!(names.contains(&"simulation.wait_until"));
+    assert!(definitions.iter().any(|definition| {
+        matches!(definition.name.as_str(), TOOL_ADD_GOAL | TOOL_WAIT_UNTIL)
+            && definition.side_effect
+    }));
     assert!(
         definitions
             .iter()
@@ -66,6 +74,101 @@ fn exposes_phase_one_tools_and_keeps_ground_truth_out_of_observation() {
     assert!(response.result.get("smokeDensity").is_none());
     assert!(response.result.get("environment").is_none());
     assert!(!trace.result.to_string().contains("smokeDensity"));
+}
+
+#[test]
+fn human_scoped_action_cannot_borrow_the_primary_agent_grant() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("human-scope-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    let mut tool_request = request(
+        "human-scope-run",
+        "cockpit-agent",
+        TOOL_REQUEST_ACTION,
+        json!({
+            "target": "engine-1",
+            "command": "engineShutdown",
+            "expectedStateVersion": 0,
+            "expiresAtTick": 3
+        }),
+    );
+    tool_request.human_id = Some("rear-passenger-1".to_string());
+
+    let (response, trace) = server.call(&mut simulation, tool_request);
+
+    assert_eq!(
+        response.error.as_ref().map(|error| error.code.as_str()),
+        Some("HUMAN_CAPABILITY_DENIED")
+    );
+    assert!(!trace.allowed);
+    assert!(!simulation.snapshot.device("engine-1").unwrap().shutdown);
+}
+
+#[test]
+fn action_results_are_owned_by_the_authenticated_human() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("result-owner-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    let mut action = request(
+        "result-owner-run",
+        "cockpit-agent",
+        TOOL_REQUEST_ACTION,
+        json!({
+            "target": "engine-1",
+            "command": "engineShutdown",
+            "expectedStateVersion": 0,
+            "expiresAtTick": 3
+        }),
+    );
+    action.human_id = Some("pilot-1".to_string());
+    let (action_response, _) = server.call(&mut simulation, action);
+    assert!(action_response.error.is_none(), "{action_response:?}");
+
+    let mut foreign_read = request(
+        "result-owner-run",
+        "cockpit-agent",
+        TOOL_GET_ACTION_RESULT,
+        json!({ "requestId": "call-simulation.request_action" }),
+    );
+    foreign_read.human_id = Some("rear-passenger-1".to_string());
+    let (response, trace) = server.call(&mut simulation, foreign_read);
+
+    assert_eq!(
+        response.error.as_ref().map(|error| error.code.as_str()),
+        Some("ACTION_RESULT_IDENTITY_DENIED")
+    );
+    assert!(
+        trace.allowed,
+        "identity denial is a tool-level ownership result"
+    );
+}
+
+#[test]
+fn visible_entities_are_cursor_paginated() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("pagination-run", scenario);
+    simulation.start().expect("run starts");
+    let mut server = LocalMcpServer::default();
+    let mut paged = request(
+        "pagination-run",
+        "cockpit-agent",
+        TOOL_LIST_VISIBLE_ENTITIES,
+        json!({ "cursor": 0, "limit": 1 }),
+    );
+    paged.human_id = Some("pilot-1".to_string());
+
+    let (response, _) = server.call(&mut simulation, paged);
+
+    assert!(response.error.is_none(), "{response:?}");
+    assert_eq!(
+        response.result["entities"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(response.result["page"]["cursor"], 0);
+    assert_eq!(response.result["page"]["limit"], 1);
+    assert!(response.result["page"].get("total").is_some());
 }
 
 #[test]
@@ -233,12 +336,12 @@ fn iota_core_adapter_loads_cockpit_skill_from_public_registry() {
         .load_cockpit_skill()
         .expect("skill is registered");
     assert_eq!(skill.name, "cockpit-simulation");
-    assert_eq!(skill.version, "2");
+    assert_eq!(skill.version, "4");
     assert!(skill.body.contains("Never request or infer Ground Truth"));
     assert!(
         skill
             .body
-            .contains("cyberSafeModeActivate -> security-monitor-1")
+            .contains("Only `simulation.request_action` may mutate the physical world")
     );
     assert!(
         skill
@@ -264,4 +367,54 @@ fn tool_trace_redacts_nested_secret_arguments_before_recording() {
     );
     assert_eq!(trace.arguments["nested"]["apiKey"], "[REDACTED]");
     assert!(!trace.arguments.to_string().contains("tool-secret"));
+}
+
+#[test]
+fn open_world_controls_require_human_scope_and_preserve_owner() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let mut simulation = Simulation::new("control-scope-run", scenario);
+    simulation.start().expect("run starts");
+    let human_id = simulation
+        .snapshot
+        .primary_human()
+        .expect("scenario seeds one human")
+        .id
+        .clone();
+    let mut server = LocalMcpServer::default();
+
+    let (unauthenticated, unauthenticated_trace) = server.call(
+        &mut simulation,
+        request(
+            "control-scope-run",
+            "cockpit-agent",
+            TOOL_ADD_GOAL,
+            json!({ "description": "observe the next safe opening", "priority": 5 }),
+        ),
+    );
+    assert_eq!(
+        unauthenticated
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("HUMAN_SCOPE_REQUIRED")
+    );
+    assert!(!unauthenticated_trace.allowed);
+
+    let mut scoped = request(
+        "control-scope-run",
+        "cockpit-agent",
+        TOOL_WAIT_UNTIL,
+        json!({ "wakeAtTick": 4 }),
+    );
+    scoped.human_id = Some(human_id.clone());
+    let (accepted, trace) = server.call(&mut simulation, scoped);
+    assert!(accepted.error.is_none(), "{accepted:?}");
+    assert!(trace.side_effect);
+    assert_eq!(
+        server.take_control_requests(),
+        vec![OpenWorldControlRequest::WaitUntil {
+            human_id,
+            wake_tick: 4,
+        }]
+    );
 }

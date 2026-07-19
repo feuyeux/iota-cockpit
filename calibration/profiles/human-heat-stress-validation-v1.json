@@ -1,0 +1,146 @@
+{
+  "claimLevel": "experimentally-anchored-not-fitted",
+  "limitations": [
+    "runner endpoints were graph-digitized and are not raw observations",
+    "exercise metabolism and clothing were not fitted",
+    "passive study measured one thigh site rather than whole-body mean skin temperature",
+    "sweat feedback and Lewis capacity parameters remain engineering values",
+    "individual age, sex, acclimation, hydration, clothing, and activity are not modeled"
+  ],
+  "modelVersion": "cockpit-multiphysics-4",
+  "profileId": "human-heat-stress-validation-v1",
+  "runtimeParameters": {
+    "basal_respiratory_heat_w": 8.0,
+    "body_surface_area_m2": 1.8,
+    "clothed_heat_transfer_w_m2_k": 4.5,
+    "core_heat_capacity_j_k": 245000.0,
+    "core_skin_conductance_w_m2_k": 16.0,
+    "core_sweat_response_w_m2_k": 180.0,
+    "evaporative_heat_transfer_ratio_per_kpa": 16.5,
+    "resting_metabolic_heat_w": 105.0,
+    "skin_heat_capacity_j_k": 35000.0,
+    "skin_sweat_response_w_m2_k": 20.0
+  },
+  "schemaVersion": 1,
+  "sources": {
+    "humidityExercise": {
+      "digitizationUncertaintyC": 0.1,
+      "digitized60MinMeans": {
+        "meanBodyTemperatureC": [
+          37.27,
+          37.56,
+          37.72,
+          37.87,
+          38.16
+        ],
+        "meanSkinTemperatureC": [
+          31.7,
+          32.1,
+          32.49,
+          32.87,
+          33.21
+        ],
+        "rectalTemperatureC": [
+          38.76,
+          39.02,
+          39.12,
+          39.22,
+          39.49
+        ],
+        "relativeHumidityPct": [
+          23,
+          43,
+          52,
+          61,
+          71
+        ]
+      },
+      "doi": "10.1080/23328940.2016.1182669",
+      "figure": 1,
+      "figureSha256": "0775a043aa014d33bbd38a1f8c0919c84cb941e213040c6c181ec99905219f23",
+      "license": "CC BY-NC",
+      "participants": "11 trained males",
+      "pmcid": "PMC5079215",
+      "protocol": "60 min at 31 C, 70% VO2max, 23-71% RH",
+      "source": "Che Muhamed et al., Temperature 3(3), 2016",
+      "sourceImageRedistributed": false,
+      "use": "ordinal humidity-response evidence only; no resting-occupant parameter fit"
+    },
+    "passiveSeatedHeat": {
+      "doi": "10.3389/fphys.2018.00585",
+      "license": "CC BY 4.0",
+      "observations": "core greater in heat from 30 min onward; skin greater at every post-baseline point; hot sweat rate 0.56 +/- 0.38 L/h",
+      "participants": "41 healthy active males",
+      "protocol": "randomized crossover; 60 min seated rest at 39.6 C/50.8% RH or 21.2 C/41.9% RH",
+      "source": "Malcolm et al., Frontiers in Physiology 9:585, 2018",
+      "use": "vehicle-relevant directional external check; published article does not expose a numeric table for temperature fitting"
+    }
+  },
+  "validation": {
+    "acceptanceScope": "direction, resting stability, and humidity-coupling mechanism only",
+    "accepted": true,
+    "checks": {
+      "higherHumidityRaisesProbeCoreEndpoint": true,
+      "higherHumidityRaisesProbeSkinEndpoint": true,
+      "passiveHotCoreAboveModerate": true,
+      "passiveHotSkinAboveModerate": true,
+      "restingCoreDriftUnder005C": true,
+      "restingSkinDriftUnder010C": true
+    },
+    "hotSeated60Min": {
+      "coreTemperatureC": 37.349763746037404,
+      "peakEvaporativeHeatLossW": 136.20474925603887,
+      "skinTemperatureC": 34.33567596899326
+    },
+    "humidityMechanismProbe": {
+      "ambientC": 31.0,
+      "metabolicHeatW": 350.0,
+      "notACohortFit": true,
+      "outputs": [
+        {
+          "coreTemperatureC": 38.5465875297919,
+          "peakEvaporativeHeatLossW": 407.153255773167,
+          "skinTemperatureC": 27.44784718120562
+        },
+        {
+          "coreTemperatureC": 38.86423077864942,
+          "peakEvaporativeHeatLossW": 344.33669123979445,
+          "skinTemperatureC": 29.306466495565964
+        },
+        {
+          "coreTemperatureC": 39.02651393259672,
+          "peakEvaporativeHeatLossW": 312.75638769637453,
+          "skinTemperatureC": 30.13389499020844
+        },
+        {
+          "coreTemperatureC": 39.198305367856584,
+          "peakEvaporativeHeatLossW": 279.31051016991074,
+          "skinTemperatureC": 30.952515408471598
+        },
+        {
+          "coreTemperatureC": 39.39900503071254,
+          "peakEvaporativeHeatLossW": 239.66486369768137,
+          "skinTemperatureC": 31.85036267348029
+        }
+      ],
+      "relativeHumidityPct": [
+        23,
+        43,
+        52,
+        61,
+        71
+      ]
+    },
+    "moderateSeated60Min": {
+      "coreTemperatureC": 36.97541703991621,
+      "peakEvaporativeHeatLossW": 0.47118869962747567,
+      "skinTemperatureC": 33.5229483480473
+    },
+    "parameterFitPerformed": false,
+    "resting22C60Min": {
+      "coreTemperatureC": 37.00938115402981,
+      "peakEvaporativeHeatLossW": 3.2953963765195624,
+      "skinTemperatureC": 33.63294377996833
+    }
+  }
+}

@@ -1,3 +1,4 @@
+use cockpit_agent_runtime::GoalStatus;
 use cockpit_plugin::{
     PLUGIN_API_VERSION, PluginExecutor, PluginFailurePolicy, PluginManifest, PluginPermission,
     PluginPolicy, StateDiff as PluginStateDiff,
@@ -8,7 +9,7 @@ use cockpit_runner::ipc::{
     proto::{IPC_VERSION, RunnerCommand, RunnerRequest},
 };
 use cockpit_scenario::load_scenario;
-use cockpit_simulation_core::WorldSnapshot;
+use cockpit_simulation_core::{DynamicEntity, HumanState, WorldSnapshot};
 use serde_json::Value;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -383,8 +384,8 @@ fn runner_bounds_event_history_and_marks_stale_cursors_for_reset() {
     let scenario = std::fs::read_to_string("scenarios/smoke-in-cockpit.yaml")
         .expect("source scenario")
         .replace(
-            "deadlineTick: 30",
-            &format!("deadlineTick: {}", MAX_EVENT_HISTORY + 101),
+            "maxTicks: 80",
+            &format!("maxTicks: {}", MAX_EVENT_HISTORY + 101),
         );
     std::fs::write(&path, scenario).expect("long-running scenario");
     let mut handler = RunnerHandler::new("session-1");
@@ -556,4 +557,77 @@ fn runner_disables_plugin_and_continues_after_plugin_failure() {
         Some("running")
     );
     let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn authenticated_ipc_controls_open_world_lifecycle() {
+    let mut handler = RunnerHandler::new("session-1");
+    let created = handler.dispatch(request(RunnerCommand::CreateSimulationRun {
+        path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+    }));
+    assert!(created.ok, "{created:?}");
+
+    let mut guest = HumanState::new("ipc-guest-1");
+    guest.goal = "find a safe seat".to_string();
+    let spawned = handler.dispatch(request(RunnerCommand::SpawnEntity {
+        entity: DynamicEntity::Human(guest),
+    }));
+    assert!(spawned.ok, "{spawned:?}");
+
+    let added = handler.dispatch(request(RunnerCommand::AddAgentGoal {
+        agent_id: "ipc-guest-1".to_string(),
+        description: "observe the nearest safe exit".to_string(),
+        priority: 7,
+    }));
+    assert!(added.ok, "{added:?}");
+    let goal_id = added
+        .result
+        .as_ref()
+        .and_then(|value| value.get("goalId"))
+        .and_then(Value::as_str)
+        .expect("goal id")
+        .to_string();
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::SetAgentGoalStatus {
+                agent_id: "ipc-guest-1".to_string(),
+                goal_id,
+                status: GoalStatus::Active,
+            }))
+            .ok
+    );
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::WaitAgentUntil {
+                agent_id: "ipc-guest-1".to_string(),
+                wake_tick: 5,
+            }))
+            .ok
+    );
+    let runtime = handler.dispatch(request(RunnerCommand::GetOpenWorldRuntime));
+    assert_eq!(
+        runtime
+            .result
+            .as_ref()
+            .and_then(|value| value.pointer("/sessions/ipc-guest-1/wakeAtTick"))
+            .and_then(Value::as_u64),
+        Some(5)
+    );
+    let checkpoint = handler.dispatch(request(RunnerCommand::CheckpointOpenWorld));
+    assert!(checkpoint.ok, "{checkpoint:?}");
+    assert_eq!(
+        checkpoint
+            .result
+            .as_ref()
+            .and_then(|value| value.get("agents"))
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert!(
+        handler
+            .dispatch(request(RunnerCommand::RemoveEntity {
+                entity_id: "ipc-guest-1".to_string(),
+            }))
+            .ok
+    );
 }

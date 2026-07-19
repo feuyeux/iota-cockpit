@@ -5,13 +5,29 @@ use std::io::{self, Write};
 
 use crate::error::{SimulationError, SimulationResult};
 
+fn default_relative_humidity_pct() -> f64 {
+    50.0
+}
+
+fn default_pressure_pa() -> f64 {
+    101_325.0
+}
+
+fn default_carbon_dioxide_ppm() -> f64 {
+    420.0
+}
+
 /// Environment outside the cabin (weather, altitude, external threats). Drives
-/// the cabin environment through deterministic conduction rules; never
-/// perceived directly by humans inside the cabin.
+/// the calibrated cabin multiphysics model; never perceived directly by humans
+/// inside the cabin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OuterEnvironmentState {
     pub external_temperature_c: f64,
+    #[serde(default = "default_relative_humidity_pct")]
+    pub relative_humidity_pct: f64,
+    #[serde(default)]
+    pub solar_irradiance_w_m2: f64,
     pub altitude_m: f64,
     pub wind_speed_kmh: f64,
     pub precipitation: f64,
@@ -22,6 +38,8 @@ impl Default for OuterEnvironmentState {
     fn default() -> Self {
         Self {
             external_temperature_c: 20.0,
+            relative_humidity_pct: 50.0,
+            solar_irradiance_w_m2: 0.0,
             altitude_m: 0.0,
             wind_speed_kmh: 0.0,
             precipitation: 0.0,
@@ -30,19 +48,34 @@ impl Default for OuterEnvironmentState {
     }
 }
 
-/// Cabin (inside) environment. Updated each tick partly by deterministic
-/// conduction from [`OuterEnvironmentState`] and partly by in-cabin sources
-/// (fire, devices).
+/// Aggregate cabin projection plus authoritative front/rear physical zones.
+/// Existing observation clients continue to read aggregate fields; the digital
+/// twin advances and conserves mass/energy in `zones` before projection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CabinEnvironment {
     pub temperature_c: f64,
     pub humidity_pct: f64,
+    #[serde(default = "default_pressure_pa")]
+    pub pressure_pa: f64,
+    #[serde(default = "default_carbon_dioxide_ppm")]
+    pub carbon_dioxide_ppm: f64,
+    #[serde(default)]
+    pub carbon_monoxide_ppm: f64,
     pub visibility: f64,
+    /// Optical extinction coefficient in m^-1, derived from conserved smoke mass.
     pub smoke_density: f64,
     pub lighting_lux: f64,
     pub noise_db: f64,
     pub fire_active: bool,
+    /// Elapsed active combustion time used to index the measured NIST HRR curve.
+    #[serde(default)]
+    pub fire_age_s: f64,
+    /// Current measured-profile heat release rate before the cabin transfer boundary.
+    #[serde(default)]
+    pub fire_heat_release_rate_kw: f64,
+    #[serde(default)]
+    pub zones: std::collections::BTreeMap<String, crate::digital_twin::CabinZoneState>,
 }
 
 impl Default for CabinEnvironment {
@@ -50,11 +83,17 @@ impl Default for CabinEnvironment {
         Self {
             temperature_c: 22.0,
             humidity_pct: 45.0,
+            pressure_pa: 101_325.0,
+            carbon_dioxide_ppm: 420.0,
+            carbon_monoxide_ppm: 0.0,
             visibility: 1.0,
             smoke_density: 0.0,
             lighting_lux: 400.0,
             noise_db: 42.0,
             fire_active: false,
+            fire_age_s: 0.0,
+            fire_heat_release_rate_kw: 0.0,
+            zones: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -154,6 +193,8 @@ pub struct HumanState {
     pub fatigue: f64,
     pub health: f64,
     pub attention: f64,
+    #[serde(default)]
+    pub physiology: crate::digital_twin::PhysiologyState,
     pub location: String,
     pub goal: String,
     /// Typed commands this human may propose. Empty means the human may not
@@ -188,6 +229,7 @@ impl Default for HumanState {
             fatigue: 0.0,
             health: 1.0,
             attention: 0.9,
+            physiology: crate::digital_twin::PhysiologyState::default(),
             location: "cockpit".to_string(),
             goal: "maintain safe cockpit state".to_string(),
             action_capabilities: Vec::new(),
@@ -330,6 +372,22 @@ pub struct CockpitSystemsState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "state", rename_all = "camelCase")]
+pub enum DynamicEntity {
+    Human(HumanState),
+    Device(DeviceState),
+}
+
+impl DynamicEntity {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Human(human) => &human.id,
+            Self::Device(device) => &device.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldSnapshot {
     pub run_id: String,
@@ -347,13 +405,16 @@ pub struct WorldSnapshot {
 
 impl WorldSnapshot {
     /// The first human in `humans`, i.e. the scenario's primary agent-operated
-    /// human. Panics if `humans` is empty, which scenario validation prevents.
-    pub fn primary_human(&self) -> &HumanState {
-        &self.humans[0]
+    /// human. Scenario validation guarantees at least one human at load time,
+    /// but dynamic entity removal (`remove_entity`) can empty `humans` at
+    /// runtime, so callers must handle the `None` case rather than assume
+    /// panic-free indexing.
+    pub fn primary_human(&self) -> Option<&HumanState> {
+        self.humans.first()
     }
 
-    pub fn primary_human_mut(&mut self) -> &mut HumanState {
-        &mut self.humans[0]
+    pub fn primary_human_mut(&mut self) -> Option<&mut HumanState> {
+        self.humans.first_mut()
     }
 
     pub fn human(&self, id: &str) -> Option<&HumanState> {
@@ -370,6 +431,28 @@ impl WorldSnapshot {
 
     pub fn device_mut(&mut self, id: &str) -> Option<&mut DeviceState> {
         self.devices.iter_mut().find(|device| device.id == id)
+    }
+
+    pub fn spawn_entity(&mut self, entity: DynamicEntity) -> Result<(), String> {
+        let id = entity.id();
+        if self.human(id).is_some() || self.device(id).is_some() {
+            return Err(format!("entity '{id}' already exists"));
+        }
+        match entity {
+            DynamicEntity::Human(human) => self.humans.push(human),
+            DynamicEntity::Device(device) => self.devices.push(device),
+        }
+        Ok(())
+    }
+
+    pub fn remove_entity(&mut self, entity_id: &str) -> Option<DynamicEntity> {
+        if let Some(index) = self.humans.iter().position(|human| human.id == entity_id) {
+            return Some(DynamicEntity::Human(self.humans.remove(index)));
+        }
+        self.devices
+            .iter()
+            .position(|device| device.id == entity_id)
+            .map(|index| DynamicEntity::Device(self.devices.remove(index)))
     }
 
     pub fn content_hash(&self) -> SimulationResult<String> {
@@ -403,7 +486,7 @@ impl WorldSnapshot {
         // deliberately independent of the JSON IPC representation: snapshots
         // are hashed every tick for recording/replay, so allocating and
         // escaping a complete JSON document here was a significant hot path.
-        hasher.update(b"cockpit-world-snapshot-v2\\0");
+        hasher.update(b"cockpit-world-snapshot-v6\\0");
         bincode::DefaultOptions::new()
             .with_fixint_encoding()
             .with_little_endian()

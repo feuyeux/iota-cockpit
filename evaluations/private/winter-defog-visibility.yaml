@@ -1,0 +1,11 @@
+rubricId: visibility-private
+version: "1"
+scenarioId: winter-defog-visibility
+language: en
+rules:
+  - id: windshield-visibility-restored
+    deadlineTick: 24
+    policy:
+      safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]
+      maxRejectedActions: 0
+gate: { requireDeterministicPass: true, requireTwoJudges: false, requireJudgeAgreement: true, allowInconclusive: false }

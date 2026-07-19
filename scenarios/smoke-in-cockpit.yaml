@@ -73,8 +73,6 @@ agents:
     capabilities:
       - engine.shutdown
       - alarm.activate
-evaluation:
-  - id: shutdown-before-spread
-    deadlineTick: 30
-    rule: engine.shutdown within 30 ticks after SmokeDetected
-    policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 }
+goals:
+  - Keep cockpit occupants safe and contain hazardous smoke.
+maxTicks: 80

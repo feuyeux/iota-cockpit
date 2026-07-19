@@ -2,18 +2,111 @@ schemaVersion: 1
 id: child-left-behind
 seed: 104
 language: zh-CN
-clock: { mode: stepped, tickMs: 100 }
+clock:
+  mode: stepped
+  tickMs: 100
 entities:
-  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 37.0 } } }
-  - { id: outer-parking, type: outerEnvironment, components: { temperature: { celsius: 36.0 }, altitude: { meters: 15.0 }, wind: { speedKmh: 1.0 } } }
-  - { id: guardian-1, type: human, components: { attention: { value: 0.35 }, location: cockpit, name: 许然, role: remote guardian, background: 离车后正在商场内，可能忽略普通通知。 } }
-  - { id: child-1, type: human, components: { attention: { value: 0.55 }, location: rear-left, name: 乐乐, role: child passenger, background: 被遗留在锁闭车辆内的幼儿。, relationships: [guardian-1 is the guardian], traits: { openness: 0.6, conscientiousness: 0.2, extraversion: 0.55, agreeableness: 0.7, neuroticism: 0.75 } } }
-  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
-  - { id: occupant-radar-1, type: device, components: { capabilities: [micro-motion, presence-detection] } }
-  - { id: telematics-1, type: device, components: { capabilities: [guardian-notification, emergency-call] } }
-  - { id: door-lock-1, type: device, components: { capabilities: [lock-state, window-control, remote-unlock] } }
+  - id: cabin
+    type: environment
+    components:
+      smoke:
+        density: 0.0
+      temperature:
+        celsius: 37.0
+  - id: outer-parking
+    type: outerEnvironment
+    components:
+      temperature:
+        celsius: 36.0
+      humidity:
+        relativePct: 72.0
+      solar:
+        irradianceWm2: 850.0
+      altitude:
+        meters: 15.0
+      wind:
+        speedKmh: 1.0
+  - id: guardian-1
+    type: human
+    components:
+      attention:
+        value: 0.35
+      location: cockpit
+      name: 许然
+      role: remote guardian
+      background: 离车后正在商场内，可能忽略普通通知。
+  - id: child-1
+    type: human
+    components:
+      attention:
+        value: 0.55
+      location: rear-left
+      name: 乐乐
+      role: child passenger
+      background: 被遗留在锁闭车辆内的幼儿。
+      relationships:
+        - guardian-1 is the guardian
+      traits:
+        openness: 0.6
+        conscientiousness: 0.2
+        extraversion: 0.55
+        agreeableness: 0.7
+        neuroticism: 0.75
+  - id: engine-1
+    type: device
+    components:
+      capabilities:
+        - shutdown
+  - id: occupant-radar-1
+    type: device
+    components:
+      capabilities:
+        - micro-motion
+        - presence-detection
+  - id: telematics-1
+    type: device
+    components:
+      capabilities:
+        - guardian-notification
+        - emergency-call
+  - id: door-lock-1
+    type: device
+    components:
+      capabilities:
+        - lock-state
+        - window-control
+        - remote-unlock
 influences:
-  - { ruleId: parked-heat-rise, ruleVersion: 1, schedule: { kind: every, start: 1, interval: 3 }, entityId: cabin, componentPath: environment.temperatureC, op: { op: delta, value: 1.1 }, priority: 9 }
-  - { ruleId: child-stress-rise, ruleVersion: 1, schedule: { kind: every, start: 3, interval: 4 }, entityId: child-1, componentPath: pilot.stress, op: { op: delta, value: 0.08 }, priority: 8 }
-agents: [{ id: cockpit-agent, backend: scripted, observationProfile: guardian-default, capabilities: [occupant.activateChildProtection] }]
-evaluation: [{ id: child-protection-activated, deadlineTick: 22, rule: Emergency cooling reduces cabin temperature to 30C or below, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]
+  - ruleId: parked-heat-rise
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 1
+      interval: 3
+    entityId: cabin
+    componentPath: environment.temperatureC
+    op:
+      op: delta
+      value: 1.1
+    priority: 9
+  - ruleId: child-stress-rise
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 3
+      interval: 4
+    entityId: child-1
+    componentPath: pilot.stress
+    op:
+      op: delta
+      value: 0.08
+    priority: 8
+agents:
+  - id: cockpit-agent
+    backend: scripted
+    observationProfile: guardian-default
+    capabilities:
+      - occupant.activateChildProtection
+goals:
+  - Protect the child from heat and obtain appropriate assistance.
+maxTicks: 80

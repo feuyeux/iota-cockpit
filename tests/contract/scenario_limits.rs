@@ -33,32 +33,10 @@ fn scenario_parser_rejects_excessive_entities() {
 }
 
 #[test]
-fn scenario_parser_rejects_invalid_evaluation_contracts() {
-    for (name, evaluation, expected) in [
-        (
-            "unknown-rule",
-            "evaluation: [{ id: unknown-rule, deadlineTick: 10, rule: invalid }]",
-            "not registered",
-        ),
-        (
-            "duplicate-rule",
-            "evaluation:\n  - { id: shutdown-before-spread, deadlineTick: 10, rule: one }\n  - { id: shutdown-before-spread, deadlineTick: 11, rule: two }",
-            "duplicated",
-        ),
-        (
-            "zero-deadline",
-            "evaluation: [{ id: shutdown-before-spread, deadlineTick: 0, rule: invalid }]",
-            "zero deadlineTick",
-        ),
-        (
-            "unknown-safety-code",
-            "evaluation: [{ id: shutdown-before-spread, deadlineTick: 10, rule: invalid, policy: { safetyRejectionCodes: [TYPO_CODE] } }]",
-            "unknown safety rejection code",
-        ),
-    ] {
-        let source = format!("{BASE}\n{evaluation}\n");
-        let error = parse_scenario_bytes(source.as_bytes())
-            .expect_err("invalid evaluation contract must fail");
-        assert!(error.to_string().contains(expected), "{name}: {error}");
-    }
+fn scenario_parser_rejects_private_evaluation_contracts() {
+    let source =
+        format!("{BASE}\nevaluation: [{{ id: shutdown-before-spread, deadlineTick: 10 }}]\n");
+    let error = parse_scenario_bytes(source.as_bytes())
+        .expect_err("private evaluation contracts must not be accepted in scenario YAML");
+    assert!(error.to_string().contains("unknown field `evaluation`"));
 }

@@ -1,0 +1,45 @@
+{
+  "fit": {
+    "anchorPeriodS": 10,
+    "anchors": 618,
+    "method": "10-second piecewise-linear measured HRR lookup"
+  },
+  "profileId": "nist-vehicle2-combustion-v1",
+  "publishedMeasurements": {
+    "carbonMonoxideYieldExpandedUncertainty95PctKgKg": 0.0025,
+    "carbonMonoxideYieldKgKg": 0.059,
+    "effectiveHeatCombustionMjKg": 36.0,
+    "peakHeatReleaseRateKw": 11312.0,
+    "peakTimeS": 622.0,
+    "sootYieldExpandedUncertainty95PctKgKg": 0.0073,
+    "sootYieldKgKg": 0.0569
+  },
+  "schemaVersion": 1,
+  "scope": {
+    "calibrated": [
+      "full-scale exterior ICE-vehicle HRR trajectory",
+      "aggregate soot and carbon-monoxide yields per burned fuel mass"
+    ],
+    "notCalibrated": [
+      "fraction of exterior fire effluent entering a closed passenger cabin",
+      "other vehicle/fuel geometries",
+      "cabin smoke deposition and inter-zone transport"
+    ]
+  },
+  "source": {
+    "csvSha256": "4957b94564cd338dca3098e849309e5ce442f3c8a5e6191375a42d92f2463a26",
+    "csvUrl": "https://www.nist.gov/fcd-s3?path=/HRR/ASSET_FILES/DesignFires_Vehicles/data/1727100783_Vehicle2.csv",
+    "databaseDoi": "10.18434/mds2-2314",
+    "experiment": "2024 Vehicle2: full-scale 2007 ICE minivan on pine-straw bed",
+    "license": "NIST public data (U.S. Government work; consult NIST terms)",
+    "observations": 6178,
+    "recordUrl": "https://www.nist.gov/el/fcd/design-fires-vehicles-pine-straw-bed/vehicle2"
+  },
+  "validation": {
+    "acceptanceThresholdRmseKw": 60.0,
+    "accepted": true,
+    "holdoutObservations": 5553,
+    "interpolationRmseKw": 56.27643531190073,
+    "persistenceRmseKw": 109.32892075211336
+  }
+}

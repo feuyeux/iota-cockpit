@@ -267,6 +267,62 @@ export interface RuleEvaluationResult {
   result: EvaluationResult;
 }
 
+export type EvaluationVerdict = "pass" | "fail" | "inconclusive";
+
+export interface EvidenceReference {
+  tick: number;
+  entityId?: string;
+  eventId?: string;
+  kind: string;
+}
+
+export interface JudgeProvenance {
+  judgeId: string;
+  model: string;
+  promptHash: string;
+  rubricHash: string;
+  schemaHash: string;
+}
+
+export interface JudgeDecision {
+  verdict: EvaluationVerdict;
+  confidence: number;
+  explanation: string;
+  evidence: EvidenceReference[];
+  provenance: JudgeProvenance;
+}
+
+export interface RuleVerdict {
+  ruleId: string;
+  deadlineTick: number;
+  verdict: EvaluationVerdict;
+  result: EvaluationResult;
+}
+
+export interface EvidenceVerdict {
+  schemaVersion: number;
+  verdict: EvaluationVerdict;
+  rubricId: string;
+  rubricVersion: string;
+  rubricHash: string;
+  inputHash: string;
+  schemaHash: string;
+  deterministicResults: RuleVerdict[];
+  evidence: EvidenceReference[];
+  judges: JudgeDecision[];
+  judgeDisagreement: boolean;
+  releaseGatePassed: boolean;
+  explanation: string;
+}
+
+export interface EvaluationReportRecord {
+  id: string;
+  createdAtMs: number;
+  runId: string;
+  scenarioId: string;
+  report: EvidenceVerdict;
+}
+
 export interface RecordingMetrics {
   ticks: number;
   events: number;
@@ -319,9 +375,16 @@ export interface HumanDecision {
   narrative: string;
 }
 
+export interface HumanToolCall {
+  tool: string;
+  arguments: unknown;
+}
+
 export interface HumanTurnEvidence {
   humanId: string;
   decision: HumanDecision;
+  toolCalls: HumanToolCall[];
+  latencyMs?: number;
 }
 
 export interface HumanTurnTrace {

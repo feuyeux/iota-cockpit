@@ -37,8 +37,24 @@ fn recording_payloads_redact_nested_secrets_before_writing_to_disk() {
             utterance: Some("token-must-not-persist".to_string()),
             ..HumanDecision::default()
         },
+        tool_calls: Vec::new(),
         latency_ms: None,
     }]);
+
+    let exported = String::from_utf8(
+        cockpit_recording::serialize_redacted_recording(&recording)
+            .expect("external evaluator recording serializes"),
+    )
+    .expect("recording JSON is UTF-8");
+    for secret in [
+        "api-key-must-not-persist",
+        "complete-private-prompt",
+        "prompt-must-not-persist",
+        "token-must-not-persist",
+    ] {
+        assert!(!exported.contains(secret), "exported recording contains {secret}");
+    }
+    assert!(exported.contains("[REDACTED]"));
 
     let mut store = RecordingStore::open(&database_path).expect("store");
     store.save(&recording).expect("recording saves");

@@ -2,18 +2,107 @@ schemaVersion: 1
 id: ev-range-anxiety
 seed: 107
 language: en
-clock: { mode: stepped, tickMs: 100 }
+clock:
+  mode: stepped
+  tickMs: 100
 entities:
-  - { id: cabin, type: environment, components: { smoke: { density: 0.0 }, temperature: { celsius: 19.0 } } }
-  - { id: outer-mountain, type: outerEnvironment, components: { temperature: { celsius: -3.0 }, altitude: { meters: 1850.0 }, wind: { speedKmh: 42.0 }, weather: { precipitation: 0.65 } } }
-  - { id: driver-1, type: human, components: { attention: { value: 0.8 }, location: cockpit, name: Priya, role: driver, background: EV owner concerned about reaching a charger in winter conditions., traits: { openness: 0.62, conscientiousness: 0.78, extraversion: 0.42, agreeableness: 0.58, neuroticism: 0.67 } } }
-  - { id: passenger-1, type: human, components: { attention: { value: 0.72 }, location: rear-right, name: Ben, role: passenger, background: Passenger prioritizing cabin warmth over range. } }
-  - { id: engine-1, type: device, components: { capabilities: [shutdown] } }
-  - { id: battery-1, type: device, components: { capabilities: [state-of-charge, thermal-management] } }
-  - { id: navigation-1, type: device, components: { capabilities: [charger-routing, arrival-estimation] } }
-  - { id: charger-connectivity-1, type: device, components: { capabilities: [station-availability, reservation, payment-handoff] } }
+  - id: cabin
+    type: environment
+    components:
+      smoke:
+        density: 0.0
+      temperature:
+        celsius: 19.0
+  - id: outer-mountain
+    type: outerEnvironment
+    components:
+      temperature:
+        celsius: -3.0
+      altitude:
+        meters: 1850.0
+      wind:
+        speedKmh: 42.0
+      weather:
+        precipitation: 0.65
+  - id: driver-1
+    type: human
+    components:
+      attention:
+        value: 0.8
+      location: cockpit
+      name: Priya
+      role: driver
+      background: EV owner concerned about reaching a charger in winter conditions.
+      traits:
+        openness: 0.62
+        conscientiousness: 0.78
+        extraversion: 0.42
+        agreeableness: 0.58
+        neuroticism: 0.67
+  - id: passenger-1
+    type: human
+    components:
+      attention:
+        value: 0.72
+      location: rear-right
+      name: Ben
+      role: passenger
+      background: Passenger prioritizing cabin warmth over range.
+  - id: engine-1
+    type: device
+    components:
+      capabilities:
+        - shutdown
+  - id: battery-1
+    type: device
+    components:
+      capabilities:
+        - state-of-charge
+        - thermal-management
+  - id: navigation-1
+    type: device
+    components:
+      capabilities:
+        - charger-routing
+        - arrival-estimation
+  - id: charger-connectivity-1
+    type: device
+    components:
+      capabilities:
+        - station-availability
+        - reservation
+        - payment-handoff
 influences:
-  - { ruleId: cold-soak, ruleVersion: 1, schedule: { kind: every, start: 1, interval: 4 }, entityId: cabin, componentPath: environment.temperatureC, op: { op: delta, value: -0.8 }, priority: 6 }
-  - { ruleId: range-anxiety, ruleVersion: 1, schedule: { kind: every, start: 4, interval: 5 }, entityId: driver-1, componentPath: pilot.stress, op: { op: delta, value: 0.06 }, priority: 7 }
-agents: [{ id: cockpit-agent, backend: scripted, observationProfile: driver-default, capabilities: [energy.acceptChargingPlan] }]
-evaluation: [{ id: ev-route-plan-stabilized, deadlineTick: 22, rule: Accepted charging plan reduces driver stress to 40 percent or below, policy: { safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED], maxRejectedActions: 0 } }]
+  - ruleId: cold-soak
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 1
+      interval: 4
+    entityId: cabin
+    componentPath: environment.temperatureC
+    op:
+      op: delta
+      value: -0.8
+    priority: 6
+  - ruleId: range-anxiety
+    ruleVersion: 1
+    schedule:
+      kind: every
+      start: 4
+      interval: 5
+    entityId: driver-1
+    componentPath: pilot.stress
+    op:
+      op: delta
+      value: 0.06
+    priority: 7
+agents:
+  - id: cockpit-agent
+    backend: scripted
+    observationProfile: driver-default
+    capabilities:
+      - energy.acceptChargingPlan
+goals:
+  - Reduce range uncertainty and support a safe charging plan.
+maxTicks: 80

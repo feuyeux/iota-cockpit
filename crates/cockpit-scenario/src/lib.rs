@@ -2,12 +2,11 @@ use std::{fs, path::Path};
 
 use cockpit_simulation_core::{
     action::AgentGrant,
+    capability::CapabilityCatalog,
     clock::ClockConfig,
     error::{SimulationError, SimulationResult},
     influence::{ConflictPolicy, InfluenceRule},
-    simulation::{
-        EvaluationPolicy, EvaluationSpec, Fault, SimulationScenario, is_registered_evaluation_rule,
-    },
+    simulation::{Fault, SimulationScenario},
     world::{AlarmState, CabinEnvironment, DeviceState, HumanState, OuterEnvironmentState},
 };
 use serde::Deserialize;
@@ -17,13 +16,13 @@ pub const MAX_SCENARIO_BYTES: usize = 1_048_576;
 pub const MAX_SCENARIO_ENTITIES: usize = 1_000;
 pub const MAX_SCENARIO_FAULTS: usize = 10_000;
 pub const MAX_SCENARIO_AGENTS: usize = 32;
-pub const MAX_SCENARIO_EVALUATIONS: usize = 100;
+pub const MAX_SCENARIO_GOALS: usize = 32;
 pub const MAX_SCENARIO_IDENTIFIER_BYTES: usize = 128;
 pub const MAX_AGENT_CAPABILITIES: usize = 64;
 pub const MAX_SCENARIO_INFLUENCES: usize = 10_000;
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScenarioDocument {
     schema_version: u32,
     id: String,
@@ -36,7 +35,9 @@ struct ScenarioDocument {
     faults: Vec<FaultDocument>,
     agents: Vec<AgentDocument>,
     #[serde(default)]
-    evaluation: Vec<EvaluationDocument>,
+    goals: Vec<String>,
+    #[serde(default = "default_max_ticks")]
+    max_ticks: u64,
     #[serde(default)]
     influences: Vec<InfluenceRule>,
     #[serde(default)]
@@ -73,20 +74,8 @@ struct AgentDocument {
     capabilities: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EvaluationDocument {
-    id: String,
-    #[serde(default = "default_deadline")]
-    deadline_tick: u64,
-    #[allow(dead_code)]
-    rule: String,
-    #[serde(default)]
-    policy: EvaluationPolicy,
-}
-
-fn default_deadline() -> u64 {
-    30
+fn default_max_ticks() -> u64 {
+    80
 }
 
 fn default_language() -> String {
@@ -108,7 +97,8 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
     }
     let document: ScenarioDocument = serde_yaml::from_slice(bytes)
         .map_err(|err| SimulationError::InvalidScenario(format!("invalid YAML: {err}")))?;
-    validate_document(&document)?;
+    let catalog = CapabilityCatalog::load_default();
+    validate_document(&document, &catalog)?;
 
     let mut outer_environment = OuterEnvironmentState::default();
     let mut environment = CabinEnvironment::default();
@@ -158,29 +148,6 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let scenario_hash = format!("{:x}", hasher.finalize());
-    let shutdown_deadline_ticks = document
-        .evaluation
-        .first()
-        .map(|evaluation| evaluation.deadline_tick)
-        .unwrap_or(30);
-    let evaluation_rule_id = document
-        .evaluation
-        .first()
-        .map(|evaluation| evaluation.id.clone());
-    let evaluation_policy = document
-        .evaluation
-        .first()
-        .map(|evaluation| evaluation.policy.clone())
-        .unwrap_or_default();
-    let evaluation_rules = document
-        .evaluation
-        .iter()
-        .map(|evaluation| EvaluationSpec {
-            id: evaluation.id.clone(),
-            deadline_tick: evaluation.deadline_tick,
-            policy: evaluation.policy.clone(),
-        })
-        .collect();
 
     Ok(SimulationScenario {
         id: document.id,
@@ -194,6 +161,7 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
         humans,
         devices,
         alarm,
+        physics: cockpit_simulation_core::digital_twin::DigitalTwinParameters::default(),
         faults: document
             .faults
             .into_iter()
@@ -215,10 +183,8 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
                 capabilities: agent.capabilities,
             })
             .collect(),
-        shutdown_deadline_ticks,
-        evaluation_rule_id,
-        evaluation_policy,
-        evaluation_rules,
+        public_goals: document.goals,
+        max_ticks: document.max_ticks,
         influences: document.influences,
         conflict_policy: document
             .conflict_policy
@@ -226,7 +192,10 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
     })
 }
 
-fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
+fn validate_document(
+    document: &ScenarioDocument,
+    catalog: &CapabilityCatalog,
+) -> SimulationResult<()> {
     if document.schema_version != 1 {
         return Err(SimulationError::InvalidScenario(format!(
             "unsupported schemaVersion {}",
@@ -241,40 +210,18 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
     validate_limit("entities", document.entities.len(), MAX_SCENARIO_ENTITIES)?;
     validate_limit("faults", document.faults.len(), MAX_SCENARIO_FAULTS)?;
     validate_limit("agents", document.agents.len(), MAX_SCENARIO_AGENTS)?;
-    validate_limit(
-        "evaluation rules",
-        document.evaluation.len(),
-        MAX_SCENARIO_EVALUATIONS,
-    )?;
+    validate_limit("goals", document.goals.len(), MAX_SCENARIO_GOALS)?;
     validate_identifier("scenario id", &document.id)?;
-    let mut evaluation_ids = std::collections::BTreeSet::new();
-    for evaluation in &document.evaluation {
-        validate_identifier("evaluation rule id", &evaluation.id)?;
-        if !is_registered_evaluation_rule(&evaluation.id) {
-            return Err(SimulationError::InvalidScenario(format!(
-                "evaluation rule '{}' is not registered",
-                evaluation.id
-            )));
-        }
-        if !evaluation_ids.insert(&evaluation.id) {
-            return Err(SimulationError::InvalidScenario(format!(
-                "evaluation rule '{}' is duplicated",
-                evaluation.id
-            )));
-        }
-        if evaluation.deadline_tick == 0 {
-            return Err(SimulationError::InvalidScenario(format!(
-                "evaluation rule '{}' has a zero deadlineTick",
-                evaluation.id
-            )));
-        }
-        for code in &evaluation.policy.safety_rejection_codes {
-            if !is_known_safety_code(code) {
-                return Err(SimulationError::InvalidScenario(format!(
-                    "evaluation rule '{}' has unknown safety rejection code '{code}'",
-                    evaluation.id
-                )));
-            }
+    if document.max_ticks == 0 {
+        return Err(SimulationError::InvalidScenario(
+            "maxTicks must be greater than zero".to_string(),
+        ));
+    }
+    for goal in &document.goals {
+        if goal.trim().is_empty() || goal.len() > 1_024 {
+            return Err(SimulationError::InvalidScenario(
+                "each public goal must contain 1..=1024 bytes".to_string(),
+            ));
         }
     }
     for entity in &document.entities {
@@ -293,6 +240,12 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
         )?;
         for capability in &agent.capabilities {
             validate_identifier("agent capability", capability)?;
+            if !catalog.contains(capability) {
+                return Err(SimulationError::InvalidScenario(format!(
+                    "agent '{}' declares unknown capability '{capability}'",
+                    agent.id
+                )));
+            }
         }
     }
     if !document.entities.iter().any(|entity| entity.id == "cabin") {
@@ -350,22 +303,6 @@ fn validate_document(document: &ScenarioDocument) -> SimulationResult<()> {
     Ok(())
 }
 
-fn is_known_safety_code(code: &str) -> bool {
-    matches!(
-        code,
-        "CAPABILITY_DENIED"
-            | "DEVICE_UNPOWERED"
-            | "PRECONDITION_FAILED"
-            | "STATE_VERSION_CONFLICT"
-            | "ACTION_EXPIRED"
-            | "ACTION_CONFLICT"
-            | "UNKNOWN_TARGET"
-            | "APPROVAL_DENIED"
-            | "ACTION_CANCELLED"
-            | "TOOL_CALL_DENIED"
-    )
-}
-
 /// Component paths that scheduled influences may target, mirroring the writable
 /// StateDiff surface in the simulation core. Human component paths are accepted
 /// for any human id since the entity set is scenario-defined.
@@ -410,7 +347,38 @@ fn apply_environment_components(
     if let Some(temperature) = lookup(components, "temperature", "celsius") {
         environment.temperature_c = temperature;
     }
+    if let Some(humidity) = lookup(components, "humidity", "relativePct") {
+        environment.humidity_pct = humidity;
+    }
+    if let Some(pressure) = lookup(components, "pressure", "pascal") {
+        environment.pressure_pa = pressure;
+    }
+    if let Some(co2) = lookup(components, "airQuality", "carbonDioxidePpm") {
+        environment.carbon_dioxide_ppm = co2;
+    }
+    if let Some(co) = lookup(components, "airQuality", "carbonMonoxidePpm") {
+        environment.carbon_monoxide_ppm = co;
+    }
     ensure_range("smoke.density", environment.smoke_density, 0.0, 3.0)?;
+    ensure_range("humidity.relativePct", environment.humidity_pct, 0.0, 100.0)?;
+    ensure_range(
+        "pressure.pascal",
+        environment.pressure_pa,
+        20_000.0,
+        120_000.0,
+    )?;
+    ensure_range(
+        "airQuality.carbonDioxidePpm",
+        environment.carbon_dioxide_ppm,
+        300.0,
+        50_000.0,
+    )?;
+    ensure_range(
+        "airQuality.carbonMonoxidePpm",
+        environment.carbon_monoxide_ppm,
+        0.0,
+        100_000.0,
+    )?;
     Ok(())
 }
 
@@ -421,6 +389,12 @@ fn apply_outer_environment_components(
     if let Some(temperature) = lookup(components, "temperature", "celsius") {
         outer.external_temperature_c = temperature;
     }
+    if let Some(humidity) = lookup(components, "humidity", "relativePct") {
+        outer.relative_humidity_pct = humidity;
+    }
+    if let Some(solar) = lookup(components, "solar", "irradianceWm2") {
+        outer.solar_irradiance_w_m2 = solar;
+    }
     if let Some(altitude) = lookup(components, "altitude", "meters") {
         outer.altitude_m = altitude;
     }
@@ -430,6 +404,19 @@ fn apply_outer_environment_components(
     if let Some(precipitation) = lookup(components, "weather", "precipitation") {
         outer.precipitation = precipitation;
     }
+    ensure_range(
+        "humidity.relativePct",
+        outer.relative_humidity_pct,
+        0.0,
+        100.0,
+    )?;
+    ensure_range(
+        "solar.irradianceWm2",
+        outer.solar_irradiance_w_m2,
+        0.0,
+        1_500.0,
+    )?;
+    ensure_range("altitude.meters", outer.altitude_m, -500.0, 11_000.0)?;
     Ok(())
 }
 

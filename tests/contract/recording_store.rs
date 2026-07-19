@@ -1,4 +1,6 @@
-use cockpit_agent_runtime::{HumanDecision, HumanTurnEvidence};
+use cockpit_agent_runtime::{
+    HumanDecision, HumanTurnEvidence, OpenWorldCheckpoint, OpenWorldRuntime,
+};
 use cockpit_recording::{
     AsyncRecordingSink, Recording, RecordingQueueOutcome, RecordingQueuePolicy, RecordingStore,
     RunProvenance, run_rule_agent_recording,
@@ -31,6 +33,10 @@ fn sqlite_recording_round_trip_preserves_tick_evidence() {
 fn sqlite_recording_round_trip_preserves_live_human_turns() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
     let mut recording = Recording::new("sqlite-live-run", &scenario);
+    let mut runtime = OpenWorldRuntime::default();
+    runtime.ensure_agent("pilot-1", "protect occupants", 0);
+    let world = cockpit_simulation_core::Simulation::new("sqlite-live-run", scenario.clone());
+    recording.open_world_checkpoint = Some(OpenWorldCheckpoint::capture(&world.snapshot, &runtime));
     recording.provenance = RunProvenance {
         suite_id: Some("release-suite".to_string()),
         split: Some("hiddenRelease".to_string()),
@@ -44,6 +50,7 @@ fn sqlite_recording_round_trip_preserves_live_human_turns() {
             utterance: Some("status check".to_string()),
             ..HumanDecision::default()
         },
+        tool_calls: Vec::new(),
         latency_ms: None,
     }]);
 
@@ -53,6 +60,20 @@ fn sqlite_recording_round_trip_preserves_live_human_turns() {
 
     assert_eq!(restored.human_turns.len(), 1);
     assert_eq!(restored.provenance, recording.provenance);
+    assert_eq!(
+        restored.open_world_checkpoint,
+        recording.open_world_checkpoint
+    );
+    assert_eq!(
+        restored
+            .open_world_checkpoint
+            .as_ref()
+            .expect("checkpoint restored")
+            .runtime
+            .sessions
+            .len(),
+        1
+    );
     assert_eq!(restored.human_turns[0][0].human_id, "pilot-1");
     assert_eq!(restored.human_turns[0][0].decision.narrative, "[REDACTED]");
     assert_eq!(

@@ -34,7 +34,8 @@
       "signingIdentity": "-"
     },
     "resources": {
-      "../../../scenarios": "scenarios"
+      "../../../scenarios": "scenarios",
+      "../../../evaluations/private": "evaluations/private"
     },
     "targets": "all",
     "icon": [
@@ -45,7 +46,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/cockpit-runner"
+      "binaries/cockpit-runner",
+      "binaries/cockpit-evaluator"
     ]
   }
 }

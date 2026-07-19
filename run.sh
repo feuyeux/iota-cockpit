@@ -3,6 +3,29 @@ set -euo pipefail
 
 readonly DEV_PORT=15342
 readonly PORT_RELEASE_ATTEMPTS=20
+CLEAN=false
+
+usage() {
+  echo "Usage: $0 [--clean]" >&2
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --clean)
+      CLEAN=true
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -58,6 +81,11 @@ cd "$SCRIPT_DIR"
 require_command cargo
 require_command lsof
 require_command npm
+
+if [[ "$CLEAN" == true ]]; then
+  echo "Cleaning Rust workspace (requested with --clean)"
+  cargo clean
+fi
 
 release_dev_port
 

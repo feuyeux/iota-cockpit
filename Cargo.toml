@@ -1,5 +1,5 @@
 [package]
-name = "iota-cockpit-simulator"
+name = "iota-cockpit"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95.0"
@@ -11,6 +11,8 @@ members = [
   "crates/cockpit-scenario",
   "crates/cockpit-recording",
   "crates/cockpit-evaluation",
+  "crates/cockpit-evaluator",
+  "crates/cockpit-judge-provider",
   "crates/cockpit-agent-runtime",
   "crates/cockpit-runner",
   "crates/cockpit-plugin",
@@ -43,10 +45,9 @@ cockpit-evaluation = { path = "crates/cockpit-evaluation" }
 cockpit-agent-runtime = { path = "crates/cockpit-agent-runtime" }
 cockpit-runner = { path = "crates/cockpit-runner" }
 cockpit-plugin = { path = "crates/cockpit-plugin" }
-# Local sibling checkout: the path override points at the development tree.
-# The sibling package is `iota-sympantos-core`; retain the `iota-core` alias so
-# dependent crates continue to import its `iota_core` library unchanged.
-iota-core = { package = "iota-sympantos-core", version = "0.1.0", path = "../iota-sympantos/crates/iota-core", default-features = false }
+# Use the published package while retaining the `iota-core` dependency alias
+# and `iota_core` Rust library import for source compatibility.
+iota-core = { package = "iota-sympantos-core", version = "0.1.0", default-features = false }
 
 [features]
 # Opt-in real iota-core ACP backend, forwarded to the runner and agent runtime.
@@ -130,6 +131,10 @@ path = "tests/contract/influence_rules.rs"
 name = "runner_restart"
 path = "tests/contract/runner_restart.rs"
 
+
+[[test]]
+name = "digital_twin"
+path = "tests/contract/digital_twin.rs"
 [[test]]
 name = "recording_persist_failure"
 path = "tests/contract/recording_persist_failure.rs"

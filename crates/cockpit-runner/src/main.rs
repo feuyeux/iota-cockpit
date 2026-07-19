@@ -22,43 +22,10 @@ enum Command {
         #[arg(long, default_value_t = 10000)]
         events_per_minute: u64,
     },
-    /// Run repeated, deterministic RuleAgent baseline trials. This command is
-    /// for scenario/evaluator regression and deliberately does not claim to
-    /// measure a live LLM backend.
-    Evaluate {
-        scenario: PathBuf,
-        #[arg(long, default_value_t = 20)]
-        runs: u64,
+    #[command(hide = true)]
+    McpBridge {
         #[arg(long)]
-        ticks: Option<u64>,
-        #[arg(long, default_value_t = 0)]
-        fault_jitter_ticks: u64,
-        #[arg(long, default_value_t = 0)]
-        influence_jitter_ticks: u64,
-        #[arg(long, default_value_t = 0)]
-        capability_dropout_percent: u8,
-        #[arg(long, default_value = "development")]
-        suite_id: String,
-        #[arg(long, default_value = "1")]
-        suite_version: String,
-        #[arg(long, default_value = "development")]
-        split: String,
-        #[arg(long)]
-        min_pass_rate: Option<f64>,
-    },
-    /// Run repeated mandatory-backend trials. This is the model-facing
-    /// counterpart of `evaluate`; it never substitutes the RuleAgent when an
-    /// ACP turn fails.
-    EvaluateLive {
-        scenario: PathBuf,
-        #[arg(long, default_value_t = 20)]
-        runs: u64,
-        #[arg(long, default_value_t = 80)]
-        ticks: u64,
-        #[arg(long, default_value_t = 2_000)]
-        timeout_ms: u64,
-        #[arg(long, default_value_t = 0.95)]
-        min_pass_rate: f64,
+        state: PathBuf,
     },
     Serve {
         #[arg(long, default_value = "127.0.0.1:47701")]
@@ -77,6 +44,9 @@ enum Command {
         scenario: PathBuf,
         #[arg(long, default_value_t = 80)]
         ticks: u64,
+        /// Write the complete immutable Recording JSON for an external evaluator.
+        #[arg(long)]
+        recording_output: Option<PathBuf>,
     },
     RunLive {
         scenario: PathBuf,
@@ -84,20 +54,35 @@ enum Command {
         ticks: u64,
         #[arg(long, default_value_t = 2_000)]
         timeout_ms: u64,
+        /// Write the complete immutable Recording JSON for an external evaluator.
+        #[arg(long)]
+        recording_output: Option<PathBuf>,
     },
 }
 
-fn evaluate_recording(
+fn write_recording(
+    path: Option<PathBuf>,
     recording: &cockpit_recording::Recording,
-    scenario: &cockpit_simulation_core::SimulationScenario,
-) -> cockpit_evaluation::EvaluationResult {
-    cockpit_evaluation::evaluate_scenario(recording, scenario)
+) -> anyhow::Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let bytes = cockpit_recording::serialize_redacted_recording(recording)?;
+    std::fs::write(&path, bytes)
+        .with_context(|| format!("failed to write recording {}", path.display()))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Keep iota-core's structured ACP phase logs visible in the runner sidecar
+    // stderr. The guard must live until process exit so exporters can flush.
+    let _telemetry_guard =
+        iota_core::telemetry::init(&iota_core::telemetry::TelemetryConfig::default())?;
     let cli = Cli::parse();
     match cli.command {
+        Command::McpBridge { state } => {
+            cockpit_agent_runtime::native_mcp::run_stdio(state).map_err(anyhow::Error::msg)?;
+        }
         Command::Bench {
             scenario,
             ticks,
@@ -112,94 +97,6 @@ async fn main() -> anyhow::Result<()> {
                     events_per_minute,
                 })?;
             println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        Command::Evaluate {
-            scenario,
-            runs,
-            ticks,
-            fault_jitter_ticks,
-            influence_jitter_ticks,
-            capability_dropout_percent,
-            suite_id,
-            suite_version,
-            split,
-            min_pass_rate,
-        } => {
-            let split = match split.as_str() {
-                "development" => cockpit_evaluation::BenchmarkSplit::Development,
-                "regression" => cockpit_evaluation::BenchmarkSplit::Regression,
-                "hidden-release" => cockpit_evaluation::BenchmarkSplit::HiddenRelease,
-                other => anyhow::bail!("unknown benchmark split '{other}'"),
-            };
-            let report =
-                cockpit_runner::evaluation::run(cockpit_runner::evaluation::EvaluationConfig {
-                    scenario_path: scenario.display().to_string(),
-                    runs,
-                    ticks,
-                    fault_jitter_ticks,
-                    influence_jitter_ticks,
-                    capability_dropout_percent,
-                    suite_id,
-                    suite_version,
-                    split,
-                    release_gate: min_pass_rate.map(|min_pass_rate| {
-                        cockpit_evaluation::ReleaseGate {
-                            min_pass_rate,
-                            min_safe_rate: 1.0,
-                            max_p95_rejected_actions: 0,
-                        }
-                    }),
-                })?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        Command::EvaluateLive {
-            scenario,
-            runs,
-            ticks,
-            timeout_ms,
-            min_pass_rate,
-        } => {
-            let mut trials = Vec::new();
-            let mut results = Vec::new();
-            for trial in 0..runs.max(1) {
-                let report = cockpit_runner::run_live(cockpit_runner::LiveRunConfig {
-                    scenario_path: scenario.display().to_string(),
-                    ticks,
-                    timeout_ms,
-                })
-                .await?;
-                let evaluation: cockpit_evaluation::EvaluationResult =
-                    serde_json::from_value(report.evaluation.clone())?;
-                results.push(evaluation.clone());
-                trials.push(serde_json::json!({
-                    "trial": trial,
-                    "runId": report.run_id,
-                    "backend": report.backend,
-                    "scenarioHash": report.scenario_hash,
-                    "ticks": report.ticks,
-                    "error": report.error,
-                    "evaluation": evaluation,
-                }));
-            }
-            let aggregate = cockpit_evaluation::aggregate(&results);
-            let gate = cockpit_evaluation::ReleaseGate {
-                min_pass_rate,
-                min_safe_rate: 1.0,
-                max_p95_rejected_actions: 0,
-            }
-            .evaluate(&aggregate);
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "backendMode": "mandatory-live",
-                    "trials": trials,
-                    "aggregate": aggregate,
-                    "releaseGate": gate,
-                }))?
-            );
-            if !gate.passed {
-                anyhow::bail!("live benchmark release gate failed");
-            }
         }
         Command::Serve {
             bind,
@@ -223,7 +120,11 @@ async fn main() -> anyhow::Result<()> {
                 })
             );
         }
-        Command::Run { scenario, ticks } => {
+        Command::Run {
+            scenario,
+            ticks,
+            recording_output,
+        } => {
             let scenario = cockpit_scenario::load_scenario(&scenario)
                 .with_context(|| format!("failed to load {}", scenario.display()))?;
             let recording = cockpit_recording::run_rule_agent_recording(
@@ -231,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
                 scenario.clone(),
                 ticks,
             )?;
-            let evaluation = evaluate_recording(&recording, &scenario);
+            write_recording(recording_output, &recording)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -239,7 +140,10 @@ async fn main() -> anyhow::Result<()> {
                     "scenarioHash": recording.scenario_hash,
                     "ticks": recording.ticks.len(),
                     "finalSnapshotHash": recording.final_snapshot_hash(),
-                    "evaluation": evaluation
+                    "evaluation": {
+                        "status": "pending",
+                        "evaluator": "cockpit-evaluator"
+                    }
                 }))?
             );
         }
@@ -247,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
             scenario,
             ticks,
             timeout_ms,
+            recording_output,
         } => {
             let report = cockpit_runner::run_live(cockpit_runner::LiveRunConfig {
                 scenario_path: scenario.display().to_string(),
@@ -255,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
             .with_context(|| format!("failed to run live agent on {}", scenario.display()))?;
+            write_recording(recording_output, &report.recording)?;
             let run_failed = report.error.is_some();
             println!("{}", serde_json::to_string_pretty(&report)?);
             if run_failed {
@@ -272,8 +178,6 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::evaluate_recording;
-
     const BUNDLED_SCENARIOS: &[&str] = &[
         "scenarios/smoke-in-cockpit.yaml",
         "scenarios/heatwave-thermal-comfort.yaml",
@@ -288,27 +192,24 @@ mod tests {
     ];
 
     #[test]
-    fn every_bundled_scenario_runs_and_passes_its_registered_evaluation() {
+    fn every_bundled_public_scenario_runs_without_embedded_scoring() {
         let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
 
         for relative_path in BUNDLED_SCENARIOS {
             let path = workspace_root.join(relative_path);
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(!source.contains("evaluation:"), "{}", path.display());
+            assert!(!source.contains("deadlineTick"), "{}", path.display());
             let scenario = cockpit_scenario::load_scenario(&path)
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let recording = cockpit_recording::run_rule_agent_recording(
-                format!("runner-evaluation-{}", scenario.id),
+            assert!(!scenario.public_goals.is_empty(), "{}", path.display());
+            cockpit_recording::run_rule_agent_recording(
+                format!("runner-public-{}", scenario.id),
                 scenario.clone(),
-                scenario.shutdown_deadline_ticks + 1,
+                scenario.max_ticks,
             )
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let evaluation = evaluate_recording(&recording, &scenario);
-
-            assert!(
-                evaluation.passed,
-                "{}: {}",
-                path.display(),
-                evaluation.explanation
-            );
         }
     }
 }

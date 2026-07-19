@@ -1,4 +1,4 @@
-import type { SimulationEvent, ToolCallTrace, ActionResult } from "../types/simulation";
+import type { SimulationEvent, ToolCallTrace, ActionResult, EvaluationReportRecord } from "../types/simulation";
 import { redactValue } from "./redact";
 
 export function exportEventsAsJSON(events: SimulationEvent[]): void {
@@ -49,6 +49,11 @@ export function exportTracesAsCSV(traces: ToolCallTrace[]): void {
 export function exportActionResultsAsJSON(results: ActionResult[]): void {
   const data = JSON.stringify(redactValue(results), null, 2);
   downloadFile(data, `cockpit-actions-${Date.now()}.json`, "application/json");
+}
+
+export function exportEvaluationReportAsJSON(record: EvaluationReportRecord): void {
+  const data = JSON.stringify(redactValue(record), null, 2);
+  downloadFile(data, `cockpit-evaluation-${record.scenarioId}-${record.id}.json`, "application/json");
 }
 
 function escapeCSV(value: string): string {

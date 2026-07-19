@@ -5,7 +5,7 @@ use cockpit_scenario::load_scenario;
 #[test]
 fn rule_agent_uses_mcp_boundary_to_shutdown_engine() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
-    let deadline = scenario.shutdown_deadline_ticks;
+    let deadline = scenario.max_ticks;
     let recording =
         run_rule_agent_recording("rule-agent-run", scenario, 80).expect("run completes");
     let evaluation = evaluate_smoke_shutdown(&recording, deadline);

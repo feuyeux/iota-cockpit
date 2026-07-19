@@ -1,0 +1,149 @@
+{
+  "empiricalBaselines": {
+    "cabinAbsolutePressure": {
+      "doi": "10.3390/s26020469",
+      "license": "CC BY 4.0",
+      "meanInterceptHpa": 1013.6,
+      "meanSlopeHpaPerM": -0.112,
+      "measuredAltitudeDomainM": [
+        0.0,
+        1500.0
+      ],
+      "measurementSeries": 15,
+      "probeUncertaintyHpa": 1.1,
+      "source": "Teleszewski and Gladyszewska-Fiedoruk, Sensors 26(2), 2026",
+      "status": "published land-vehicle pressure-altitude fit drives runtime; pressure rate was not measured"
+    },
+    "carbonMonoxidePhysiology": {
+      "aMin": 241.0,
+      "activityLevel": 2,
+      "affinityRatio": 218.0,
+      "bInverseMmhg": 1421.0,
+      "correlationR": 0.61,
+      "doi": "10.3390/toxics14060488",
+      "fieldSetting": "fully enclosed armored motor vehicles with live-fire CO exposure",
+      "license": "CC BY 4.0",
+      "meanPredictionErrorPct": 0.86,
+      "model": "CFK-derived MIL-STD-1472H integrated equation, activity level 2",
+      "participantsEnrolled": 100,
+      "peakCohbRmsePct": 1.94,
+      "source": "Alter, Dayan and Fleminger, Toxics 14(6), 2026",
+      "status": "externally field-validated exposure and recovery kinetics drive runtime"
+    },
+    "fullScaleVehicleFire": {
+      "csvSha256": "4957b94564cd338dca3098e849309e5ce442f3c8a5e6191375a42d92f2463a26",
+      "databaseDoi": "10.18434/mds2-2314",
+      "profileId": "nist-vehicle2-combustion-v1",
+      "recordUrl": "https://www.nist.gov/el/fcd/design-fires-vehicles-pine-straw-bed/vehicle2",
+      "source": "NIST Fire Calorimetry Database, Vehicle2 (2024)",
+      "status": "measured HRR and aggregate soot/CO yields drive runtime; closed-cabin transfer remains uncalibrated"
+    },
+    "parkedCabinInfiltration": {
+      "doi": "10.1111/j.1600-0668.2009.00593.x",
+      "measurements": ">200",
+      "runtimeAch": 0.25,
+      "source": "Knibbs, de Dear and Atkinson, Field study of air change and flow rate in six automobiles (2009)",
+      "stationaryObservedAch": [
+        0.0,
+        1.4
+      ],
+      "status": "runtime value is inside the real parked-vehicle envelope; pressure equalization is not fitted",
+      "vehicles": 6
+    },
+    "smokeOptics": {
+      "expandedUncertainty95PctM2PerG": 1.1,
+      "measuredMeanM2PerG": 8.7,
+      "runtimeM2PerMg": 0.0087,
+      "source": "Mulholland and Croarkin, Specific extinction coefficient of flame generated smoke (2000)",
+      "sourceUrl": "https://www.nist.gov/publications/comparisons-soot-volume-fraction-using-gravimetric-and-light-extinction-techniques-0",
+      "status": "experimentally anchored optical coefficient; vehicle source and deposition are not calibrated"
+    },
+    "thermoregulation": {
+      "humidityExerciseDoi": "10.1080/23328940.2016.1182669",
+      "humidityExerciseLicense": "CC BY-NC",
+      "humidityExerciseProtocol": "11 trained males, 60 minutes at 31 C, 70% VO2max and 23-71% RH",
+      "humidityExerciseSource": "Che Muhamed et al., Temperature 3(3), 2016",
+      "passiveHeatDoi": "10.3389/fphys.2018.00585",
+      "passiveHeatLicense": "CC BY 4.0",
+      "passiveHeatProtocol": "41 males, randomized crossover, 60 minutes seated at 39.6 C/50.8% RH or 21.2 C/41.9% RH",
+      "passiveHeatSource": "Malcolm et al., Frontiers in Physiology 9:585, 2018",
+      "status": "directional core/skin and humidity-response gate plus 37.0/33.7 C resting constraint; evaporative parameters are explicit but not cohort-fitted",
+      "validationProfileId": "human-heat-stress-validation-v1"
+    },
+    "vehicleSmokeDeposition": {
+      "depositionToAirChangeRatio": 1.3,
+      "doi": "10.1038/sj.jes.7500601",
+      "regressionR2": 0.82,
+      "smokeDecayExperiments": 14,
+      "source": "Ott, Klepeis and Switzer, J Expo Sci Environ Epidemiol 18 (2008)",
+      "status": "vehicle smoke deposition law drives runtime; cigarette PM2.5 transfer to fire soot is an applicability boundary",
+      "vehicleAirChangeMeasurements": ">100 across four vehicles"
+    }
+  },
+  "fit": {
+    "alphaPerSample": 0.004785854700949152,
+    "biasCPerSample": 0.023008003689947897,
+    "effectiveSolarLoadAtReferenceIrradianceW": 299.33412800622216,
+    "holdoutObservations": 390,
+    "method": "ordinary-least-squares first-order thermal RC",
+    "thermalMassJPerK": 180000.0,
+    "trainingObservations": 911,
+    "uaWPerK": 62.26396965934846
+  },
+  "modelVersion": "cockpit-multiphysics-4",
+  "profileId": "mendeley-sedan-v1",
+  "schemaVersion": 1,
+  "scope": {
+    "calibrated": [
+      "closed-cabin aggregate thermal response",
+      "full-scale ICE-vehicle HRR trajectory and aggregate soot/CO yields"
+    ],
+    "experimentallyAnchoredNotFitted": [
+      "smoke mass-specific optical extinction",
+      "parked-cabin infiltration rate",
+      "land-vehicle cabin pressure-altitude regression",
+      "core/skin heat-strain and humidity-response direction"
+    ],
+    "externallyValidatedModels": [
+      "CFK-derived MIL-STD-1472H AL2 COHb exposure and recovery kinetics",
+      "vehicle smoke deposition k=1.3a mass-balance law"
+    ],
+    "physicsBasedNotDatasetCalibrated": [
+      "inter-zone heat exchange",
+      "water-vapour mass balance",
+      "exterior-fire effluent transfer into the closed cabin",
+      "inter-zone smoke transport and transfer of cigarette-PM deposition law to fire soot",
+      "individualized CFK physiology outside the validated AL2 young-male cohort",
+      "cabin pressure equalization",
+      "two-node occupant thermoregulation parameters"
+    ]
+  },
+  "source": {
+    "doi": "10.17632/8mfgd8w9rg.1",
+    "experiment": "d: closed parked sedan, five continuous hours",
+    "license": "CC BY 4.0",
+    "observations": 1302,
+    "samplePeriodS": 13.835511145272868,
+    "version": 1,
+    "workbookSha256": "9075e138317faa93be66891af8173dc9070e3782105d2f40f9f6f2273e89e777"
+  },
+  "validation": {
+    "acceptanceThresholdRmseC": 2.1,
+    "accepted": true,
+    "oneStepAll": {
+      "maeC": 0.030981766763067395,
+      "maxAbsErrorC": 0.1449509441924377,
+      "rmseC": 0.04134796275878241
+    },
+    "persistenceHoldout": {
+      "maeC": 2.499095190815003,
+      "maxAbsErrorC": 4.979157081392831,
+      "rmseC": 2.9161695700184347
+    },
+    "recursiveHoldout": {
+      "maeC": 1.805009219728194,
+      "maxAbsErrorC": 3.0425212724317454,
+      "rmseC": 2.026942410101119
+    }
+  }
+}

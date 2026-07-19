@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -109,6 +109,17 @@ fn redact_human_turn_prose(value: &mut Value) {
     }
 }
 
+/// Serialize a Recording for an external process without persisting secrets,
+/// prompts, hidden reasoning, narrative, or utterance prose.
+pub fn serialize_redacted_recording(
+    recording: &Recording,
+) -> Result<Vec<u8>, RecordingStoreError> {
+    let mut value = serde_json::to_value(recording)?;
+    redact_human_turn_prose(&mut value);
+    redact_value(&mut value);
+    Ok(serde_json::to_vec(&value)?)
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     let normalized = key
         .chars()
@@ -168,6 +179,19 @@ impl RecordingStore {
         Ok(store)
     }
 
+    /// Open an existing recording store without creating tables, directories,
+    /// or files. Independent evaluator processes use this to keep the
+    /// simulation recording immutable across the evaluation boundary.
+    pub fn open_read_only(path: &str) -> Result<Self, RecordingStoreError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let payloads = PayloadStore {
+            root: Path::new(path).with_extension("payloads"),
+        };
+        Ok(Self {
+            connection,
+            payloads,
+        })
+    }
     pub fn in_memory() -> Result<Self, RecordingStoreError> {
         let connection = Connection::open_in_memory()?;
         let payloads = PayloadStore::new(
@@ -188,7 +212,7 @@ impl RecordingStore {
         let human_turns_json = serde_json::to_string(&human_turns_value)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json, human_turns_json, provenance_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR REPLACE INTO recordings (run_id, schema_version, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, scenario_id, scenario_hash, seed, clock_json, human_turns_json, provenance_json, open_world_checkpoint_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 recording.run_id,
                 recording.schema_version,
@@ -201,7 +225,8 @@ impl RecordingStore {
                 recording.seed,
                 serde_json::to_string(&recording.clock)?,
                 human_turns_json,
-                serde_json::to_string(&recording.provenance)?
+                serde_json::to_string(&recording.provenance)?,
+                serde_json::to_string(&recording.open_world_checkpoint)?
             ],
         )?;
         transaction.execute(
@@ -227,26 +252,39 @@ impl RecordingStore {
     }
 
     pub fn load(&self, run_id: &str) -> Result<Recording, RecordingStoreError> {
+        let has_checkpoint = self
+            .connection
+            .prepare("PRAGMA table_info(recordings)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|name| name == "open_world_checkpoint_json");
+        let checkpoint_column = if has_checkpoint {
+            "open_world_checkpoint_json"
+        } else {
+            "'null'"
+        };
+        let metadata_query = format!(
+            "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json, human_turns_json, provenance_json, {checkpoint_column} FROM recordings WHERE run_id = ?1"
+        );
         let metadata = self
             .connection
-            .query_row(
-                "SELECT schema_version, scenario_id, scenario_hash, seed, runtime_contract_version, world_model_version, application_commit, plugin_hashes_json, clock_json, human_turns_json, provenance_json FROM recordings WHERE run_id = ?1",
-                params![run_id],
-                |row| {
-                    Ok((
-                        row.get::<_, u32>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, u64>(3)?,
-                        row.get::<_, u32>(4)?,
-                        row.get::<_, u32>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, String>(9)?, row.get::<_, String>(10)?,
-                    ))
-                },
-            )
+            .query_row(&metadata_query, params![run_id], |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, u32>(4)?,
+                    row.get::<_, u32>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            })
             .optional()?
             .ok_or_else(|| RecordingStoreError::NotFound(run_id.to_string()))?;
 
@@ -274,6 +312,7 @@ impl RecordingStore {
             ticks,
             human_turns: serde_json::from_str(&metadata.9)?,
             provenance: serde_json::from_str(&metadata.10)?,
+            open_world_checkpoint: serde_json::from_str(&metadata.11)?,
         })
     }
 
@@ -292,7 +331,8 @@ impl RecordingStore {
                 seed INTEGER NOT NULL,
                 clock_json TEXT NOT NULL,
                 human_turns_json TEXT NOT NULL DEFAULT '[]',
-                provenance_json TEXT NOT NULL DEFAULT '{}'
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                open_world_checkpoint_json TEXT NOT NULL DEFAULT 'null'
              );
              CREATE TABLE IF NOT EXISTS recording_ticks (
                 run_id TEXT NOT NULL REFERENCES recordings(run_id) ON DELETE CASCADE,
@@ -328,6 +368,19 @@ impl RecordingStore {
         if !has_provenance {
             self.connection.execute(
                 "ALTER TABLE recordings ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'",
+                [],
+            )?;
+        }
+        let has_open_world_checkpoint = self
+            .connection
+            .prepare("PRAGMA table_info(recordings)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|name| name == "open_world_checkpoint_json");
+        if !has_open_world_checkpoint {
+            self.connection.execute(
+                "ALTER TABLE recordings ADD COLUMN open_world_checkpoint_json TEXT NOT NULL DEFAULT 'null'",
                 [],
             )?;
         }

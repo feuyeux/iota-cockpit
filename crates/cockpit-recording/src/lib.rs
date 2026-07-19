@@ -15,17 +15,16 @@ pub mod queue;
 pub mod replay;
 pub mod store;
 
-/// Current recording schema version understood by this build.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
-/// Current runtime contract version. Version 2 makes backend prose transient:
-/// durable human-turn evidence and social-perception state contain redacted
-/// markers while live turns receive utterance text through an in-memory overlay.
-pub const CURRENT_RUNTIME_CONTRACT_VERSION: u32 = 2;
-/// Current world-model version. Version 4 carries authoritative typed cockpit
-/// subsystem state (climate, driver assistance, occupant care, experience, and
-/// cybersecurity) in every snapshot; replay rejects a different world-model
-/// version rather than claiming deterministic equivalence.
-pub const CURRENT_WORLD_MODEL_VERSION: u32 = 4;
+/// Current recording schema version understood by this build. Version 2 adds
+/// an optional durable world-plus-agent checkpoint for live restart recovery.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// Current runtime contract version. Version 6 binds recordings to the
+/// humidity-coupled thermoregulation behavior and world-model identity.
+pub const CURRENT_RUNTIME_CONTRACT_VERSION: u32 = 6;
+/// Current world-model version. Version 8 adds humidity-limited evaporative
+/// heat loss to two-node occupant thermoregulation; replay rejects prior
+/// physiology behavior rather than claiming deterministic equivalence.
+pub const CURRENT_WORLD_MODEL_VERSION: u32 = 8;
 
 pub use diff::{RecordingDiff, RecordingMetrics, TickDiff, diff_recordings};
 pub use queue::{
@@ -33,7 +32,9 @@ pub use queue::{
     RecordingQueuePolicy,
 };
 pub use replay::replay_recording;
-pub use store::{PayloadStore, RecordingStore, RecordingStoreError};
+pub use store::{
+    PayloadStore, RecordingStore, RecordingStoreError, serialize_redacted_recording,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +57,10 @@ pub struct Recording {
     pub human_turns: Vec<Vec<cockpit_agent_runtime::HumanTurnEvidence>>,
     #[serde(default)]
     pub provenance: RunProvenance,
+    /// Latest restartable world-plus-agent control-plane checkpoint for live
+    /// runs. Evaluators may inspect it but never mutate it.
+    #[serde(default)]
+    pub open_world_checkpoint: Option<cockpit_agent_runtime::OpenWorldCheckpoint>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +93,7 @@ impl Recording {
             ticks: Vec::new(),
             human_turns: Vec::new(),
             provenance: RunProvenance::default(),
+            open_world_checkpoint: None,
         }
     }
 

@@ -3,13 +3,15 @@ use cockpit_recording::{
     Recording, replay_recording, run_rule_agent_recording, run_scripted_recording,
 };
 use cockpit_scenario::load_scenario;
-use cockpit_simulation_core::{Simulation, StateDiff};
+use cockpit_simulation_core::{
+    ActionRequest, Simulation, StateDiff, capability::CapabilityCatalog, resolve_action,
+};
 use serde_json::json;
 
 #[test]
 fn smoke_scenario_records_replays_and_evaluates_deterministically() {
     let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
-    let deadline = scenario.shutdown_deadline_ticks;
+    let deadline = scenario.max_ticks;
 
     let first = run_scripted_recording("smoke-run-1", scenario.clone(), 80).expect("first run");
     let second = run_scripted_recording("smoke-run-2", scenario.clone(), 80).expect("second run");
@@ -47,6 +49,30 @@ fn smoke_scenario_records_replays_and_evaluates_deterministically() {
         .expect("engine shutdown")
         .tick;
     assert!(shutdown_tick <= smoke_tick + deadline);
+}
+
+#[test]
+fn smoke_shutdown_is_resolved_by_the_generic_effect_kernel() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let simulation = Simulation::new("effect-plan-run", scenario);
+    let catalog = CapabilityCatalog::load_default();
+    let request = ActionRequest {
+        request_id: "shutdown-effect".to_string(),
+        agent_id: "cockpit-agent".to_string(),
+        target: "engine-1".to_string(),
+        capability_id: "engine.shutdown".to_string(),
+        expected_state_version: 0,
+        expires_at_tick: 3,
+        correlation_id: "shutdown-effect-corr".to_string(),
+    };
+
+    let plan =
+        resolve_action(&catalog, &simulation.snapshot, &request).expect("effect plan resolves");
+
+    assert_eq!(plan.resolver, "device-capability+combustion");
+    assert_eq!(plan.operations.len(), 3);
+    assert_eq!(plan.events[0].event_type, "ActionApplied");
+    assert_eq!(plan.events[1].event_type, "EngineShutdown");
 }
 
 #[test]
@@ -136,7 +162,7 @@ const ALL_BENCHMARK_SCENARIOS: &[&str] = &[
 fn every_benchmark_scenario_replays_to_an_identical_snapshot_hash() {
     for path in ALL_BENCHMARK_SCENARIOS {
         let scenario = load_scenario(path).unwrap_or_else(|error| panic!("{path}: {error}"));
-        let ticks = scenario.shutdown_deadline_ticks + 1;
+        let ticks = scenario.max_ticks + 1;
 
         let first = run_rule_agent_recording(
             format!("determinism-{}-1", scenario.id),

@@ -6,7 +6,7 @@ const STORAGE_KEY = "cockpit:locale";
 
 const messages = {
   "zh-CN": {
-    appName: "智能座舱仿真台",
+    appName: "Iota Cockpit",
     noScenario: "未加载场景",
     reconnect: "重新连接",
     tick: "节拍",
@@ -210,7 +210,7 @@ const messages = {
     failedState: "运行失败"
   },
   "en-US": {
-    appName: "Intelligent Cockpit Simulator",
+    appName: "Iota Cockpit",
     noScenario: "No scenario",
     reconnect: "Reconnect",
     tick: "tick",

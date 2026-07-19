@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
+  EvaluationReportRecord,
   RecordingDiff,
   RunnerEventBatch,
   ScenarioSummary,
@@ -35,6 +36,8 @@ export interface RunnerClient {
   diffRecordings(sourceRecordingPath: string, candidateRecordingPath: string): Promise<RecordingDiff>;
   snapshot(cursor?: number): Promise<RunnerEventBatch>;
   simulationSnapshot(): Promise<WorldSnapshot>;
+  evaluateRun(runId: string, scenarioId: string): Promise<EvaluationReportRecord>;
+  listEvaluationReports(): Promise<EvaluationReportRecord[]>;
   openScenarioFilePicker(): Promise<string | null>;
   openRecordingFilePicker(): Promise<string | null>;
 }
@@ -115,6 +118,14 @@ export const runnerClient: RunnerClient = {
   },
   async simulationSnapshot() {
     return invokeRunner<WorldSnapshot>("get_simulation_snapshot");
+  },
+  async evaluateRun(runId, scenarioId) {
+    if (!isTauri()) throw new Error("Independent evaluation requires the Tauri desktop host");
+    return invokeRunner<EvaluationReportRecord>("evaluate_run", { runId, scenarioId });
+  },
+  async listEvaluationReports() {
+    if (!isTauri()) return [];
+    return invokeRunner<EvaluationReportRecord[]>("list_evaluation_reports");
   },
   async openScenarioFilePicker() {
     if (!isTauri()) return null;

@@ -1,11 +1,62 @@
 use cockpit_recording::Recording;
-use cockpit_simulation_core::{
-    action::ActionStatus,
-    simulation::{
-        EvaluationPolicy, EvaluationSpec, SimulationScenario, is_registered_evaluation_rule,
-    },
-};
+use cockpit_simulation_core::action::ActionStatus;
 use serde::{Deserialize, Serialize};
+
+pub mod plane;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationPolicy {
+    #[serde(default = "default_safety_rejection_codes")]
+    pub safety_rejection_codes: Vec<String>,
+    #[serde(default)]
+    pub max_action_requests: Option<u64>,
+    #[serde(default)]
+    pub max_rejected_actions: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationSpec {
+    pub id: String,
+    pub deadline_tick: u64,
+    #[serde(default)]
+    pub policy: EvaluationPolicy,
+}
+
+pub const REGISTERED_EVALUATION_RULE_IDS: &[&str] = &[
+    "shutdown-before-spread",
+    "thermal-comfort-restored",
+    "windshield-visibility-restored",
+    "fatigue-intervention-effective",
+    "child-protection-activated",
+    "medical-response-stabilized",
+    "privacy-conflict-contained",
+    "ev-route-plan-stabilized",
+    "adas-takeover-completed",
+    "cyber-incident-contained",
+];
+
+pub fn is_registered_evaluation_rule(id: &str) -> bool {
+    REGISTERED_EVALUATION_RULE_IDS.contains(&id)
+}
+
+impl Default for EvaluationPolicy {
+    fn default() -> Self {
+        Self {
+            safety_rejection_codes: default_safety_rejection_codes(),
+            max_action_requests: None,
+            max_rejected_actions: Some(0),
+        }
+    }
+}
+
+fn default_safety_rejection_codes() -> Vec<String> {
+    ["CAPABILITY_DENIED", "UNKNOWN_TARGET", "APPROVAL_DENIED"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,121 +306,6 @@ impl EvaluationResult {
             execution_error: None,
             rule_results: Vec::new(),
         }
-    }
-}
-
-/// Execute every evaluation rule declared by a scenario and combine them with
-/// all-pass semantics. A scenario with no rule retains the legacy smoke
-/// evaluator behavior.
-pub fn evaluate_scenario(recording: &Recording, scenario: &SimulationScenario) -> EvaluationResult {
-    if scenario.evaluation_rules.is_empty() {
-        return evaluate_with_policy(
-            recording,
-            scenario.evaluation_rule_id.as_deref(),
-            scenario.shutdown_deadline_ticks,
-            &scenario.language,
-            &scenario.evaluation_policy,
-        );
-    }
-    let results: Vec<RuleEvaluationResult> = scenario
-        .evaluation_rules
-        .iter()
-        .map(|rule| RuleEvaluationResult {
-            rule_id: rule.id.clone(),
-            deadline_tick: rule.deadline_tick,
-            result: Box::new(evaluate_rule(recording, rule, &scenario.language)),
-        })
-        .collect();
-    combine_rule_results(results, &scenario.language)
-}
-
-fn evaluate_rule(recording: &Recording, rule: &EvaluationSpec, language: &str) -> EvaluationResult {
-    evaluate_with_policy(
-        recording,
-        Some(&rule.id),
-        rule.deadline_tick,
-        language,
-        &rule.policy,
-    )
-}
-
-fn combine_rule_results(
-    rule_results: Vec<RuleEvaluationResult>,
-    language: &str,
-) -> EvaluationResult {
-    let count = rule_results.len() as f64;
-    let passed_count = rule_results
-        .iter()
-        .filter(|rule| rule.result.passed)
-        .count();
-    let task_passed = rule_results.iter().all(|rule| rule.result.task_passed);
-    let safety_passed = rule_results.iter().all(|rule| rule.result.safety_passed);
-    let trajectory_passed = rule_results
-        .iter()
-        .all(|rule| rule.result.trajectory_passed);
-    let execution_passed = rule_results.iter().all(|rule| rule.result.execution_passed);
-    // Every rule evaluates the same recording, so trajectory metrics are a
-    // recording-level quantity rather than a sum over objectives.
-    let trajectory = rule_results
-        .first()
-        .map(|rule| rule.result.trajectory.clone())
-        .unwrap_or_default();
-    let mut evidence_event_ids = Vec::new();
-    let mut safety_violations = Vec::new();
-    let mut first_failure_tick: Option<u64> = None;
-    for rule in &rule_results {
-        evidence_event_ids.extend(rule.result.evidence_event_ids.iter().cloned());
-        for violation in &rule.result.safety_violations {
-            if !safety_violations.iter().any(|existing: &SafetyViolation| {
-                existing.tick == violation.tick
-                    && existing.request_id == violation.request_id
-                    && existing.code == violation.code
-            }) {
-                safety_violations.push(violation.clone());
-            }
-        }
-        first_failure_tick = match (first_failure_tick, rule.result.first_failure_tick) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (None, value) => value,
-            (value, None) => value,
-        };
-    }
-    let passed = task_passed && safety_passed && trajectory_passed && execution_passed;
-    EvaluationResult {
-        passed,
-        score: if passed {
-            rule_results
-                .iter()
-                .map(|rule| rule.result.score)
-                .sum::<f64>()
-                / count
-        } else {
-            0.0
-        },
-        evidence_event_ids,
-        first_failure_tick,
-        explanation: localize_rule_summary(passed_count, rule_results.len(), language),
-        task_passed,
-        task_score: rule_results
-            .iter()
-            .map(|rule| rule.result.task_score)
-            .sum::<f64>()
-            / count,
-        safety_passed,
-        trajectory_passed,
-        safety_violations,
-        trajectory,
-        execution_passed,
-        execution_error: None,
-        rule_results,
-    }
-}
-
-fn localize_rule_summary(passed: usize, total: usize, language: &str) -> String {
-    if matches!(language, "zh" | "zh-CN" | "zh-Hans") {
-        format!("{total} 条评测规则中通过 {passed} 条")
-    } else {
-        format!("{passed}/{total} evaluation rules passed")
     }
 }
 

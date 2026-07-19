@@ -21,16 +21,18 @@ $Triple = $TripleLine.ToString() -replace "host:\s*", ""
 
 $Ext = if ($Triple -match "windows") { ".exe" } else { "" }
 
-Write-Host "Building cockpit-runner (release) for $Triple"
+Write-Host "Building cockpit-runner and cockpit-evaluator (release) for $Triple"
 Push-Location $WorkspaceRoot
 try {
-    cargo build --release -p cockpit-runner --features live-acp
+    cargo build --release -p cockpit-runner -p cockpit-evaluator --features cockpit-runner/live-acp
 } finally {
     Pop-Location
 }
 
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-$Src = "$WorkspaceRoot\target\release\cockpit-runner$Ext"
-$Dst = "$BinDir\cockpit-runner-$Triple$Ext"
-Copy-Item $Src $Dst -Force
-Write-Host "Staged sidecar: $Dst"
+foreach ($Name in @("cockpit-runner", "cockpit-evaluator")) {
+    $Src = "$WorkspaceRoot\target\release\$Name$Ext"
+    $Dst = "$BinDir\$Name-$Triple$Ext"
+    Copy-Item $Src $Dst -Force
+    Write-Host "Staged sidecar: $Dst"
+}

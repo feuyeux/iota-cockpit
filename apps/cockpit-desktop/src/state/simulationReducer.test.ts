@@ -174,7 +174,11 @@ describe("simulationReducer", () => {
           actions: [{ target: "engine-1", command: "engineShutdown" }],
           internalStateDelta: { stress: 0.05, attention: -0.02 },
           narrative: "[redacted]"
-        }
+        },
+        toolCalls: [{
+          tool: "simulation.request_action",
+          arguments: { target: "engine-1", command: "engineShutdown" }
+        }]
       }
     };
     const state = simulationReducer(initialSimulationModel, {

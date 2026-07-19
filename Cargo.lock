@@ -515,6 +515,8 @@ dependencies = [
 name = "cockpit-desktop"
 version = "0.1.0"
 dependencies = [
+ "cockpit-evaluation",
+ "cockpit-recording",
  "cockpit-runner",
  "iota-sympantos-core",
  "serde",
@@ -529,8 +531,38 @@ name = "cockpit-evaluation"
 version = "0.1.0"
 dependencies = [
  "cockpit-recording",
+ "cockpit-scenario",
  "cockpit-simulation-core",
  "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "cockpit-evaluator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cockpit-evaluation",
+ "cockpit-recording",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
+name = "cockpit-judge-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cockpit-evaluation",
+ "iota-sympantos-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -566,11 +598,11 @@ dependencies = [
  "anyhow",
  "clap",
  "cockpit-agent-runtime",
- "cockpit-evaluation",
  "cockpit-plugin",
  "cockpit-recording",
  "cockpit-scenario",
  "cockpit-simulation-core",
+ "iota-sympantos-core",
  "libc",
  "serde",
  "serde_json",
@@ -597,6 +629,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
 ]
@@ -1900,7 +1933,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "iota-cockpit-simulator"
+name = "iota-cockpit"
 version = "0.1.0"
 dependencies = [
  "cockpit-agent-runtime",
@@ -1920,6 +1953,8 @@ dependencies = [
 [[package]]
 name = "iota-sympantos-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ba969a2edf2783a78f6ef86734580ab816e61c6c84bdf5f443ee5b8aa8b0549"
 dependencies = [
  "anyhow",
  "chrono",

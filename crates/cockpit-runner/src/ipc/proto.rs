@@ -1,6 +1,7 @@
+use cockpit_agent_runtime::GoalStatus;
 use cockpit_agent_runtime::HumanTurnEvidence;
 use cockpit_simulation_core::{
-    PluginFailureRecord,
+    DynamicEntity, PluginFailureRecord,
     action::ActionResult,
     clock::RunStatus,
     event::{EventEnvelope, ToolCallTrace},
@@ -8,7 +9,7 @@ use cockpit_simulation_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const IPC_VERSION: u16 = 3;
+pub const IPC_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -19,11 +20,39 @@ pub enum RunnerCommand {
     CreateSimulationRun { path: String },
     #[serde(rename = "CreateLiveSimulationRun")]
     CreateLiveSimulationRun { path: String, timeout_ms: u64 },
+    #[serde(rename = "ResumeLiveSimulation")]
+    ResumeLiveSimulation {
+        scenario_path: String,
+        run_id: String,
+        timeout_ms: u64,
+    },
     #[serde(rename = "ResumeSimulation")]
     ResumeSimulation {
         scenario_path: String,
         run_id: String,
     },
+    #[serde(rename = "SpawnEntity")]
+    SpawnEntity { entity: DynamicEntity },
+    #[serde(rename = "RemoveEntity")]
+    RemoveEntity { entity_id: String },
+    #[serde(rename = "AddAgentGoal")]
+    AddAgentGoal {
+        agent_id: String,
+        description: String,
+        priority: i32,
+    },
+    #[serde(rename = "SetAgentGoalStatus")]
+    SetAgentGoalStatus {
+        agent_id: String,
+        goal_id: String,
+        status: GoalStatus,
+    },
+    #[serde(rename = "WaitAgentUntil")]
+    WaitAgentUntil { agent_id: String, wake_tick: u64 },
+    #[serde(rename = "GetOpenWorldRuntime")]
+    GetOpenWorldRuntime,
+    #[serde(rename = "CheckpointOpenWorld")]
+    CheckpointOpenWorld,
     #[serde(rename = "StartSimulation")]
     StartSimulation,
     #[serde(rename = "PauseSimulation")]

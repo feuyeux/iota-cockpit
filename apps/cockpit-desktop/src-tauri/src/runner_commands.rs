@@ -76,7 +76,11 @@ fn bundled_runner_path(current_exe: &Path) -> Option<PathBuf> {
 
 enum RunnerTransport {
     Embedded(Box<RunnerHandler>),
-    Process { child: Child, address: SocketAddr },
+    Process {
+        child: Child,
+        address: SocketAddr,
+        recording_db: PathBuf,
+    },
 }
 
 impl RunnerTransport {
@@ -291,10 +295,11 @@ impl RunnerState {
         // Persist committed ticks so the external runner process can recover its
         // snapshot and event cursor if it is restarted (see the runner crate's
         // process_restart_recovery integration test).
-        let recording_db = std::env::temp_dir()
-            .join("cockpit-runner-recording.sqlite")
-            .to_string_lossy()
-            .to_string();
+        let recording_db = std::env::temp_dir().join(format!(
+            "cockpit-runner-recording-{}.sqlite",
+            std::process::id()
+        ));
+        let recording_db_text = recording_db.to_string_lossy().to_string();
         let address_text = address.to_string();
         let child = spawn_sidecar_with_probe(
             binary.as_os_str(),
@@ -308,7 +313,7 @@ impl RunnerState {
                     "--session-token",
                     token,
                     "--recording-db",
-                    &recording_db,
+                    &recording_db_text,
                 ]);
             },
             || {
@@ -322,7 +327,41 @@ impl RunnerState {
             },
         )
         .map_err(|error| format!("failed to start cockpit-runner: {error}"))?;
-        Ok(RunnerTransport::Process { child, address })
+        Ok(RunnerTransport::Process {
+            child,
+            address,
+            recording_db,
+        })
+    }
+
+    pub fn recording_snapshot(
+        &self,
+        run_id: &str,
+    ) -> Result<cockpit_recording::Recording, String> {
+        let recording_db = {
+            let transport = self
+                .transport
+                .lock()
+                .map_err(|_| "runner transport lock poisoned".to_string())?;
+            match &*transport {
+                RunnerTransport::Embedded(handler) => {
+                    return handler
+                        .recording_snapshot(run_id)
+                        .ok_or_else(|| format!("recording '{run_id}' is not available"));
+                }
+                RunnerTransport::Process { recording_db, .. } => recording_db.clone(),
+            }
+        };
+        let store = cockpit_recording::RecordingStore::open_read_only(
+            recording_db
+                .to_str()
+                .ok_or_else(|| "recording DB path is not UTF-8".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let recording = store.load(run_id).map_err(|error| error.to_string())?;
+        let snapshot = self.dispatch(RunnerCommand::GetSimulationSnapshot)?;
+        validate_durable_recording(&recording, &snapshot)?;
+        Ok(recording)
     }
 
     fn dispatch(&self, command: RunnerCommand) -> Result<Value, String> {
@@ -437,6 +476,40 @@ impl RunnerState {
         drop(sequence);
         response_value(request_process(address, &request)?).map(|_| ())
     }
+}
+
+fn validate_durable_recording(
+    recording: &cockpit_recording::Recording,
+    snapshot: &Value,
+) -> Result<(), String> {
+    let durable_tick = recording
+        .ticks
+        .last()
+        .map(|tick| tick.tick.saturating_add(1))
+        .unwrap_or(0);
+    validate_durable_position(&recording.run_id, durable_tick, snapshot)
+}
+
+fn validate_durable_position(
+    recording_run_id: &str,
+    durable_tick: u64,
+    snapshot: &Value,
+) -> Result<(), String> {
+    let snapshot_run_id = snapshot
+        .get("runId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "runner snapshot is missing runId".to_string())?;
+    let snapshot_tick = snapshot
+        .get("tick")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "runner snapshot is missing tick".to_string())?;
+    if snapshot_run_id != recording_run_id || snapshot_tick != durable_tick {
+        return Err(format!(
+            "recording is not durable at the current runner snapshot: run {} tick {}, durable run {} tick {}",
+            snapshot_run_id, snapshot_tick, recording_run_id, durable_tick
+        ));
+    }
+    Ok(())
 }
 
 fn runner_address() -> Result<SocketAddr, String> {
@@ -640,6 +713,28 @@ pub fn stop_simulation(state: tauri::State<'_, RunnerState>) -> Result<(), Strin
 }
 
 #[tauri::command]
+pub async fn resume_live_simulation(
+    state: tauri::State<'_, RunnerState>,
+    scenario_path: String,
+    run_id: String,
+    timeout_ms: u64,
+) -> Result<LiveRunSummary, String> {
+    let resolved_scenario_path = state.resolve_path(&scenario_path)?;
+    let owned = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        owned.dispatch_live_blocking(RunnerCommand::ResumeLiveSimulation {
+            scenario_path: resolved_scenario_path,
+            run_id,
+            timeout_ms,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())
+    .and_then(|result| result)
+    .and_then(|result| serde_json::from_value(result).map_err(|error| error.to_string()))
+}
+
+#[tauri::command]
 pub fn resume_simulation(
     state: tauri::State<'_, RunnerState>,
     scenario_path: String,
@@ -805,6 +900,14 @@ mod tests {
         let mut missing_pong = pong_response(7);
         missing_pong.result = Some(serde_json::json!({ "seq": 7 }));
         assert!(!heartbeat_response_matches(&missing_pong, 7, "heartbeat-7"));
+    }
+
+    #[test]
+    fn durable_recording_must_match_current_runner_position() {
+        let current = serde_json::json!({ "runId": "run-1", "tick": 4 });
+        assert!(validate_durable_position("run-1", 4, &current).is_ok());
+        assert!(validate_durable_position("run-1", 3, &current).is_err());
+        assert!(validate_durable_position("other-run", 4, &current).is_err());
     }
 
     fn state_with_workspace_root(root: &str) -> RunnerState {
