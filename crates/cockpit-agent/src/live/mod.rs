@@ -40,8 +40,8 @@ pub use decision::{parse_decision_for_tests, validate_decision_output, validate_
 pub use driver::HumanAgentDriver;
 pub use types::{
     BackendConversationUpdate, HumanBackend, HumanDecision, HumanToolCall, HumanToolExchange,
-    HumanTurnContext, HumanTurnError, HumanTurnEvidence, InternalStateDelta, RecordedHumanBackend,
-    RequestedAction,
+    HumanTurnContext, HumanTurnDisposition, HumanTurnError, HumanTurnEvidence,
+    HumanTurnFailureKind, InternalStateDelta, LiveTickMode, RecordedHumanBackend, RequestedAction,
 };
 
 pub(super) const REDACTED_DECISION_TEXT: &str = "[REDACTED]";

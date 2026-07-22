@@ -13,6 +13,10 @@ pub struct EvaluationPolicy {
     pub max_action_requests: Option<u64>,
     #[serde(default)]
     pub max_rejected_actions: Option<u64>,
+    /// Whether a recording that committed best-effort live ticks is eligible
+    /// for this rubric. Safety-critical and release evaluation must opt in.
+    #[serde(default)]
+    pub allow_best_effort: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +51,7 @@ impl Default for EvaluationPolicy {
             safety_rejection_codes: default_safety_rejection_codes(),
             max_action_requests: None,
             max_rejected_actions: Some(0),
+            allow_best_effort: false,
         }
     }
 }
@@ -466,6 +471,20 @@ fn apply_policy(
     } else if !result.trajectory_passed {
         result.score = 0.0;
         result.explanation = "trajectory exceeded scenario action budget".to_string();
+    }
+    if !policy.allow_best_effort
+        && recording
+            .provenance
+            .live_tick_mode
+            .is_some_and(|mode| mode != Default::default())
+    {
+        result.passed = false;
+        result.score = 0.0;
+        result.execution_passed = false;
+        result.execution_error =
+            Some("best-effort live ticks are disallowed by evaluation policy".to_string());
+        result.explanation =
+            "best-effort live ticks are disallowed by evaluation policy".to_string();
     }
     result
 }

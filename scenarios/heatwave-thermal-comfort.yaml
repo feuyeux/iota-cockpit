@@ -89,28 +89,29 @@ entities:
         - occupant-zone-preference
 influences:
   - ruleId: heat-attention-decay
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 2
       interval: 4
-    entityId: driver-1
-    componentPath: pilot.attention
-    op:
-      op: delta
-      value: -0.04
+    patch:
+      kind: humanAttention
+      humanId: driver-1
+      op:
+        op: delta
+        value: -0.04
     priority: 5
   - ruleId: staged-cabin-cooling
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 3
       interval: 3
-    entityId: cabin
-    componentPath: environment.temperatureC
-    op:
-      op: delta
-      value: -1.5
+    patch:
+      kind: cabinTemperature
+      op:
+        op: delta
+        value: -1.5
     priority: 8
 agents:
   - id: cockpit-agent

@@ -32,14 +32,14 @@ export function IndependentEvaluationPanel({
   const text = locale === "zh-CN"
     ? {
         title: "独立评测报告", run: "一键独立评测", running: "评测中…", export: "导出报告",
-        unavailable: "运行至少提交一个 tick 后可评测。", gate: "发布门禁", passed: "通过", blocked: "阻断",
+        unavailable: "仅已完成且记录已持久化的运行可进行最终评测。", gate: "发布门禁", passed: "通过", blocked: "阻断",
         deterministic: "确定性规则", evidence: "证据引用", judges: "Judge 状态", noJudges: "未配置（仅确定性评测）",
         agreement: "双 Judge 一致", disagreement: "Judge 不一致", history: "报告历史", noHistory: "暂无历史报告",
         hashes: "溯源哈希", confidence: "置信度", failed: "独立评测失败"
       }
     : {
         title: "Independent evaluation", run: "Run independent evaluation", running: "Evaluating…", export: "Export report",
-        unavailable: "Commit at least one tick before evaluation.", gate: "Release gate", passed: "Passed", blocked: "Blocked",
+        unavailable: "Only completed runs with durable recordings can be finally evaluated.", gate: "Release gate", passed: "Passed", blocked: "Blocked",
         deterministic: "Deterministic rules", evidence: "Evidence references", judges: "Judge status", noJudges: "Not configured (deterministic only)",
         agreement: "Two Judges agree", disagreement: "Judge disagreement", history: "Report history", noHistory: "No saved reports",
         hashes: "Provenance hashes", confidence: "Confidence", failed: "Independent evaluation failed"
@@ -66,7 +66,9 @@ export function IndependentEvaluationPanel({
     setError(undefined);
   }, [completedReport, model.runId]);
 
-  const canEvaluate = Boolean(model.runId && model.scenario?.id && model.tick > 0 && !running);
+  const canEvaluate = Boolean(
+    model.runId && model.scenario?.id && model.state === "completed" && !running
+  );
   const visibleHistory = useMemo(() => history.slice(0, 8), [history]);
 
   async function evaluate() {

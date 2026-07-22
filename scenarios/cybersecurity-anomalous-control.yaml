@@ -85,15 +85,16 @@ entities:
         - recovery-guidance
 influences:
   - ruleId: security-alert-stress
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: atTick
       tick: 6
-    entityId: driver-1
-    componentPath: pilot.stress
-    op:
-      op: delta
-      value: 0.18
+    patch:
+      kind: humanStress
+      humanId: driver-1
+      op:
+        op: delta
+        value: 0.18
     priority: 9
 agents:
   - id: cockpit-agent

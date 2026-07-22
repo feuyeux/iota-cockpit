@@ -13,6 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::state_patch::StatePatch;
+
+pub const CURRENT_INFLUENCE_RULE_VERSION: u32 = 2;
+
 /// When an influence rule fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -56,6 +60,89 @@ impl InfluenceOp {
     }
 }
 
+/// A typed influence target and operation. Unlike [`StatePatch`], this stores
+/// an operation that resolves against the target's value at a future tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum InfluencePatch {
+    CabinSmokeDensity {
+        op: InfluenceOp,
+    },
+    CabinVisibility {
+        op: InfluenceOp,
+    },
+    CabinTemperature {
+        op: InfluenceOp,
+    },
+    EngineHealth {
+        op: InfluenceOp,
+    },
+    AlarmActive {
+        op: InfluenceOp,
+    },
+    HumanStress {
+        #[serde(rename = "humanId")]
+        human_id: String,
+        op: InfluenceOp,
+    },
+    HumanAttention {
+        #[serde(rename = "humanId")]
+        human_id: String,
+        op: InfluenceOp,
+    },
+}
+
+impl InfluencePatch {
+    pub fn target_key(&self) -> (&str, &str) {
+        match self {
+            Self::CabinSmokeDensity { .. } => ("cabin", "environment.smokeDensity"),
+            Self::CabinVisibility { .. } => ("cabin", "environment.visibility"),
+            Self::CabinTemperature { .. } => ("cabin", "environment.temperatureC"),
+            Self::EngineHealth { .. } => ("engine-1", "engine.health"),
+            Self::AlarmActive { .. } => ("alarm-1", "alarm.active"),
+            Self::HumanStress { human_id, .. } => (human_id, "pilot.stress"),
+            Self::HumanAttention { human_id, .. } => (human_id, "pilot.attention"),
+        }
+    }
+
+    pub fn human_id(&self) -> Option<&str> {
+        match self {
+            Self::HumanStress { human_id, .. } | Self::HumanAttention { human_id, .. } => {
+                Some(human_id)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn resolve(&self, current: f64) -> StatePatch {
+        match self {
+            Self::CabinSmokeDensity { op } => StatePatch::CabinSmokeDensity {
+                value: op.resolve(current),
+            },
+            Self::CabinVisibility { op } => StatePatch::CabinVisibility {
+                value: op.resolve(current),
+            },
+            Self::CabinTemperature { op } => StatePatch::CabinTemperature {
+                value: op.resolve(current),
+            },
+            Self::EngineHealth { op } => StatePatch::EngineHealth {
+                value: op.resolve(current),
+            },
+            Self::AlarmActive { op } => StatePatch::AlarmActive {
+                value: op.resolve(current),
+            },
+            Self::HumanStress { human_id, op } => StatePatch::HumanStress {
+                human_id: human_id.clone(),
+                value: op.resolve(current),
+            },
+            Self::HumanAttention { human_id, op } => StatePatch::HumanAttention {
+                human_id: human_id.clone(),
+                value: op.resolve(current),
+            },
+        }
+    }
+}
+
 /// A versioned, scheduled influence over a single world component.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,12 +151,18 @@ pub struct InfluenceRule {
     /// Rule schema version, recorded so replays can reject incompatible rules.
     pub rule_version: u32,
     pub schedule: InfluenceSchedule,
-    pub entity_id: String,
-    pub component_path: String,
-    pub op: InfluenceOp,
+    pub patch: InfluencePatch,
     /// Higher priority wins under `HighestPriorityWins`.
     #[serde(default)]
     pub priority: i32,
+}
+
+impl InfluenceRule {
+    /// Stable identity of the writable target used for ordering and conflict
+    /// arbitration.
+    pub fn target_key(&self) -> (&str, &str) {
+        self.patch.target_key()
+    }
 }
 
 /// How to resolve multiple rules targeting the same component in one tick.
@@ -119,9 +212,8 @@ pub fn schedule_due(rules: &[InfluenceRule], tick: u64) -> Vec<InfluenceRule> {
 /// Total, content-derived ordering over rules: by target, then priority
 /// (descending), then rule id.
 fn compare_rules(left: &InfluenceRule, right: &InfluenceRule) -> std::cmp::Ordering {
-    left.entity_id
-        .cmp(&right.entity_id)
-        .then(left.component_path.cmp(&right.component_path))
+    left.target_key()
+        .cmp(&right.target_key())
         .then(right.priority.cmp(&left.priority))
         .then(left.rule_id.cmp(&right.rule_id))
 }
@@ -136,15 +228,9 @@ pub fn arbitrate(due: &[InfluenceRule], policy: ConflictPolicy) -> ArbitrationOu
     let mut outcome = ArbitrationOutcome::default();
     let mut index = 0;
     while index < sorted.len() {
-        let target = (
-            sorted[index].entity_id.clone(),
-            sorted[index].component_path.clone(),
-        );
+        let target = sorted[index].target_key();
         let mut group_end = index + 1;
-        while group_end < sorted.len()
-            && sorted[group_end].entity_id == target.0
-            && sorted[group_end].component_path == target.1
-        {
+        while group_end < sorted.len() && sorted[group_end].target_key() == target {
             group_end += 1;
         }
         let group = &sorted[index..group_end];
@@ -205,10 +291,11 @@ fn resolve_group(
 }
 
 fn decision(rule: &InfluenceRule, applied: bool, reason: Option<String>) -> InfluenceDecision {
+    let (entity_id, component_path) = rule.target_key();
     InfluenceDecision {
         rule_id: rule.rule_id.clone(),
-        entity_id: rule.entity_id.clone(),
-        component_path: rule.component_path.clone(),
+        entity_id: entity_id.to_string(),
+        component_path: component_path.to_string(),
         applied,
         rejected_reason: reason,
     }
@@ -252,11 +339,9 @@ mod tests {
     fn rule(id: &str, priority: i32, op: InfluenceOp) -> InfluenceRule {
         InfluenceRule {
             rule_id: id.to_string(),
-            rule_version: 1,
+            rule_version: 2,
             schedule: InfluenceSchedule::AtTick { tick: 5 },
-            entity_id: "cabin".to_string(),
-            component_path: "environment.smokeDensity".to_string(),
-            op,
+            patch: InfluencePatch::CabinSmokeDensity { op },
             priority,
         }
     }
@@ -292,6 +377,25 @@ mod tests {
     fn ops_resolve_against_current_value() {
         assert_eq!(InfluenceOp::Set(0.5).resolve(0.9), 0.5);
         assert_eq!(InfluenceOp::Delta(0.2).resolve(0.3), 0.5);
+    }
+
+    #[test]
+    fn influence_patch_uses_a_tagged_schema_and_rejects_legacy_paths() {
+        let patch = serde_json::json!({
+            "kind": "humanAttention",
+            "humanId": "driver-1",
+            "op": { "op": "delta", "value": -0.05 }
+        });
+        let decoded: InfluencePatch = serde_json::from_value(patch).expect("typed patch");
+        assert_eq!(decoded.target_key(), ("driver-1", "pilot.attention"));
+        assert!(
+            serde_json::from_value::<InfluencePatch>(serde_json::json!({
+                "entityId": "driver-1",
+                "componentPath": "pilot.attention",
+                "op": { "op": "delta", "value": -0.05 }
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -360,7 +464,9 @@ mod tests {
     #[test]
     fn distinct_components_do_not_conflict() {
         let mut other = rule("b", 0, InfluenceOp::Set(0.5));
-        other.component_path = "environment.visibility".to_string();
+        other.patch = InfluencePatch::CabinVisibility {
+            op: InfluenceOp::Set(0.5),
+        };
         let due = vec![rule("a", 0, InfluenceOp::Set(0.5)), other];
         let outcome = arbitrate(&due, ConflictPolicy::RejectConflicting);
         assert_eq!(outcome.winners.len(), 2);

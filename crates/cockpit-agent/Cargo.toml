@@ -10,13 +10,16 @@ publish = false
 # live driver backend-agnostic so `cargo test --workspace` stays deterministic
 # and offline.
 default = []
-live-acp = []
+live-acp = ["dep:iota-core"]
 
 [dependencies]
 cockpit-world.workspace = true
-iota-core.workspace = true
+base64.workspace = true
+iota-core = { workspace = true, optional = true }
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -103,6 +103,10 @@ pub struct JudgeProvenance {
     pub prompt_hash: String,
     pub rubric_hash: String,
     pub schema_hash: String,
+    /// SHA-256 of the Judge provider executable, computed by the evaluator
+    /// rather than supplied by the provider itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,8 +348,19 @@ impl Evaluator for DualJudgeEvaluator<'_> {
 }
 
 fn judges_are_independent(first: &JudgeDecision, second: &JudgeDecision) -> bool {
+    let providers_are_independent = match (
+        first.provenance.provider_sha256.as_deref(),
+        second.provenance.provider_sha256.as_deref(),
+    ) {
+        // Recorded fixture decisions predate executable provenance. External
+        // providers always carry this value after evaluator validation.
+        (None, None) => true,
+        (Some(first), Some(second)) => first != second,
+        _ => false,
+    };
     first.provenance.judge_id != second.provenance.judge_id
         && first.provenance.model != second.provenance.model
+        && providers_are_independent
 }
 
 fn gate_passes(report: &EvidenceVerdict, gate: &EvaluationReleaseGate) -> bool {
@@ -455,6 +470,7 @@ mod tests {
                 prompt_hash: "sha256:prompt".to_string(),
                 rubric_hash: "sha256:rubric".to_string(),
                 schema_hash: schema_hash(),
+                provider_sha256: None,
             },
         }
     }
@@ -469,6 +485,13 @@ mod tests {
         second.provenance.model = "another-model".to_string();
         second.provenance.judge_id = first.provenance.judge_id.clone();
         assert!(!judges_are_independent(&first, &second));
+        second.provenance.judge_id = "b".to_string();
+        second.provenance.provider_sha256 = Some("sha256:shared".to_string());
+        let mut first_with_provider = first.clone();
+        first_with_provider.provenance.provider_sha256 = Some("sha256:shared".to_string());
+        assert!(!judges_are_independent(&first_with_provider, &second));
+        second.provenance.provider_sha256 = Some("sha256:other".to_string());
+        assert!(judges_are_independent(&first_with_provider, &second));
     }
 
     #[test]

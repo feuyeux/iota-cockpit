@@ -27,8 +27,9 @@ use super::{
     },
     tool_call_cost,
     types::{
-        HumanBackend, HumanToolCall, HumanToolExchange, HumanTurnContext, HumanTurnError,
-        HumanTurnEvidence, HumanTurnOutput, InternalStateDelta, RequestedAction,
+        HumanBackend, HumanToolCall, HumanToolExchange, HumanTurnContext, HumanTurnDisposition,
+        HumanTurnError, HumanTurnEvidence, HumanTurnFailureKind, HumanTurnOutput,
+        InternalStateDelta, LiveTickMode, RECORDED_INVALID_OUTPUT_FAILURE, RequestedAction,
     },
 };
 
@@ -119,11 +120,23 @@ impl HumanAgentDriver {
         backend: &mut B,
         server: &mut LocalMcpServer,
     ) -> Result<(StepRecord, Vec<HumanTurnEvidence>), HumanTurnError> {
+        self.step_with_tools_mode(simulation, backend, server, LiveTickMode::Strict)
+            .await
+    }
+
+    /// Drive one tick using the requested per-human failure semantics.
+    pub async fn step_with_tools_mode<B: HumanBackend>(
+        &mut self,
+        simulation: &mut Simulation,
+        backend: &mut B,
+        server: &mut LocalMcpServer,
+        mode: LiveTickMode,
+    ) -> Result<(StepRecord, Vec<HumanTurnEvidence>), HumanTurnError> {
         let mut working_driver = self.clone();
         let mut working_simulation = simulation.clone();
         let mut working_server = server.clone();
         let result = working_driver
-            .step_with_tools_inner(&mut working_simulation, backend, &mut working_server)
+            .step_with_tools_inner(&mut working_simulation, backend, &mut working_server, mode)
             .await;
         match result {
             Ok(result) => {
@@ -161,6 +174,7 @@ impl HumanAgentDriver {
         simulation: &mut Simulation,
         backend: &mut B,
         server: &mut LocalMcpServer,
+        mode: LiveTickMode,
     ) -> Result<(StepRecord, Vec<HumanTurnEvidence>), HumanTurnError> {
         self.prune_transient_utterances(simulation);
         let active_human_ids = simulation
@@ -193,6 +207,16 @@ impl HumanAgentDriver {
         let mut traces = Vec::new();
 
         for human_id in &human_ids {
+            // A best-effort failure may have called tools and modified runtime
+            // state before it becomes visible. Keep the complete per-human
+            // transaction boundary, including the outer pending accumulators.
+            let before_driver = self.clone();
+            let before_simulation = simulation.clone();
+            let before_server = server.clone();
+            let evidence_len = evidence.len();
+            let pending_utterances_len = pending_utterances.len();
+            let deltas_len = deltas.len();
+            let traces_len = traces.len();
             let current_tick = simulation.snapshot.tick;
             let mut context = {
                 let human = simulation.snapshot.human(human_id).ok_or_else(|| {
@@ -254,6 +278,7 @@ impl HumanAgentDriver {
                     language: simulation.scenario.language.clone(),
                 }
             };
+            let turn_result: Result<(), HumanTurnError> = async {
             let turn_started = std::time::Instant::now();
             eprintln!("live human turn start: human={human_id} tick={current_tick}");
             let mut tool_calls = Vec::new();
@@ -301,9 +326,16 @@ impl HumanAgentDriver {
                             backend_started.elapsed().as_millis(),
                             turn_started.elapsed().as_millis()
                         );
-                        return Err(HumanTurnError::Backend {
-                            human_id: human_id.clone(),
-                            reason,
+                        return Err(if reason == RECORDED_INVALID_OUTPUT_FAILURE {
+                            HumanTurnError::InvalidOutput {
+                                human_id: human_id.clone(),
+                                reason,
+                            }
+                        } else {
+                            HumanTurnError::Backend {
+                                human_id: human_id.clone(),
+                                reason,
+                            }
                         });
                     }
                 };
@@ -609,9 +641,45 @@ impl HumanAgentDriver {
             evidence.push(HumanTurnEvidence {
                 human_id: human_id.clone(),
                 decision,
+                disposition: HumanTurnDisposition::Completed,
                 tool_calls,
                 latency_ms: Some(turn_started.elapsed().as_millis() as u64),
             });
+            Ok(())
+            }
+            .await;
+
+            if let Err(error) = turn_result {
+                if mode == LiveTickMode::Strict {
+                    return Err(error);
+                }
+                *self = before_driver;
+                *simulation = before_simulation;
+                *server = before_server;
+                evidence.truncate(evidence_len);
+                pending_utterances.truncate(pending_utterances_len);
+                deltas.truncate(deltas_len);
+                traces.truncate(traces_len);
+
+                let kind = match error {
+                    HumanTurnError::Backend { .. } => HumanTurnFailureKind::Backend,
+                    HumanTurnError::InvalidOutput { .. } => HumanTurnFailureKind::InvalidOutput,
+                };
+                self.open_world
+                    .record_failure(human_id, current_tick, "best-effort turn skipped");
+                self.open_world
+                    .replan(human_id, current_tick, "best-effort turn skipped");
+                evidence.push(HumanTurnEvidence {
+                    human_id: human_id.clone(),
+                    decision: crate::HumanDecision {
+                        narrative: REDACTED_DECISION_TEXT.to_string(),
+                        ..Default::default()
+                    },
+                    disposition: HumanTurnDisposition::Failed { kind },
+                    tool_calls: Vec::new(),
+                    latency_ms: None,
+                });
+            }
         }
 
         for (human_id, delta) in deltas {
@@ -874,6 +942,7 @@ impl HumanAgentDriver {
             evidence.push(HumanTurnEvidence {
                 human_id: human_id.clone(),
                 decision,
+                disposition: HumanTurnDisposition::Completed,
                 tool_calls: Vec::new(),
                 latency_ms,
             });

@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1120" width="1240" height="1120" role="img" aria-labelledby="title description">
+  <title id="title">Desktop simulation evaluation layered architecture</title>
+  <desc id="description">A layered, single-direction architecture of Desktop simulation evaluation. The Host validates and redacts a finalized recording. The evaluator performs deterministic scoring, optionally invokes two independent Judge providers, validates the decisions, and emits the report.</desc>
+  <style>
+    text { font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; fill: #111827; }
+    .title { font-size: 22px; font-weight: 600; }
+    .subtitle { font-size: 13px; fill: #4b5563; }
+    .lane { font-size: 11px; font-weight: 600; fill: #374151; letter-spacing: .5px; }
+    .node-title { font-size: 14px; font-weight: 600; }
+    .node-body { font-size: 11px; fill: #4b5563; }
+    .small { font-size: 10px; fill: #4b5563; }
+    .label { font-size: 10px; font-weight: 600; }
+    .note { font-size: 10px; fill: #991b1b; }
+    .control { stroke: #ea580c; stroke-width: 1.6; fill: none; marker-end: url(#orange); }
+    .data { stroke: #2563eb; stroke-width: 2; fill: none; marker-end: url(#blue); }
+    .read { stroke: #059669; stroke-width: 1.6; fill: none; marker-end: url(#green); }
+    .write { stroke: #059669; stroke-width: 1.6; stroke-dasharray: 5 3; fill: none; marker-end: url(#green); }
+    .decision { stroke: #7c3aed; stroke-width: 1.6; fill: none; marker-end: url(#purple); }
+  </style>
+  <defs>
+    <marker id="blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#2563eb"/></marker>
+    <marker id="orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ea580c"/></marker>
+    <marker id="green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#059669"/></marker>
+    <marker id="purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#7c3aed"/></marker>
+  </defs>
+
+  <rect width="1240" height="1120" fill="#ffffff"/>
+  <text x="32" y="38" class="title">Desktop 仿真评测分层架构</text>
+  <text x="32" y="60" class="subtitle">单向主链：Host 冻结并脱敏证据，Evaluator 计算与汇总，Judge 只处理不可变 JudgeRequest</text>
+
+  <!-- Background layers are behind every node and flow. -->
+  <g aria-label="layers">
+    <rect x="20" y="82" width="1200" height="96" rx="8" fill="#eff6ff" fill-opacity=".65" stroke="#bfdbfe" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="194" width="1200" height="128" rx="8" fill="#fff7ed" fill-opacity=".65" stroke="#fed7aa" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="338" width="1200" height="152" rx="8" fill="#f0fdf4" fill-opacity=".65" stroke="#bbf7d0" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="506" width="1200" height="126" rx="8" fill="#faf5ff" fill-opacity=".65" stroke="#ddd6fe" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="648" width="1200" height="126" rx="8" fill="#faf5ff" fill-opacity=".65" stroke="#ddd6fe" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="790" width="1200" height="146" rx="8" fill="#fef2f2" fill-opacity=".65" stroke="#fecaca" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="20" y="952" width="1200" height="126" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1" stroke-dasharray="6 4"/>
+  </g>
+  <text x="36" y="104" class="lane">01 交互层</text><text x="36" y="216" class="lane">02 原生编排与授权层</text>
+  <text x="36" y="360" class="lane">03 仿真权威层</text><text x="36" y="528" class="lane">04 冻结评测输入层</text>
+  <text x="36" y="670" class="lane">05 确定性评测层</text><text x="36" y="812" class="lane">06 隔离 Judge 层</text>
+  <text x="36" y="974" class="lane">07 回验、汇总与报告层</text>
+
+  <!-- Nodes -->
+  <g aria-label="desktop ui">
+    <rect x="470" y="110" width="300" height="48" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
+    <text x="620" y="133" text-anchor="middle" class="node-title">Desktop UI</text>
+    <text x="620" y="149" text-anchor="middle" class="node-body">运行并评测、tick 进度、评测报告</text>
+  </g>
+  <g aria-label="tauri host">
+    <rect x="405" y="230" width="430" height="72" rx="10" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+    <rect x="409" y="234" width="422" height="64" rx="8" fill="none" stroke="#fdba74" stroke-width=".8"/>
+    <text x="620" y="256" text-anchor="middle" class="node-title">Tauri Host</text>
+    <text x="620" y="276" text-anchor="middle" class="node-body">SimulatorState：当前 run / snapshot；EvaluationState：Judge 配置、临时输入、历史</text>
+    <text x="620" y="292" text-anchor="middle" class="node-body">WebView 无法指定 rubric、provider command、model 或 digest pin</text>
+  </g>
+  <g aria-label="simulator">
+    <rect x="130" y="386" width="250" height="70" rx="8" fill="#f0fdf4" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="255" y="414" text-anchor="middle" class="node-title">cockpit-simulator</text>
+    <text x="255" y="434" text-anchor="middle" class="node-body">Ground Truth、Tick、状态与动作</text>
+  </g>
+  <g aria-label="recording store">
+    <ellipse cx="570" cy="400" rx="110" ry="15" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+    <rect x="460" y="400" width="220" height="48" fill="#dcfce7"/>
+    <line x1="460" y1="400" x2="460" y2="448" stroke="#16a34a" stroke-width="1.5"/><line x1="680" y1="400" x2="680" y2="448" stroke="#16a34a" stroke-width="1.5"/>
+    <ellipse cx="570" cy="448" rx="110" ry="15" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+    <text x="570" y="424" text-anchor="middle" class="node-title">Recording Store</text>
+    <text x="570" y="441" text-anchor="middle" class="node-body">raw durable Recording / SQLite</text>
+  </g>
+  <g aria-label="finalization gate">
+    <rect x="820" y="386" width="300" height="70" rx="8" fill="#ffffff" stroke="#4ade80" stroke-width="1.5"/>
+    <text x="970" y="410" text-anchor="middle" class="node-title">Host 最终态门禁</text>
+    <text x="970" y="428" text-anchor="middle" class="node-body">current run + completed + durable</text>
+    <text x="970" y="444" text-anchor="middle" class="node-body">snapshot / status / scenario 一致</text>
+  </g>
+  <g aria-label="frozen input">
+    <path d="M 490,550 L 710,550 L 726,566 L 726,612 L 490,612 Z" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+    <path d="M 710,550 L 710,566 L 726,566" fill="#bbf7d0" stroke="#16a34a" stroke-width="1"/>
+    <text x="608" y="577" text-anchor="middle" class="node-title">脱敏冻结输入</text>
+    <text x="608" y="595" text-anchor="middle" class="node-body">temporary immutable Recording JSON</text>
+  </g>
+  <g aria-label="private rubric">
+    <path d="M 890,550 L 1065,550 L 1081,566 L 1081,612 L 890,612 Z" fill="#faf5ff" stroke="#8b5cf6" stroke-width="1.5"/>
+    <path d="M 1065,550 L 1065,566 L 1081,566" fill="#ddd6fe" stroke="#8b5cf6" stroke-width="1"/>
+    <text x="985" y="577" text-anchor="middle" class="node-title">Private Rubric</text>
+    <text x="985" y="595" text-anchor="middle" class="node-body">仅评测信任边界可见</text>
+  </g>
+  <g aria-label="evaluator core">
+    <rect x="340" y="678" width="560" height="86" rx="10" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="620" y="703" text-anchor="middle" class="node-title">cockpit-evaluator：DeterministicEvaluator</text>
+    <text x="620" y="722" text-anchor="middle" class="node-body">校验 input schema、scenario/hash、committed ticks 与规则注册</text>
+    <text x="620" y="739" text-anchor="middle" class="node-body">逐 rule 计算 deadline task + safety / trajectory policy，收集 evidence</text>
+    <text x="620" y="755" text-anchor="middle" class="node-body">构造 hash、deterministic result、初始 gate；inconclusive 不调用 Judge</text>
+  </g>
+  <g aria-label="no raw store access note">
+    <rect x="940" y="686" width="230" height="70" rx="8" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.2" stroke-dasharray="5 3"/>
+    <text x="1055" y="711" text-anchor="middle" class="note">Evaluator 不直读 raw Store</text>
+    <text x="1055" y="729" text-anchor="middle" class="note">只接收 Host 脱敏、冻结输入</text>
+    <text x="1055" y="745" text-anchor="middle" class="note">避免未完成、旧 run 与敏感内容</text>
+  </g>
+  <g aria-label="judge a">
+    <rect x="145" y="830" width="330" height="76" rx="10" fill="#fef2f2" stroke="#f87171" stroke-width="2"/>
+    <text x="310" y="854" text-anchor="middle" class="node-title">Judge A provider</text>
+    <text x="310" y="874" text-anchor="middle" class="node-body">例如 cockpit-judge-hermes -&gt; Hermes ACP</text>
+    <text x="310" y="891" text-anchor="middle" class="node-body">ephemeral、无 tools / mutation、内部 timeout</text>
+  </g>
+  <g aria-label="judge b">
+    <rect x="765" y="830" width="350" height="76" rx="10" fill="#fef2f2" stroke="#f87171" stroke-width="2"/>
+    <text x="940" y="854" text-anchor="middle" class="node-title">Judge B provider</text>
+    <text x="940" y="874" text-anchor="middle" class="node-body">B_BIN 显式指定；独立 command / model / digest</text>
+    <text x="940" y="891" text-anchor="middle" class="node-body">仅 opencode + backend-command 时走 OpenCode ACP</text>
+  </g>
+  <g aria-label="aggregation">
+    <rect x="310" y="990" width="620" height="76" rx="10" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="620" y="1015" text-anchor="middle" class="node-title">ExternalJudge 回验 + DualJudge 汇总</text>
+    <text x="620" y="1035" text-anchor="middle" class="node-body">覆写 providerSha256；校验 provenance、confidence、tick / event / action / entity evidence</text>
+    <text x="620" y="1052" text-anchor="middle" class="node-body">A/B 与确定性任一不一致 -&gt; inconclusive；再计算最终 release gate</text>
+  </g>
+  <g aria-label="report">
+    <rect x="970" y="992" width="205" height="70" rx="8" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+    <text x="1072" y="1017" text-anchor="middle" class="node-title">报告与历史</text>
+    <text x="1072" y="1036" text-anchor="middle" class="node-body">EvidenceVerdict</text>
+    <text x="1072" y="1052" text-anchor="middle" class="node-body">原子保存，UI 展示</text>
+  </g>
+
+  <!-- Foreground flows: all use short, non-crossing routes. -->
+  <line x1="620" y1="158" x2="620" y2="230" class="control"/><text x="633" y="196" class="label">invoke</text>
+  <path d="M 405,276 L 255,276 L 255,386" class="control"/><text x="300" y="267" text-anchor="middle" class="label">运行 IPC</text>
+  <line x1="380" y1="421" x2="460" y2="421" class="write"/><text x="420" y="411" text-anchor="middle" class="label">persist</text>
+  <path d="M 835,302 L 970,302 L 970,386" class="control"/><text x="903" y="293" text-anchor="middle" class="label">评测请求</text>
+  <line x1="680" y1="421" x2="820" y2="421" class="read"/><text x="750" y="411" text-anchor="middle" class="label">只读 recording</text>
+  <line x1="970" y1="456" x2="970" y2="520" class="data"/><path d="M 970,520 L 620,520 L 620,550" class="data"/><text x="795" y="511" text-anchor="middle" class="label">通过门禁的权威快照</text>
+  <line x1="620" y1="612" x2="620" y2="686" class="read"/><text x="632" y="652" class="label">redacted input</text>
+  <path d="M 890,581 L 850,581 L 850,686" class="read"/><text x="860" y="630" class="label">rubric</text>
+  <path d="M 500,780 L 310,780 L 310,830" class="data"/><text x="405" y="771" text-anchor="middle" class="label">JudgeRequest A</text>
+  <path d="M 740,780 L 940,780 L 940,830" class="data"/><text x="840" y="771" text-anchor="middle" class="label">JudgeRequest B（顺序）</text>
+  <path d="M 310,906 L 310,952 L 500,952 L 500,990" class="decision"/><text x="405" y="943" text-anchor="middle" class="label">JudgeDecision A</text>
+  <path d="M 940,906 L 940,952 L 740,952 L 740,990" class="decision"/><text x="840" y="943" text-anchor="middle" class="label">JudgeDecision B</text>
+  <line x1="930" y1="1028" x2="970" y2="1028" class="data"/><text x="950" y="1018" text-anchor="middle" class="label">report</text>
+
+  <g transform="translate(42,1098)">
+    <line x1="0" y1="0" x2="30" y2="0" class="control"/><text x="40" y="4" class="small">控制 / 编排</text>
+    <line x1="160" y1="0" x2="190" y2="0" class="data"/><text x="200" y="4" class="small">不可变数据 / 结果</text>
+    <line x1="360" y1="0" x2="390" y2="0" class="read"/><text x="400" y="4" class="small">受控读取</text>
+    <line x1="530" y1="0" x2="560" y2="0" class="write"/><text x="570" y="4" class="small">持久化写入</text>
+    <line x1="700" y1="0" x2="730" y2="0" class="decision"/><text x="740" y="4" class="small">Judge 决策回流</text>
+  </g>
+</svg>

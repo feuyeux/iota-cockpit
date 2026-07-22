@@ -4,6 +4,9 @@ export const APP_CONFIG = {
   MAX_TOOL_CALLS: 100,
   MAX_ACTION_RESULTS: 100,
   MAX_HUMAN_TURNS: 300,
+  // Maximum durable audit items held during a reconnect recovery. The
+  // reducer applies stricter category-specific limits after this boundary.
+  MAX_AUDIT_RECOVERY_EVENTS: 1024,
 
   // Network timeouts (milliseconds)
   CONNECT_TIMEOUT: 500,

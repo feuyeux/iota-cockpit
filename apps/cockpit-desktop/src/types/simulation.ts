@@ -37,6 +37,18 @@ export interface LiveRunSummary {
   backend: string;
 }
 
+export interface OfflineRunSummary {
+  runId: string;
+  status: string;
+  scenarioHash: string;
+}
+
+export interface RulePolicyStatus {
+  available: boolean;
+  policies: string[];
+  selectedPolicyId?: string;
+}
+
 export interface SensorQuality {
   visibilityQuality: number;
   audioQuality: number;
@@ -282,6 +294,21 @@ export interface JudgeProvenance {
   promptHash: string;
   rubricHash: string;
   schemaHash: string;
+  providerSha256?: string;
+}
+
+export interface EvaluationProgress {
+  runId: string;
+  recordedTicks: number;
+  status: "recording" | "failed";
+  executionError?: string;
+}
+
+export interface PluginFailure {
+  pluginId: string;
+  version: string;
+  reason: string;
+  decision: string;
 }
 
 export interface JudgeDecision {
@@ -400,6 +427,25 @@ export interface SimulatorEventBatch {
   resetRequired: boolean;
 }
 
+export interface RecordedAuditEventItem {
+  sequence: number;
+  event: SimulatorEvent;
+}
+
+export interface RecordedAuditPage {
+  events: RecordedAuditEventItem[];
+  offset: number;
+  nextOffset?: number;
+  nextSequence?: number;
+  totalEvents: number;
+  truncated: boolean;
+}
+
+export interface AuditRecoveryState {
+  totalEvents: number;
+  earliestOffset: number;
+}
+
 export interface SimulationModel {
   state: RunState;
   scenario?: ScenarioSummary;
@@ -413,13 +459,15 @@ export interface SimulationModel {
   toolCalls: ToolCallTrace[];
   humanTurns: HumanTurnTrace[];
   actionResults: ActionResult[];
-  evaluation?: EvaluationResult;
+  pluginFailures: PluginFailure[];
+  evaluationProgress?: EvaluationProgress;
   replayDiff?: RecordingDiff;
   error?: SimulationError;
   serviceConnected: boolean;
   approvalRequired: boolean;
   backend?: string;
   lastCursor?: number;
+  auditRecovery?: AuditRecoveryState;
 }
 
 export type SimulatorEvent =
@@ -442,5 +490,6 @@ export type SimulatorEvent =
       cursor: number;
     }
   | { type: "SimulationActionResult"; result: ActionResult; cursor: number }
-  | { type: "SimulationEvaluationUpdated"; evaluation: EvaluationResult; cursor: number }
+  | { type: "SimulationPluginFailure"; failure: PluginFailure; cursor: number }
+  | { type: "SimulationEvaluationProgress"; progress: EvaluationProgress; cursor: number }
   | { type: "SimulationError"; error: SimulationError; cursor?: number };

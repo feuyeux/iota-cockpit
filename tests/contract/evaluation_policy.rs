@@ -1,3 +1,4 @@
+use cockpit_agent::LiveTickMode;
 use cockpit_evaluation::{
     EvaluationPolicy, EvaluationSpec, evaluate_with_policy, mark_execution_failed,
     plane::{
@@ -185,6 +186,55 @@ fn execution_failure_gates_a_completed_task() {
     assert!(!result.execution_passed);
     assert!(!result.passed);
     assert_eq!(result.execution_error.as_deref(), Some("backend timeout"));
+}
+
+#[test]
+fn best_effort_recordings_require_explicit_rubric_opt_in() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario");
+    let mut recording = run_rule_agent_recording(
+        "best-effort-evaluation",
+        scenario.clone(),
+        scenario.max_ticks + 1,
+    )
+    .expect("recording");
+    recording.provenance.live_tick_mode = Some(LiveTickMode::BestEffort);
+
+    let default_result = evaluate_with_policy(
+        &recording,
+        Some("shutdown-before-spread"),
+        scenario.max_ticks,
+        &scenario.language,
+        &EvaluationPolicy::default(),
+    );
+    assert!(
+        default_result.task_passed,
+        "task evidence remains inspectable"
+    );
+    assert!(
+        !default_result.passed,
+        "default rubric rejects degraded execution"
+    );
+    assert!(!default_result.execution_passed);
+    assert_eq!(
+        default_result.execution_error.as_deref(),
+        Some("best-effort live ticks are disallowed by evaluation policy")
+    );
+
+    let accepted = evaluate_with_policy(
+        &recording,
+        Some("shutdown-before-spread"),
+        scenario.max_ticks,
+        &scenario.language,
+        &EvaluationPolicy {
+            allow_best_effort: true,
+            ..EvaluationPolicy::default()
+        },
+    );
+    assert!(accepted.execution_passed);
+    assert!(
+        accepted.passed,
+        "rubric explicitly accepts best-effort runs"
+    );
 }
 
 #[test]

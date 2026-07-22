@@ -7,16 +7,30 @@
 //! (`open_world.rs`); this is a pure reorganization with no behavior
 //! changes.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
-use cockpit_plugin::{PluginExecutor, PluginFailure, PluginPolicy, PluginTickOutcome};
-use cockpit_recording::{Recording, diff_recordings, replay_recording};
+use cockpit_plugin::{
+    PluginExecutor, PluginFailure, PluginPolicy, PluginTickOutcome, ProcessPluginExecutor,
+};
+use cockpit_recording::{
+    RecordedAuditEvent, RecordedAuditPageRequest, Recording, diff_recordings, replay_recording,
+};
 use cockpit_scenario::load_scenario;
 use cockpit_world::{Simulation, StateDiff, clock::RunStatus};
 use serde_json::{Value, json};
 
 use super::handler::{HandlerResult, SimulatorHandler, plugin_failure_record, read_recording};
 use super::proto::{IpcError, SimulatorEvent};
+
+pub(super) struct RecordedAuditQuery<'a> {
+    pub run_id: &'a str,
+    pub start_tick: u64,
+    pub end_tick: u64,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+    pub after_sequence: Option<u64>,
+    pub tail_limit: Option<usize>,
+}
 
 impl SimulatorHandler {
     pub fn configure_plugins(
@@ -28,6 +42,30 @@ impl SimulatorHandler {
         self.plugin_policy = policy;
         self.plugin_executors = executors;
         let failures = self.plugin_host.discover(directory, &self.plugin_policy);
+        let deadline = Duration::from_millis(self.plugin_policy.tick_budget_ms.unwrap_or(50));
+        let process_executors = self
+            .plugin_host
+            .manifests()
+            .filter(|manifest| !self.plugin_executors.contains_key(&manifest.id))
+            .filter_map(|manifest| {
+                manifest.command.clone().map(|command| {
+                    (
+                        manifest.id.clone(),
+                        ProcessPluginExecutor::from_command_with_permissions_and_read_paths(
+                            command,
+                            deadline,
+                            manifest.permissions.clone(),
+                            manifest.filesystem_read_paths.clone(),
+                        ),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for (plugin_id, executor) in process_executors {
+            if let Ok(executor) = executor {
+                self.plugin_executors.insert(plugin_id, Box::new(executor));
+            }
+        }
         self.update_recording_plugin_hashes();
         for failure in &failures {
             self.emit_plugin_failure(failure);
@@ -156,6 +194,17 @@ impl SimulatorHandler {
             .map_err(|error| Box::new(Self::serialization_error(error.to_string())))
     }
 
+    pub(super) fn run_status(&self) -> HandlerResult {
+        let simulation = self
+            .simulation
+            .as_ref()
+            .ok_or_else(|| Box::new(Self::no_run_error()))?;
+        Ok(serde_json::json!({
+            "runId": simulation.run_id(),
+            "status": simulation.status,
+        }))
+    }
+
     pub(super) fn start_replay(
         &mut self,
         scenario_path: &str,
@@ -249,6 +298,65 @@ impl SimulatorHandler {
             .collect()
     }
 
+    pub(super) fn recorded_audit_events(&self, query: RecordedAuditQuery<'_>) -> HandlerResult {
+        let RecordedAuditQuery {
+            run_id,
+            start_tick,
+            end_tick,
+            offset,
+            limit,
+            after_sequence,
+            tail_limit,
+        } = query;
+        let store = self.recording_store.as_ref().ok_or_else(|| {
+            Box::new(IpcError {
+                code: "RECORDING_STORE_UNAVAILABLE".to_string(),
+                message: "durable audit events require a persistent recording store".to_string(),
+                details: None,
+                run_id: Some(run_id.to_string()),
+                tick: None,
+                correlation_id: "recorded-audit".to_string(),
+            })
+        })?;
+        let tail_limit = tail_limit.unwrap_or(usize::MAX).min(16_384);
+        let page = store
+            .load_audit_page(
+                run_id,
+                RecordedAuditPageRequest {
+                    start_tick,
+                    end_tick,
+                    offset,
+                    limit: limit.unwrap_or(usize::MAX).min(1_024),
+                    after_sequence,
+                    tail_limit: Some(tail_limit),
+                },
+            )
+            .map_err(|error| Box::new(Self::serialization_error(error.to_string())))?;
+        let events = page
+            .events
+            .iter()
+            .map(|event| {
+                json!({
+                    "sequence": event.sequence,
+                    "event": recorded_audit_event(event.event.clone()),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "runId": run_id,
+            "startTick": start_tick,
+            "endTick": end_tick,
+            "events": events,
+            "offset": page.offset,
+            "nextOffset": page.next_offset,
+            "nextSequence": page.next_sequence,
+            "totalEvents": page.total_events,
+            "truncated": page.truncated,
+            "cursorScope": "recordedTickWindow",
+            "sequenceScope": "recordingGlobal"
+        }))
+    }
+
     pub(super) fn cursor_reset_required(&self, cursor: Option<u64>) -> bool {
         let Some(cursor) = cursor else {
             return false;
@@ -284,9 +392,7 @@ impl SimulatorHandler {
                 PluginTickOutcome::Accepted(plugin_diffs) => {
                     diffs.extend(plugin_diffs.into_iter().map(|diff| StateDiff {
                         source_id: diff.plugin_id,
-                        entity_id: diff.entity_id,
-                        component_path: diff.component_path,
-                        value: diff.value,
+                        patch: diff.patch,
                         expected_state_version: diff.expected_state_version,
                     }))
                 }
@@ -301,5 +407,43 @@ impl SimulatorHandler {
             cursor: 0,
             failure: plugin_failure_record(failure),
         });
+    }
+}
+
+fn recorded_audit_event(event: RecordedAuditEvent) -> SimulatorEvent {
+    match event {
+        RecordedAuditEvent::WorldEvent { event, .. } => {
+            SimulatorEvent::SimulationEvent { cursor: 0, event }
+        }
+        RecordedAuditEvent::ToolCall { trace, .. } => {
+            SimulatorEvent::SimulationToolCall { cursor: 0, trace }
+        }
+        RecordedAuditEvent::ActionResult { result, .. } => {
+            SimulatorEvent::SimulationActionResult { cursor: 0, result }
+        }
+        RecordedAuditEvent::PluginFailure { failure, .. } => {
+            SimulatorEvent::SimulationPluginFailure { cursor: 0, failure }
+        }
+        RecordedAuditEvent::HumanTurn {
+            tick,
+            backend,
+            evidence,
+        } => SimulatorEvent::SimulationHumanTurn {
+            cursor: 0,
+            tick,
+            backend,
+            evidence,
+        },
+        RecordedAuditEvent::Error { tick, message } => SimulatorEvent::SimulationError {
+            cursor: 0,
+            error: IpcError {
+                code: "RECORDED_TICK_ERROR".to_string(),
+                message,
+                details: None,
+                run_id: None,
+                tick: Some(tick),
+                correlation_id: "recorded-audit".to_string(),
+            },
+        },
     }
 }

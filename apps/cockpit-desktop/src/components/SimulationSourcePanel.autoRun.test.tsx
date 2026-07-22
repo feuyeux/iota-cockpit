@@ -42,6 +42,42 @@ afterEach(() => {
 });
 
 describe("SimulationSourcePanel auto-run", () => {
+  it("uses the offline RuleAgent path when the offline source is selected", async () => {
+    const dispatch = vi.fn();
+    vi.spyOn(simulatorClient, "validateScenario").mockResolvedValue({
+      id: "smoke-in-cockpit",
+      path: "scenarios/smoke-in-cockpit.yaml",
+      schemaVersion: 1,
+      scenarioHash: "hash",
+      seed: 42,
+      agentId: "cockpit-agent",
+    });
+    const createOfflineRun = vi.spyOn(simulatorClient, "createOfflineRun").mockResolvedValue({
+      runId: "offline-run",
+      status: "ready",
+      scenarioHash: "hash",
+    });
+    const createLiveRun = vi.spyOn(simulatorClient, "createLiveRun");
+    vi.spyOn(simulatorClient, "start").mockResolvedValue();
+    vi.spyOn(simulatorClient, "step").mockResolvedValue({ status: "completed" });
+    const stepLive = vi.spyOn(simulatorClient, "stepLive");
+    vi.spyOn(simulatorClient, "snapshot").mockResolvedValue(emptyBatch());
+    const element = render(dispatch);
+
+    await act(async () => {
+      (element.querySelector('button[aria-label="离线规则"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+      (element.querySelector('button[aria-label="一键运行"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(createOfflineRun).toHaveBeenCalledWith("scenarios/smoke-in-cockpit.yaml");
+    expect(createLiveRun).not.toHaveBeenCalled();
+    expect(stepLive).not.toHaveBeenCalled();
+  });
+
   it("evaluates the persisted run after an automatic run completes", async () => {
     const dispatch = vi.fn();
     const onEvaluationCompleted = vi.fn();
@@ -78,6 +114,34 @@ describe("SimulationSourcePanel auto-run", () => {
 
     expect(evaluateRun).toHaveBeenCalledWith("run-complete", "smoke-in-cockpit");
     expect(onEvaluationCompleted).toHaveBeenCalledWith(report);
+  });
+
+  it("does not evaluate a run that stops before completion", async () => {
+    const dispatch = vi.fn();
+    vi.spyOn(simulatorClient, "validateScenario").mockResolvedValue({
+      id: "smoke-in-cockpit",
+      path: "scenarios/smoke-in-cockpit.yaml",
+      schemaVersion: 1,
+      scenarioHash: "hash",
+      seed: 42,
+      agentId: "cockpit-agent",
+    });
+    vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({ runId: "run-stopped", backend: "synthetic" });
+    vi.spyOn(simulatorClient, "start").mockResolvedValue();
+    vi.spyOn(simulatorClient, "stepLive").mockResolvedValue({ status: "stopped" });
+    vi.spyOn(simulatorClient, "snapshot").mockResolvedValue(emptyBatch());
+    const evaluateRun = vi.spyOn(simulatorClient, "evaluateRun");
+    const element = render(dispatch);
+
+    await act(async () => {
+      (element.querySelector('button[aria-label="一键运行"]') as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(evaluateRun).not.toHaveBeenCalled();
   });
 
   it("adopts the Simulator failure event when a live turn times out", async () => {

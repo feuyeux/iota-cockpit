@@ -9,7 +9,7 @@ use cockpit_world::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const IPC_VERSION: u16 = 4;
+pub const IPC_VERSION: u16 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -22,6 +22,10 @@ pub enum SimulatorCommand {
     ValidateScenario { path: String },
     #[serde(rename = "CreateSimulationRun")]
     CreateSimulationRun { path: String },
+    #[serde(rename = "SelectRulePolicy")]
+    SelectRulePolicy { policy_id: String },
+    #[serde(rename = "ListRulePolicies")]
+    ListRulePolicies,
     #[serde(rename = "CreateLiveSimulationRun")]
     CreateLiveSimulationRun { path: String, timeout_ms: u64 },
     #[serde(rename = "ResumeLiveSimulation")]
@@ -82,8 +86,33 @@ pub enum SimulatorCommand {
     SetApprovalRequired { required: bool },
     #[serde(rename = "GetSimulationSnapshot")]
     GetSimulationSnapshot,
+    #[serde(rename = "GetSimulationRunStatus")]
+    GetSimulationRunStatus,
     #[serde(rename = "GetSimulationEvents")]
     GetSimulationEvents { cursor: Option<u64> },
+    /// Query durable, redacted evidence by tick after a session cursor has
+    /// expired or the simulator sidecar has restarted. These events have no
+    /// session cursor semantics; callers must use the returned live snapshot
+    /// to resume the normal cursor stream afterward.
+    #[serde(rename = "GetRecordedAuditEvents")]
+    GetRecordedAuditEvents {
+        run_id: String,
+        start_tick: u64,
+        end_tick: u64,
+        #[serde(default)]
+        offset: Option<usize>,
+        #[serde(default)]
+        limit: Option<usize>,
+        /// A recording-global, durable continuation token. When supplied it
+        /// takes precedence over legacy window-local offset pagination.
+        #[serde(default)]
+        after_sequence: Option<u64>,
+        /// On the initial request, restrict recovery to the newest entries in
+        /// the requested tick window. This is a UI memory budget, not a
+        /// substitute for durable pagination.
+        #[serde(default)]
+        tail_limit: Option<usize>,
+    },
     #[serde(rename = "GetAgentTrace")]
     GetAgentTrace,
     #[serde(rename = "StartReplay")]
@@ -169,8 +198,11 @@ pub enum SimulatorEvent {
         cursor: u64,
         failure: PluginFailureRecord,
     },
-    #[serde(rename = "SimulationEvaluationUpdated")]
-    SimulationEvaluationUpdated { cursor: u64, evaluation: Value },
+    #[serde(rename = "SimulationEvaluationProgress")]
+    SimulationEvaluationProgress {
+        cursor: u64,
+        progress: EvaluationProgress,
+    },
     #[serde(rename = "SimulationError")]
     SimulationError { cursor: u64, error: IpcError },
 }
@@ -185,8 +217,28 @@ impl SimulatorEvent {
             | Self::SimulationHumanTurn { cursor, .. }
             | Self::SimulationActionResult { cursor, .. }
             | Self::SimulationPluginFailure { cursor, .. }
-            | Self::SimulationEvaluationUpdated { cursor, .. }
+            | Self::SimulationEvaluationProgress { cursor, .. }
             | Self::SimulationError { cursor, .. } => *cursor,
         }
     }
+}
+
+/// Progress telemetry is deliberately distinct from an evaluation result.
+/// The authoritative release-gate verdict is produced by `cockpit-evaluator`
+/// from a finalized recording, outside the simulation process.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationProgress {
+    pub run_id: String,
+    pub recorded_ticks: usize,
+    pub status: EvaluationProgressStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EvaluationProgressStatus {
+    Recording,
+    Failed,
 }

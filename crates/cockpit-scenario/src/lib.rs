@@ -283,12 +283,14 @@ fn validate_document(
     )?;
     for influence in &document.influences {
         validate_identifier("influence rule id", &influence.rule_id)?;
-        validate_identifier("influence entity id", &influence.entity_id)?;
-        if !is_writable_component(&influence.entity_id, &influence.component_path) {
+        if influence.rule_version != cockpit_world::CURRENT_INFLUENCE_RULE_VERSION {
             return Err(SimulationError::InvalidScenario(format!(
-                "influence rule '{}' targets unknown component {}::{}",
-                influence.rule_id, influence.entity_id, influence.component_path
+                "influence rule '{}' has unsupported ruleVersion {}",
+                influence.rule_id, influence.rule_version
             )));
+        }
+        if let Some(human_id) = influence.patch.human_id() {
+            validate_identifier("influence human id", human_id)?;
         }
         if let cockpit_world::influence::InfluenceSchedule::Every { interval, .. } =
             influence.schedule
@@ -301,21 +303,6 @@ fn validate_document(
         }
     }
     Ok(())
-}
-
-/// Component paths that scheduled influences may target, mirroring the writable
-/// StateDiff surface in the simulation core. Human component paths are accepted
-/// for any human id since the entity set is scenario-defined.
-fn is_writable_component(entity_id: &str, component_path: &str) -> bool {
-    matches!(component_path, "pilot.stress" | "pilot.attention")
-        || matches!(
-            (entity_id, component_path),
-            ("cabin", "environment.smokeDensity")
-                | ("cabin", "environment.visibility")
-                | ("cabin", "environment.temperatureC")
-                | ("engine-1", "engine.health")
-                | ("alarm-1", "alarm.active")
-        )
 }
 
 fn validate_limit(name: &str, actual: usize, limit: usize) -> SimulationResult<()> {

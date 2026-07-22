@@ -26,7 +26,13 @@ export type SimulationAction =
   | { type: "snapshotUpdated"; snapshot: import("../types/simulation").WorldSnapshot; cursor: number }
   | { type: "commandRejected"; error: SimulationError }
   | { type: "simulatorEvent"; event: SimulatorEvent }
-  | { type: "simulatorEvents"; events: SimulatorEvent[] };
+  | { type: "simulatorEvents"; events: SimulatorEvent[] }
+  | {
+      type: "recordedAuditPage";
+      events: SimulatorEvent[];
+      totalEvents: number;
+      earliestOffset: number;
+    };
 
 export const initialSimulationModel: SimulationModel = {
   state: "disconnected",
@@ -38,6 +44,7 @@ export const initialSimulationModel: SimulationModel = {
   toolCalls: [],
   humanTurns: [],
   actionResults: [],
+  pluginFailures: [],
   serviceConnected: false,
   approvalRequired: false
 };
@@ -73,8 +80,10 @@ export function simulationReducer(
         toolCalls: [],
         humanTurns: [],
         actionResults: [],
-        evaluation: undefined,
+        pluginFailures: [],
+        evaluationProgress: undefined,
         replayDiff: undefined,
+        auditRecovery: undefined,
         lastCursor: undefined,
         error: undefined
       };
@@ -97,10 +106,12 @@ export function simulationReducer(
         observations: [],
         events: [],
         actionResults: [],
+        pluginFailures: [],
         toolCalls: [],
         humanTurns: [],
-        evaluation: undefined,
+        evaluationProgress: undefined,
         replayDiff: undefined,
+        auditRecovery: undefined,
         lastCursor: undefined,
         error: undefined
       };
@@ -120,6 +131,8 @@ export function simulationReducer(
         toolCalls: [],
         humanTurns: [],
         actionResults: [],
+        pluginFailures: [],
+        auditRecovery: undefined,
         lastCursor: action.cursor
       };
     case "snapshotUpdated":
@@ -144,6 +157,14 @@ export function simulationReducer(
       return reduceSimulatorEvent(state, action.event);
     case "simulatorEvents":
       return action.events.reduce(reduceSimulatorEvent, state);
+    case "recordedAuditPage":
+      return {
+        ...action.events.reduce(reduceSimulatorEvent, state),
+        auditRecovery: {
+          totalEvents: action.totalEvents,
+          earliestOffset: action.earliestOffset
+        }
+      };
   }
 }
 
@@ -187,8 +208,14 @@ function reduceSimulatorEvent(state: SimulationModel, event: SimulatorEvent): Si
         actionResults: [event.result, ...state.actionResults].slice(0, APP_CONFIG.MAX_ACTION_RESULTS),
         lastCursor: event.cursor
       };
-    case "SimulationEvaluationUpdated":
-      return { ...state, evaluation: event.evaluation, lastCursor: event.cursor };
+    case "SimulationPluginFailure":
+      return {
+        ...state,
+        pluginFailures: [event.failure, ...state.pluginFailures].slice(0, APP_CONFIG.MAX_EVENTS),
+        lastCursor: event.cursor
+      };
+    case "SimulationEvaluationProgress":
+      return { ...state, evaluationProgress: event.progress, lastCursor: event.cursor };
     case "SimulationError":
       return {
         ...state,

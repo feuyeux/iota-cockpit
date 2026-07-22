@@ -12,6 +12,22 @@ export function useSimulator(model: SimulationModel, dispatch: React.Dispatch<Si
     if (batch.resetRequired) {
       const snapshot = await simulatorClient.simulationSnapshot();
       dispatch({ type: "snapshotReset", snapshot, cursor: batch.firstAvailableCursor - 1 });
+      try {
+        const audit = await simulatorClient.recordedAuditEvents(snapshot.runId, 0, snapshot.tick);
+        if (audit.events.length > 0) {
+          dispatch({
+            type: "recordedAuditPage",
+            events: audit.events,
+            totalEvents: audit.totalEvents,
+            earliestOffset: audit.earliestOffset
+          });
+        }
+      } catch {
+        // Embedded handlers and a first tick before persistence do not have a
+        // durable audit window. The current snapshot is still authoritative.
+      }
+      dispatch({ type: "snapshotUpdated", snapshot, cursor: batch.nextCursor });
+      return batch;
     }
     if (batch.events.length > 0) dispatch({ type: "simulatorEvents", events: batch.events });
     if (batch.events.some((event) => event.type === "SimulationTickCommitted")) {

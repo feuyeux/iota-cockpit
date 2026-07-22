@@ -9,8 +9,10 @@ mod generated_vehicle_fire;
 pub mod id;
 pub mod influence;
 pub mod perception;
+pub mod plugin_failure;
 pub mod sensor;
 pub mod simulation;
+pub mod state_patch;
 pub mod world;
 
 pub use action::{ActionRequest, ActionResult, ActionStatus, AgentGrant, ErrorCode, ScriptedAgent};
@@ -32,18 +34,21 @@ pub use effects::{
 pub use error::{SimulationError, SimulationResult};
 pub use event::{EventEnvelope, EventPayload, ToolCallTrace};
 pub use influence::{
-    ArbitrationOutcome, ConflictPolicy, InfluenceDecision, InfluenceOp, InfluenceRule,
-    InfluenceSchedule, Subscription, arbitrate, schedule_due,
+    ArbitrationOutcome, CURRENT_INFLUENCE_RULE_VERSION, ConflictPolicy, InfluenceDecision,
+    InfluenceOp, InfluencePatch, InfluenceRule, InfluenceSchedule, Subscription, arbitrate,
+    schedule_due,
 };
 pub use perception::{
     compact_memory, delivered_and_pending, enqueue_physical_event, enqueue_social_event,
     perception_delay_ticks,
 };
+pub use plugin_failure::{PluginExecutionRecord, PluginFailureRecord};
 pub use sensor::{Observation, SensorQuality};
 pub use simulation::{
-    Fault, HumanStateDelta, PluginFailureRecord, Simulation, SimulationScenario, StateDiff,
-    StepRecord,
+    Fault, HumanStateDelta, Simulation, SimulationScenario, StepRecord, TICK_PHASE_ORDER,
+    TickPhase, TickPhaseHash,
 };
+pub use state_patch::{StateDiff, StatePatch, StatePatchTarget};
 pub use world::{
     AlarmState, BigFiveTraits, CabinEnvironment, ClimateControlState, CockpitSystemsState,
     ConnectivityState, CybersecurityState, DeviceLifecycle, DeviceState, DriverAssistanceState,

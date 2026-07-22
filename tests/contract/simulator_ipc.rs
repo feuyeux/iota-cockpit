@@ -9,7 +9,7 @@ use cockpit_simulator::ipc::{
     MAX_EVENT_HISTORY, SimulatorHandler,
     proto::{IPC_VERSION, SimulatorCommand, SimulatorRequest},
 };
-use cockpit_world::{DynamicEntity, HumanState, WorldSnapshot};
+use cockpit_world::{DynamicEntity, HumanState, StatePatch, WorldSnapshot};
 use serde_json::Value;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -41,6 +41,8 @@ fn plugin_manifest() -> PluginManifest {
         schema: json!({"kind": "simulator-test"}),
         hash: String::new(),
         signature: None,
+        command: None,
+        filesystem_read_paths: Vec::new(),
     };
     let bytes = serde_json::to_vec(&manifest).expect("manifest");
     let mut hasher = Sha256::new();
@@ -95,11 +97,17 @@ fn configure_simulator_plugin(
 fn plugin_diff(value: f64, version: u64) -> PluginStateDiff {
     PluginStateDiff {
         plugin_id: "simulator-plugin".to_string(),
-        entity_id: "cabin".to_string(),
-        component_path: "environment.visibility".to_string(),
-        value: json!(value),
+        patch: StatePatch::CabinVisibility { value },
         expected_state_version: version,
     }
+}
+
+fn resign_manifest(manifest: &mut PluginManifest) {
+    manifest.hash.clear();
+    let bytes = serde_json::to_vec(manifest).expect("manifest serializes");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    manifest.hash = format!("sha256:{:x}", hasher.finalize());
 }
 
 #[test]
@@ -120,6 +128,29 @@ fn simulator_requires_version_and_session_token() {
         response.error.as_ref().map(|error| error.code.as_str()),
         Some("SESSION_UNAUTHORIZED")
     );
+}
+
+#[test]
+fn simulator_rejects_rule_policy_selection_without_a_trusted_bundle() {
+    let mut handler = SimulatorHandler::new("session-1");
+    let response = handler.dispatch(request(SimulatorCommand::SelectRulePolicy {
+        policy_id: "external-baseline".to_string(),
+    }));
+    assert_eq!(
+        response.error.as_ref().map(|error| error.code.as_str()),
+        Some("RULE_POLICY_BUNDLE_UNAVAILABLE")
+    );
+}
+
+#[test]
+fn simulator_reports_rule_policy_unavailable_without_a_trusted_bundle() {
+    let mut handler = SimulatorHandler::new("session-1");
+    let response = handler.dispatch(request(SimulatorCommand::ListRulePolicies));
+    assert!(response.ok);
+    let result = response.result.expect("policy status");
+    assert_eq!(result.get("available"), Some(&Value::Bool(false)));
+    assert_eq!(result.get("policies"), Some(&json!([])));
+    assert!(result.get("selectedPolicyId").is_some_and(Value::is_null));
 }
 
 #[tokio::test]
@@ -301,7 +332,7 @@ fn simulator_step_emits_snapshot_trace_evaluation_and_cursored_events() {
         )
     );
     assert!(events.iter().any(|event| event.get("type")
-        == Some(&Value::String("SimulationEvaluationUpdated".to_string()))));
+        == Some(&Value::String("SimulationEvaluationProgress".to_string()))));
 
     let cursor = events
         .last()
@@ -475,6 +506,135 @@ fn simulator_bounds_event_history_and_marks_stale_cursors_for_reset() {
 }
 
 #[test]
+fn recorded_audit_events_survive_handler_restart_and_are_tick_scoped() {
+    let database = std::env::temp_dir().join(format!(
+        "cockpit-recorded-audit-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let database_text = database.to_string_lossy().to_string();
+    let mut handler =
+        SimulatorHandler::new_persistent("session-1", &database_text).expect("persistent handler");
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StartSimulation))
+            .ok
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StepSimulation))
+            .ok
+    );
+    drop(handler);
+
+    let mut restarted = SimulatorHandler::new_persistent("session-1", &database_text)
+        .expect("restarted persistent handler");
+    let response = restarted.dispatch(request(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: "run-smoke-in-cockpit".to_string(),
+        start_tick: 0,
+        end_tick: 0,
+        offset: None,
+        limit: None,
+        after_sequence: None,
+        tail_limit: None,
+    }));
+    assert!(response.ok, "{response:?}");
+    let result = response.result.expect("audit response");
+    let events = result
+        .get("events")
+        .and_then(Value::as_array)
+        .expect("audit events");
+    assert!(
+        !events.is_empty(),
+        "committed tick must have durable evidence"
+    );
+    assert_eq!(
+        result.get("cursorScope").and_then(Value::as_str),
+        Some("recordedTickWindow")
+    );
+    let first_page = restarted.dispatch(request(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: "run-smoke-in-cockpit".to_string(),
+        start_tick: 0,
+        end_tick: 0,
+        offset: Some(0),
+        limit: Some(1),
+        after_sequence: None,
+        tail_limit: None,
+    }));
+    let first_page = first_page.result.expect("first audit page");
+    assert_eq!(first_page["events"].as_array().expect("events").len(), 1);
+    let first_sequence = first_page["events"][0]["sequence"]
+        .as_u64()
+        .expect("recording-global sequence");
+    let next_offset = first_page["nextOffset"].as_u64().expect("continuation");
+    let second_page = restarted.dispatch(request(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: "run-smoke-in-cockpit".to_string(),
+        start_tick: 0,
+        end_tick: 0,
+        offset: Some(next_offset as usize),
+        limit: Some(1),
+        after_sequence: None,
+        tail_limit: None,
+    }));
+    let second_page = second_page.result.expect("second audit page");
+    assert_eq!(second_page["offset"].as_u64(), Some(next_offset));
+    let second_sequence = second_page["events"][0]["sequence"]
+        .as_u64()
+        .expect("next sequence");
+    assert!(second_sequence > first_sequence);
+    assert_eq!(
+        second_page["totalEvents"].as_u64(),
+        result["events"]
+            .as_array()
+            .map(|events| events.len() as u64)
+    );
+    let sequence_page = restarted.dispatch(request(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: "run-smoke-in-cockpit".to_string(),
+        start_tick: 0,
+        end_tick: 0,
+        offset: None,
+        limit: Some(1),
+        after_sequence: Some(first_sequence),
+        tail_limit: None,
+    }));
+    let sequence_page = sequence_page.result.expect("sequence audit page");
+    assert_eq!(
+        sequence_page["events"][0]["sequence"].as_u64(),
+        Some(second_sequence)
+    );
+    assert_eq!(
+        sequence_page["sequenceScope"].as_str(),
+        Some("recordingGlobal")
+    );
+    let tail_page = restarted.dispatch(request(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: "run-smoke-in-cockpit".to_string(),
+        start_tick: 0,
+        end_tick: 0,
+        offset: None,
+        limit: Some(1),
+        after_sequence: None,
+        tail_limit: Some(1),
+    }));
+    let tail_page = tail_page.result.expect("tail-limited audit page");
+    assert_eq!(tail_page["events"].as_array().map(Vec::len), Some(1));
+    assert_eq!(tail_page["truncated"].as_bool(), Some(true));
+    assert!(
+        tail_page["totalEvents"]
+            .as_u64()
+            .is_some_and(|total| total > 1),
+        "the complete window count remains available after tail truncation"
+    );
+    let _ = std::fs::remove_file(&database);
+    let _ = std::fs::remove_dir_all(database.with_extension("payloads"));
+}
+
+#[test]
 fn simulator_commits_plugin_diff_and_records_manifest_hash() {
     let database = std::env::temp_dir().join(format!(
         "cockpit-simulator-plugin-recording-{}.db",
@@ -531,6 +691,137 @@ fn simulator_commits_plugin_diff_and_records_manifest_hash() {
     assert_eq!(recording.plugin_hashes.len(), 1);
     assert!(recording.plugin_hashes[0].starts_with("simulator-plugin@1.0.0:sha256:"));
     assert_eq!(recording.ticks[0].state_diffs.len(), 1);
+    let _ = std::fs::remove_dir_all(directory);
+    let _ = std::fs::remove_file(database);
+}
+
+#[cfg(unix)]
+#[test]
+fn simulator_discovers_and_runs_a_manifest_process_executor() {
+    let directory = plugin_directory("manifest-process");
+    let mut manifest = plugin_manifest();
+    manifest.permissions.push(PluginPermission::ChildProcess);
+    manifest.command = Some(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "cat >/dev/null; printf '[{\"pluginId\":\"simulator-plugin\",\"patch\":{\"kind\":\"cabinVisibility\",\"value\":0.4},\"expectedStateVersion\":0}]'".to_string(),
+    ]);
+    resign_manifest(&mut manifest);
+    std::fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+
+    let mut handler = SimulatorHandler::new("session-1");
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    let policy = PluginPolicy {
+        allowed_permissions: [
+            PluginPermission::WorldRead,
+            PluginPermission::WorldWrite,
+            PluginPermission::ChildProcess,
+        ]
+        .into_iter()
+        .collect(),
+        ..PluginPolicy::default()
+    };
+    assert!(
+        handler
+            .configure_plugins(&directory, policy, BTreeMap::new())
+            .is_empty()
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StartSimulation))
+            .ok
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StepSimulation))
+            .ok
+    );
+    let snapshot = handler
+        .dispatch(request(SimulatorCommand::GetSimulationSnapshot))
+        .result
+        .expect("snapshot");
+    assert_eq!(
+        snapshot
+            .get("environment")
+            .and_then(|environment| environment.get("visibility"))
+            .and_then(Value::as_f64),
+        Some(0.4)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn simulator_records_process_plugin_deadline_evidence() {
+    let directory = plugin_directory("manifest-timeout-evidence");
+    let mut manifest = plugin_manifest();
+    manifest.command = Some(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "while :; do :; done".to_string(),
+    ]);
+    resign_manifest(&mut manifest);
+    std::fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+    let database = std::env::temp_dir().join(format!(
+        "cockpit-simulator-plugin-timeout-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let mut handler = SimulatorHandler::new_persistent("session-1", &database.to_string_lossy())
+        .expect("recording store");
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::CreateSimulationRun {
+                path: "scenarios/smoke-in-cockpit.yaml".to_string(),
+            }))
+            .ok
+    );
+    let policy = PluginPolicy {
+        allowed_permissions: [PluginPermission::WorldRead, PluginPermission::WorldWrite]
+            .into_iter()
+            .collect(),
+        tick_budget_ms: Some(20),
+        ..PluginPolicy::default()
+    };
+    assert!(
+        handler
+            .configure_plugins(&directory, policy, BTreeMap::new())
+            .is_empty()
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StartSimulation))
+            .ok
+    );
+    assert!(
+        handler
+            .dispatch(request(SimulatorCommand::StepSimulation))
+            .ok
+    );
+    let recording = RecordingStore::open(&database.to_string_lossy())
+        .expect("open recording store")
+        .load("run-smoke-in-cockpit")
+        .expect("load recording");
+    let execution = recording.ticks[0].plugin_failures[0]
+        .execution
+        .as_ref()
+        .expect("process failure carries execution evidence");
+    assert!(execution.timed_out);
+    assert!(execution.terminated_process_group);
+    assert!(execution.elapsed_ms >= 20);
     let _ = std::fs::remove_dir_all(directory);
     let _ = std::fs::remove_file(database);
 }

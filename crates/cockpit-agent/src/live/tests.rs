@@ -759,6 +759,65 @@ async fn failed_tool_loop_does_not_commit_partial_action_state() {
     assert!(sim.snapshot.alarm.active);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn best_effort_commits_other_humans_and_replays_a_redacted_failure() {
+    let mut sim = Simulation::new("best-effort-tool-loop", scenario());
+    sim.start().expect("starts");
+    let mut driver = HumanAgentDriver::new();
+    let mut backend = FailsAfterPilotToolBackend;
+    let mut server = LocalMcpServer::default();
+
+    let (step, turns) = driver
+        .step_with_tools_mode(
+            &mut sim,
+            &mut backend,
+            &mut server,
+            LiveTickMode::BestEffort,
+        )
+        .await
+        .expect("a failed passenger turn does not discard the pilot turn");
+
+    assert_eq!(sim.snapshot.tick, 1);
+    assert!(sim.snapshot.alarm.active, "pilot action is committed");
+    assert!(step.action_results.iter().any(|result| {
+        result.status == cockpit_world::ActionStatus::Applied
+            && result.request.capability_id == "alarm.activate"
+    }));
+    let failed = turns
+        .iter()
+        .find(|turn| turn.human_id == "rear-passenger-1")
+        .expect("passenger evidence exists");
+    assert_eq!(
+        failed.disposition,
+        HumanTurnDisposition::Failed {
+            kind: HumanTurnFailureKind::InvalidOutput
+        }
+    );
+    assert_eq!(failed.decision.narrative, REDACTED_DECISION_TEXT);
+    assert!(failed.tool_calls.is_empty());
+    let failed_disposition = failed.disposition.clone();
+
+    let mut replay_sim = Simulation::new("best-effort-tool-loop", scenario());
+    replay_sim.start().expect("replay starts");
+    let mut replay_driver = HumanAgentDriver::new();
+    let mut replay_server = LocalMcpServer::default();
+    let mut replay_backend = RecordedHumanBackend::from_tick_evidence(&[turns]);
+    let (replayed, replay_turns) = replay_driver
+        .step_with_tools_mode(
+            &mut replay_sim,
+            &mut replay_backend,
+            &mut replay_server,
+            LiveTickMode::BestEffort,
+        )
+        .await
+        .expect("recorded failure follows the same best-effort path");
+    assert_eq!(step.snapshot_hash, replayed.snapshot_hash);
+    assert_eq!(
+        replay_turns.last().map(|turn| &turn.disposition),
+        Some(&failed_disposition)
+    );
+}
+
 struct UnauthorizedPassengerBackend;
 
 impl HumanBackend for UnauthorizedPassengerBackend {

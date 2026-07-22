@@ -1,12 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { APP_CONFIG } from "./config/constants";
 import type {
   EvaluationReportRecord,
+  RecordedAuditPage,
   RecordingDiff,
+  SimulatorEvent,
   SimulatorEventBatch,
   ScenarioSummary,
   WorldSnapshot,
-  LiveRunSummary
+  LiveRunSummary,
+  OfflineRunSummary,
+  RulePolicyStatus
 } from "./types/simulation";
 
 function isTauri(): boolean {
@@ -21,10 +26,14 @@ function invokeSimulator<T>(command: string, args?: Record<string, unknown>): Pr
 export interface SimulatorClient {
   connect(): Promise<void>;
   validateScenario(path: string): Promise<ScenarioSummary>;
+  listRulePolicies(): Promise<RulePolicyStatus>;
+  selectRulePolicy(policyId: string): Promise<unknown>;
+  createOfflineRun(path: string): Promise<OfflineRunSummary>;
   createLiveRun(path: string, timeoutMs: number): Promise<LiveRunSummary>;
   start(): Promise<void>;
   pause(): Promise<void>;
   stepLive(): Promise<unknown>;
+  step(): Promise<unknown>;
   stop(): Promise<void>;
   resume(scenarioPath: string, runId: string): Promise<void>;
   approveAction(requestId: string): Promise<unknown>;
@@ -35,6 +44,19 @@ export interface SimulatorClient {
   startReplay(scenarioPath: string, recordingPath: string): Promise<unknown>;
   diffRecordings(sourceRecordingPath: string, candidateRecordingPath: string): Promise<RecordingDiff>;
   snapshot(cursor?: number): Promise<SimulatorEventBatch>;
+  recordedAuditPage(request: {
+    runId: string;
+    startTick: number;
+    endTick: number;
+    offset?: number;
+    afterSequence?: number;
+    tailLimit?: number;
+  }): Promise<RecordedAuditPage>;
+  recordedAuditEvents(runId: string, startTick: number, endTick: number): Promise<{
+    events: SimulatorEvent[];
+    totalEvents: number;
+    earliestOffset: number;
+  }>;
   simulationSnapshot(): Promise<WorldSnapshot>;
   evaluateRun(runId: string, scenarioId: string): Promise<EvaluationReportRecord>;
   listEvaluationReports(): Promise<EvaluationReportRecord[]>;
@@ -59,6 +81,18 @@ export const simulatorClient: SimulatorClient = {
     }
     return invokeSimulator("validate_scenario", { path });
   },
+  async listRulePolicies() {
+    if (!isTauri()) return { available: false, policies: [] };
+    return invokeSimulator<RulePolicyStatus>("list_rule_policies");
+  },
+  async selectRulePolicy(policyId: string) {
+    if (!isTauri()) return { policyId };
+    return invokeSimulator("select_rule_policy", { policyId });
+  },
+  async createOfflineRun(path: string) {
+    if (!isTauri()) return { runId: "preview-offline-run", status: "ready", scenarioHash: "dev-preview" };
+    return invokeSimulator<OfflineRunSummary>("create_simulation_run", { path });
+  },
   async createLiveRun(path: string, timeoutMs: number) {
     if (!isTauri()) return { runId: "preview-live-run", backend: "preview-no-backend" };
     return invokeSimulator<LiveRunSummary>("create_live_simulation_run", { path, timeoutMs });
@@ -71,6 +105,9 @@ export const simulatorClient: SimulatorClient = {
   },
   async stepLive() {
     return invokeSimulator("step_live_simulation");
+  },
+  async step() {
+    return invokeSimulator("step_simulation");
   },
   async stop() {
     await invokeSimulator<void>("stop_simulation");
@@ -115,6 +152,35 @@ export const simulatorClient: SimulatorClient = {
       firstAvailableCursor: cursor ?? 0,
       resetRequired: false
     };
+  },
+  async recordedAuditPage(request) {
+    if (!isTauri()) return { events: [], offset: request.offset ?? 0, totalEvents: 0, truncated: false };
+    return invokeSimulator<RecordedAuditPage>("get_recorded_audit_events", {
+      request: { ...request, limit: 256 }
+    });
+  },
+  async recordedAuditEvents(runId, startTick, endTick) {
+    if (!isTauri()) return { events: [], totalEvents: 0, earliestOffset: 0 };
+    const events: SimulatorEvent[] = [];
+    let afterSequence: number | undefined;
+    let hasMore = true;
+    let totalEvents = 0;
+    let earliestOffset = 0;
+    while (hasMore) {
+      const page = await this.recordedAuditPage({
+        runId,
+        startTick,
+        endTick,
+        afterSequence,
+        tailLimit: APP_CONFIG.MAX_AUDIT_RECOVERY_EVENTS,
+      });
+      events.push(...page.events.map((item) => item.event));
+      afterSequence = page.nextSequence;
+      hasMore = afterSequence !== undefined;
+      totalEvents = page.totalEvents;
+      if (events.length === page.events.length) earliestOffset = page.offset;
+    }
+    return { events, totalEvents, earliestOffset };
   },
   async simulationSnapshot() {
     return invokeSimulator<WorldSnapshot>("get_simulation_snapshot");

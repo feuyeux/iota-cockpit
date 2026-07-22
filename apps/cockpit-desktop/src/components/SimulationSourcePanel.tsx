@@ -19,7 +19,7 @@ import {
   canStop,
   type SimulationAction
 } from "../state/simulationReducer";
-import type { EvaluationReportRecord, RecordingDiff, SimulationModel } from "../types/simulation";
+import type { EvaluationReportRecord, RecordingDiff, RulePolicyStatus, SimulationModel } from "../types/simulation";
 import { BENCHMARK_SCENARIOS, COCKPIT_DOMAINS, localize } from "../config/scenarioCatalog";
 import { useI18n } from "../i18n";
 
@@ -29,26 +29,18 @@ interface Props {
   onEvaluationCompleted?: (report: EvaluationReportRecord) => void;
 }
 
-type SourceMode = "live" | "replay";
+type SourceMode = "live" | "offline" | "replay";
 
 /// Consolidates what used to be two separate panels (Scenario/RunControl and
 /// Replay) into a single "Run Source" panel with two tabs. Both panels were
 /// answering the same underlying question - "what data is driving the world
 /// view right now" - so splitting them made the product harder to learn.
 /// Live = drive the world from a running scenario via the backend (hermes)
-/// human-decision loop. Replay = drive it from a recorded run instead. Only
+/// human-decision loop. Offline = drive it with the deterministic RuleAgent.
+/// Replay = drive it from a recorded run instead. Only
 /// one is ever "active" at a time, so a tabbed layout keeps controls close
 /// without permanently doubling vertical space.
 ///
-/// There used to be a second "rule demo" drive mode backed by a local
-/// deterministic RuleAgent (no real model call). It has been removed from
-/// this desktop surface: every human decision is now always driven by a
-/// real backend turn (hermes via iota-core ACP), matching the product's
-/// actual requirement of evaluating simulations through the backend rather
-/// than a scripted stand-in. The Rust-side RuleAgent/rule IPC commands still
-/// exist and remain load-bearing for the Rust contract/integration test
-/// suite and the offline CLI demo path - only this desktop UI's toggle and
-/// its dedicated Tauri bindings were removed.
 function reportFailure(
   dispatch: React.Dispatch<SimulationAction>,
   model: SimulationModel,
@@ -98,11 +90,42 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
   const [scenarioPath, setScenarioPath] = useState<string>(APP_CONFIG.DEFAULT_SCENARIO_PATH);
   const [recordingPath, setRecordingPath] = useState("");
   const [candidatePath, setCandidatePath] = useState("");
+  const [rulePolicies, setRulePolicies] = useState<RulePolicyStatus>({ available: false, policies: [] });
+  const [policyError, setPolicyError] = useState<string>();
+  const [policyLoading, setPolicyLoading] = useState(false);
   const selectedScenario = BENCHMARK_SCENARIOS.find((scenario) => scenario.path === scenarioPath);
   // The timeout only takes effect on the next Load, so lock the input while a
   // run is actually in flight to avoid a control that silently has no effect
   // on the active run.
   const timeoutLocked = canStop(model) || model.state === "scenarioLoading" || model.state === "runCreating";
+
+  useEffect(() => {
+    if (!model.serviceConnected) return;
+    let cancelled = false;
+    void simulatorClient.listRulePolicies().then((status) => {
+      if (!cancelled) {
+        setRulePolicies(status);
+        setPolicyError(undefined);
+      }
+    }).catch((error) => {
+      if (!cancelled) setPolicyError(describeError(error, t("commandFailed")));
+    });
+    return () => { cancelled = true; };
+  }, [model.serviceConnected, t]);
+
+  async function chooseRulePolicy(policyId: string) {
+    if (!policyId) return;
+    setPolicyLoading(true);
+    try {
+      const result = await simulatorClient.selectRulePolicy(policyId) as { policyId?: string };
+      setRulePolicies((current) => ({ ...current, selectedPolicyId: result.policyId ?? policyId }));
+      setPolicyError(undefined);
+    } catch (error) {
+      setPolicyError(describeError(error, t("commandFailed")));
+    } finally {
+      setPolicyLoading(false);
+    }
+  }
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -150,14 +173,17 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
         return undefined;
       }
       dispatch({ type: "runCreating" });
-      const live = await simulatorClient.createLiveRun(path, modelTimeoutMs);
+      const run = mode === "offline"
+        ? await simulatorClient.createOfflineRun(path)
+        : await simulatorClient.createLiveRun(path, modelTimeoutMs);
+      const backend = "backend" in run ? run.backend : "rule-agent";
       dispatch({
         type: "scenarioReady",
         scenario,
-        runId: live.runId,
-        backend: live.backend
+        runId: run.runId,
+        backend
       });
-      return { scenario, runId: live.runId };
+      return { scenario, runId: run.runId };
     } finally {
       scenarioLoadLock.current = false;
       setScenarioLoadInFlight(false);
@@ -168,7 +194,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
     if (liveTurnInFlight || autoRunInFlight) return;
     setLiveTurnInFlight(true);
     try {
-      await runCommand(simulatorClient.stepLive);
+      await runCommand(mode === "offline" ? simulatorClient.step : simulatorClient.stepLive);
     } finally {
       setLiveTurnInFlight(false);
     }
@@ -194,7 +220,9 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
 
       let terminalStatus = "";
       for (let index = 0; index < maxTicks && !autoRunCancelled.current; index += 1) {
-        const result = await simulatorClient.stepLive();
+        const result = mode === "offline"
+          ? await simulatorClient.step()
+          : await simulatorClient.stepLive();
         const status = typeof result === "object" && result !== null && "status" in result
           ? String((result as { status?: unknown }).status)
           : "";
@@ -216,7 +244,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
         }
         await new Promise((resolve) => window.setTimeout(resolve, APP_CONFIG.AUTO_RUN_EVENT_POLL_INTERVAL_MS));
       }
-      if (!autoRunCancelled.current && !["failed", "stopped"].includes(terminalStatus)) {
+      if (!autoRunCancelled.current && terminalStatus === "completed") {
         const report = await simulatorClient.evaluateRun(loaded.runId, loaded.scenario.id);
         onEvaluationCompleted?.(report);
       }
@@ -245,7 +273,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
   async function stopRun() {
     autoRunCancelled.current = true;
     try {
-      await simulatorClient.cancelLiveTurn();
+      if (mode === "live") await simulatorClient.cancelLiveTurn();
     } catch (error) {
       reportFailure(dispatch, model, error, t("commandFailed"));
       return;
@@ -293,12 +321,21 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
     <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-zinc-800/90 bg-zinc-900/60 backdrop-blur-md shadow-sm">
       <div className="flex shrink-0 border-b border-zinc-800/80 bg-zinc-900/80 text-xs font-semibold">
         <button
+          aria-label={t("liveRun")}
           className={`flex-1 h-[26px] transition-colors duration-150 ${mode === "live" ? "border-b-2 border-cyan-400 text-cyan-200" : "text-zinc-400 hover:text-zinc-200"}`}
           onClick={() => setMode("live")}
         >
           {t("liveRun")}
         </button>
         <button
+          aria-label={t("offlineRun")}
+          className={`flex-1 h-[26px] transition-colors duration-150 ${mode === "offline" ? "border-b-2 border-cyan-400 text-cyan-200" : "text-zinc-400 hover:text-zinc-200"}`}
+          onClick={() => setMode("offline")}
+        >
+          {t("offlineRun")}
+        </button>
+        <button
+          aria-label={t("replay")}
           className={`flex-1 h-[26px] transition-colors duration-150 ${mode === "replay" ? "border-b-2 border-cyan-400 text-cyan-200" : "text-zinc-400 hover:text-zinc-200"}`}
           onClick={() => setMode("replay")}
         >
@@ -306,7 +343,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
         </button>
       </div>
 
-      {mode === "live" ? (
+      {mode === "live" || mode === "offline" ? (
         <div className="flex min-h-0 flex-1 flex-col space-y-2.5 overflow-hidden p-2.5">
           {/* Dropdown & Custom Scenario Selector */}
           <div className="space-y-1.5 shrink-0">
@@ -347,7 +384,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
             </div>
           </div>
 
-          {/* Primary Action Button: 仿真评测 */}
+          {/* Primary Action Button: run to completion, then evaluate the finalized recording. */}
           <button
             aria-label="一键运行"
             className="flex h-[26px] w-full shrink-0 items-center justify-center gap-1.5 rounded-md border border-emerald-500/80 bg-emerald-950/70 px-2.5 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-900/80 disabled:opacity-40 shadow-xs"
@@ -370,7 +407,7 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
           </div>
 
           {/* Model Drive & Timeout Config */}
-          <div className="shrink-0 rounded border border-zinc-800/80 bg-zinc-950/40 p-2 text-[10px]">
+          {mode === "offline" ? <div className="shrink-0 rounded border border-zinc-800/80 bg-zinc-950/40 p-2 text-[10px]">
             <div className="flex items-center justify-between text-zinc-400">
               <span>{t("backend")}: <code className="font-mono text-zinc-200">{model.backend ?? t("backendPending")}</code></span>
               <label className="flex items-center gap-1.5">
@@ -387,6 +424,23 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
                 />
               </label>
             </div>
+          </div> : null}
+
+          <div className="shrink-0 rounded border border-zinc-800/80 bg-zinc-950/40 p-2 text-[10px]">
+            <label className="flex items-center justify-between gap-2 text-zinc-400">
+              <span>{t("rulePolicy")}</span>
+              <select
+                aria-label={t("rulePolicy")}
+                className="h-6 min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-950 px-1 text-xs text-zinc-100 disabled:opacity-40"
+                disabled={!rulePolicies.available || policyLoading || timeoutLocked}
+                value={rulePolicies.selectedPolicyId ?? ""}
+                onChange={(event) => void chooseRulePolicy(event.target.value)}
+              >
+                <option value="">{rulePolicies.available ? t("rulePolicySelect") : t("rulePolicyUnavailable")}</option>
+                {rulePolicies.policies.map((policyId) => <option key={policyId} value={policyId}>{policyId}</option>)}
+              </select>
+            </label>
+            {policyError ? <div className="mt-1 text-rose-300">{policyError}</div> : null}
           </div>
 
           {/* Scenario Details (Expands to fill remaining height) */}

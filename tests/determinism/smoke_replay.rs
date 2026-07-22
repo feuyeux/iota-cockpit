@@ -4,9 +4,9 @@ use cockpit_recording::{
 };
 use cockpit_scenario::load_scenario;
 use cockpit_world::{
-    ActionRequest, Simulation, StateDiff, capability::CapabilityCatalog, resolve_action,
+    ActionRequest, Simulation, StateDiff, StatePatch, TICK_PHASE_ORDER,
+    capability::CapabilityCatalog, resolve_action,
 };
-use serde_json::json;
 
 #[test]
 fn smoke_scenario_records_replays_and_evaluates_deterministically() {
@@ -19,6 +19,40 @@ fn smoke_scenario_records_replays_and_evaluates_deterministically() {
 
     assert_eq!(first.final_snapshot_hash(), second.final_snapshot_hash());
     assert_eq!(first.final_snapshot_hash(), replay.final_snapshot_hash());
+    for tick in &first.ticks {
+        assert_eq!(
+            tick.phase_hashes
+                .iter()
+                .map(|entry| entry.phase)
+                .collect::<Vec<_>>(),
+            TICK_PHASE_ORDER,
+            "tick {} must retain every static phase",
+            tick.tick
+        );
+        assert!(
+            tick.phase_hashes.windows(2).all(|pair| {
+                pair[0].output_snapshot_hash == pair[1].input_snapshot_hash
+                    && pair[0].output_event_hash == pair[1].input_event_hash
+            }),
+            "tick {} phase hashes must form a single state and event chain",
+            tick.tick
+        );
+        assert_eq!(
+            tick.phase_hashes
+                .last()
+                .map(|entry| &entry.output_snapshot_hash),
+            Some(&tick.snapshot_hash),
+            "final phase must produce the recorded snapshot",
+        );
+    }
+    let mut legacy_step = serde_json::to_value(&first.ticks[0]).expect("step serializes");
+    legacy_step
+        .as_object_mut()
+        .expect("step is an object")
+        .remove("phaseHashes");
+    let legacy_step: cockpit_world::StepRecord =
+        serde_json::from_value(legacy_step).expect("legacy step remains readable");
+    assert!(legacy_step.phase_hashes.is_empty());
 
     let evaluation = evaluate_smoke_shutdown(&first, deadline);
     assert!(evaluation.passed, "{evaluation:?}");
@@ -82,9 +116,7 @@ fn committed_state_diffs_are_audited_and_replayed_deterministically() {
     simulation.start().expect("run starts");
     let diff = StateDiff {
         source_id: "smoke-plugin".to_string(),
-        entity_id: "cabin".to_string(),
-        component_path: "environment.visibility".to_string(),
-        value: json!(0.4),
+        patch: StatePatch::CabinVisibility { value: 0.4 },
         expected_state_version: 0,
     };
     let step = simulation
@@ -103,6 +135,68 @@ fn committed_state_diffs_are_audited_and_replayed_deterministically() {
     assert_eq!(
         recording.final_snapshot_hash(),
         replay.final_snapshot_hash()
+    );
+}
+
+#[test]
+fn state_diff_recording_is_canonical_and_rejects_conflicting_writes() {
+    let scenario = load_scenario("scenarios/smoke-in-cockpit.yaml").expect("scenario loads");
+    let make_diff = |source_id: &str, patch: StatePatch| StateDiff {
+        source_id: source_id.to_string(),
+        patch,
+        expected_state_version: 0,
+    };
+    let mut first = Simulation::new("canonical-run", scenario.clone());
+    let mut second = Simulation::new("canonical-run", scenario.clone());
+    first.start().expect("first starts");
+    second.start().expect("second starts");
+
+    let unordered = vec![
+        make_diff("plugin-b", StatePatch::CabinVisibility { value: 0.4 }),
+        make_diff("plugin-a", StatePatch::CabinTemperature { value: 23.0 }),
+    ];
+    let mut reversed = unordered.clone();
+    reversed.reverse();
+    let first_step = first
+        .step_with_state_diffs(unordered)
+        .expect("first commits");
+    let second_step = second
+        .step_with_state_diffs(reversed)
+        .expect("second commits");
+    assert_eq!(first_step.state_diffs, second_step.state_diffs);
+    assert_eq!(
+        serde_json::to_vec(&first_step).expect("first serializes"),
+        serde_json::to_vec(&second_step).expect("second serializes")
+    );
+
+    let mut conflicting = Simulation::new("canonical-conflict", scenario);
+    conflicting.start().expect("conflicting run starts");
+    let error = conflicting
+        .step_with_state_diffs(vec![
+            make_diff("plugin-a", StatePatch::CabinVisibility { value: 0.4 }),
+            make_diff("plugin-b", StatePatch::CabinVisibility { value: 0.5 }),
+        ])
+        .expect_err("conflicting writes must be rejected");
+    assert!(error.to_string().contains("multiple state diffs target"));
+}
+
+#[test]
+fn state_patch_wire_contract_is_tagged_and_rejects_legacy_path_value_shape() {
+    let patch = StatePatch::HumanAttention {
+        human_id: "pilot-1".to_string(),
+        value: 0.75,
+    };
+    let value = serde_json::to_value(&patch).expect("patch serializes");
+    assert_eq!(value["kind"], "humanAttention");
+    assert_eq!(value["humanId"], "pilot-1");
+    assert_eq!(value["value"], 0.75);
+    assert!(
+        serde_json::from_value::<StatePatch>(serde_json::json!({
+            "entityId": "cabin",
+            "componentPath": "environment.visibility",
+            "value": 0.4
+        }))
+        .is_err()
     );
 }
 

@@ -1,7 +1,9 @@
+#[cfg(feature = "live-acp")]
+use cockpit_agent::iota_core_adapter::IotaCoreAdapter;
 use cockpit_agent::{
     LocalMcpServer, OpenWorldControlRequest, TOOL_ADD_GOAL, TOOL_GET_ACTION_RESULT,
     TOOL_GET_OBSERVATION, TOOL_GET_TURN_CONTEXT, TOOL_LIST_VISIBLE_ENTITIES, TOOL_REQUEST_ACTION,
-    TOOL_SUBMIT_DECISION, TOOL_WAIT_UNTIL, ToolRequest, iota_core_adapter::IotaCoreAdapter,
+    TOOL_SUBMIT_DECISION, TOOL_WAIT_UNTIL, ToolRequest,
 };
 use cockpit_scenario::load_scenario;
 use cockpit_world::Simulation;
@@ -346,6 +348,7 @@ fn domain_action_requires_approval_before_world_state_changes() {
     assert_eq!(simulation.snapshot.environment.temperature_c, 25.5);
 }
 
+#[cfg(feature = "live-acp")]
 #[test]
 fn iota_core_adapter_loads_cockpit_skill_from_public_registry() {
     let skill = IotaCoreAdapter::new(env!("CARGO_MANIFEST_DIR"))

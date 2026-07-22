@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 1630" width="1450" height="1630" role="img" aria-labelledby="title description">
+  <title id="title">Desktop run and final evaluation sequence</title>
+  <desc id="description">The current Desktop Run and Evaluate sequence. Tick progress is distinct from final evaluation. The Host freezes a completed durable recording, the evaluator performs deterministic scoring, and only then optionally calls two independent Judge providers in sequence.</desc>
+  <style>
+    text { font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif; fill: #111827; }
+    .title { font-size: 24px; font-weight: 600; }
+    .subtitle { font-size: 13px; fill: #4b5563; }
+    .participant { font-size: 14px; font-weight: 600; }
+    .label { font-size: 12px; }
+    .small { font-size: 11px; fill: #4b5563; }
+    .frame { font-size: 13px; font-weight: 600; }
+    .lifeline { stroke: #9ca3af; stroke-width: 1.2; stroke-dasharray: 5 5; }
+    .main { stroke: #2563eb; stroke-width: 2; fill: none; marker-end: url(#blue); }
+    .control { stroke: #ea580c; stroke-width: 1.7; fill: none; marker-end: url(#orange); }
+    .data { stroke: #059669; stroke-width: 1.8; fill: none; marker-end: url(#green); }
+    .internal { stroke: #7c3aed; stroke-width: 1.5; fill: none; marker-end: url(#purple); }
+    .async { stroke: #6b7280; stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; marker-end: url(#gray); }
+  </style>
+  <defs>
+    <marker id="blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#2563eb"/></marker>
+    <marker id="orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ea580c"/></marker>
+    <marker id="green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#059669"/></marker>
+    <marker id="purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#7c3aed"/></marker>
+    <marker id="gray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#6b7280"/></marker>
+  </defs>
+
+  <rect width="1450" height="1630" fill="#ffffff"/>
+  <text x="40" y="42" class="title">Desktop “运行并评测”时序</text>
+  <text x="40" y="66" class="subtitle">每 tick 只更新进度；最终评测对 completed、durable、当前 run 的完整脱敏 Recording 执行</text>
+
+  <!-- Participants -->
+  <g>
+    <rect x="55" y="92" width="150" height="48" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/><text x="130" y="121" text-anchor="middle" class="participant">Desktop UI</text>
+    <rect x="275" y="92" width="150" height="48" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/><text x="350" y="121" text-anchor="middle" class="participant">Tauri Host</text>
+    <rect x="495" y="92" width="150" height="48" rx="8" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/><text x="570" y="121" text-anchor="middle" class="participant">Simulator / Store</text>
+    <rect x="735" y="92" width="150" height="48" rx="8" fill="#faf5ff" stroke="#ddd6fe" stroke-width="1.5"/><text x="810" y="121" text-anchor="middle" class="participant">Evaluator</text>
+    <rect x="975" y="92" width="150" height="48" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/><text x="1050" y="121" text-anchor="middle" class="participant">Judge A provider</text>
+    <rect x="1215" y="92" width="170" height="48" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/><text x="1300" y="121" text-anchor="middle" class="participant">Judge B provider</text>
+  </g>
+
+  <!-- All frames are deliberately painted before lifelines and messages. -->
+  <g aria-label="loop and alternative backgrounds">
+    <rect x="35" y="270" width="650" height="210" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <rect x="35" y="500" width="1360" height="1095" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <rect x="715" y="910" width="660" height="580" rx="8" fill="#fdf4ff" stroke="#c4b5fd" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <line x1="715" y1="1015" x2="1375" y2="1015" stroke="#c4b5fd" stroke-width="1" stroke-dasharray="6 4"/>
+  </g>
+
+  <g class="lifeline">
+    <line x1="130" y1="140" x2="130" y2="1600"/><line x1="350" y1="140" x2="350" y2="1600"/>
+    <line x1="570" y1="140" x2="570" y2="1600"/><line x1="810" y1="140" x2="810" y2="1600"/>
+    <line x1="1050" y1="140" x2="1050" y2="1600"/><line x1="1300" y1="140" x2="1300" y2="1600"/>
+  </g>
+
+  <line x1="130" y1="182" x2="350" y2="182" class="control"/><text x="240" y="173" text-anchor="middle" class="label">点击“运行并评测”</text>
+  <line x1="350" y1="225" x2="570" y2="225" class="main"/><text x="460" y="216" text-anchor="middle" class="label">create + start live run</text>
+
+  <text x="52" y="294" class="frame">loop：最多 deadlineTick 次，直到 completed / stopped / failed</text>
+  <line x1="350" y1="338" x2="570" y2="338" class="main"/><text x="460" y="329" text-anchor="middle" class="label">step_live_simulation</text>
+  <line x1="570" y1="380" x2="350" y2="380" class="async"/><text x="460" y="371" text-anchor="middle" class="label">committed tick、事件、动作、recording 状态</text>
+  <line x1="350" y1="422" x2="130" y2="422" class="async"/><text x="240" y="413" text-anchor="middle" class="label">SimulationEvaluationProgress</text>
+  <text x="240" y="452" text-anchor="middle" class="small">recordedTicks / recording；不是 verdict、score 或 release gate</text>
+
+  <text x="52" y="524" class="frame">alt：运行终态</text>
+  <text x="54" y="552" class="small">[completed]</text>
+  <line x1="130" y1="580" x2="350" y2="580" class="control"/><text x="240" y="571" text-anchor="middle" class="label">evaluate_run(runId, scenarioId)</text>
+  <line x1="350" y1="622" x2="570" y2="622" class="main"/><text x="460" y="613" text-anchor="middle" class="label">finalized_recording_snapshot(runId)</text>
+  <line x1="570" y1="664" x2="350" y2="664" class="data"/><text x="460" y="655" text-anchor="middle" class="label">immutable durable Recording</text>
+  <line x1="350" y1="704" x2="350" y2="734" class="internal"/><text x="365" y="720" class="small">拒绝非当前 run、非 completed、未 durable 或 scenario 不匹配</text>
+  <line x1="350" y1="758" x2="350" y2="788" class="internal"/><text x="365" y="775" class="small">serialize_redacted_recording；写临时 input，解析 private rubric</text>
+  <line x1="350" y1="822" x2="810" y2="822" class="data"/><text x="580" y="813" text-anchor="middle" class="label">启动 evaluator：temp recording + rubric + A/B 配置</text>
+
+  <line x1="810" y1="858" x2="810" y2="888" class="internal"/><text x="826" y="868" class="small">校验 schema、scenario/hash、committed ticks、规则注册</text><text x="826" y="883" class="small">逐条 rule：deadline task + safety / trajectory policy；收集真实 evidence</text>
+  <text x="732" y="936" class="frame">alt：Evaluator 分支</text>
+  <text x="732" y="966" class="small">[deterministic=inconclusive 或未配置成对 A/B]</text>
+  <line x1="810" y1="990" x2="350" y2="990" class="data"/><text x="580" y="981" text-anchor="middle" class="label">返回 deterministic EvidenceVerdict</text>
+  <text x="732" y="1042" class="small">[deterministic=pass/fail 且 A/B 完整配置]</text>
+  <line x1="810" y1="1070" x2="810" y2="1100" class="internal"/><text x="826" y="1082" class="small">canonicalize A/B；路径、executable SHA-256 与可选 pin 校验</text><text x="826" y="1097" class="small">ExternalJudge：每个 provider 的外层 timeout；stdout &lt;= 1 MiB，stderr &lt;= 4 KiB</text>
+  <line x1="810" y1="1132" x2="1050" y2="1132" class="main"/><text x="930" y="1123" text-anchor="middle" class="label">A stdin：JudgeRequest</text>
+  <line x1="1050" y1="1168" x2="1050" y2="1198" class="internal"/><text x="1050" y="1181" text-anchor="middle" class="small">内部 wrapper：例如 Hermes ACP；无 tools / mutation</text><text x="1050" y="1195" text-anchor="middle" class="small">内部 timeout + cancel</text>
+  <line x1="1050" y1="1230" x2="810" y2="1230" class="data"/><text x="930" y="1221" text-anchor="middle" class="label">A stdout：JudgeDecision</text>
+  <line x1="810" y1="1264" x2="1300" y2="1264" class="main"/><text x="1055" y="1255" text-anchor="middle" class="label">B stdin：同一 JudgeRequest，顺序执行</text>
+  <line x1="1300" y1="1300" x2="1300" y2="1330" class="internal"/><text x="1300" y="1315" text-anchor="middle" class="small">B_BIN 指定；默认不走 OpenCode</text>
+  <text x="1300" y="1331" text-anchor="middle" class="small">opencode 时走 ACP，需 backend-command</text>
+  <line x1="1300" y1="1362" x2="810" y2="1362" class="data"/><text x="1055" y="1353" text-anchor="middle" class="label">B stdout：JudgeDecision</text>
+  <line x1="810" y1="1400" x2="810" y2="1430" class="internal"/><text x="826" y="1410" class="small">覆写 providerSha256；回验 hash、身份、confidence 与 evidence</text><text x="826" y="1425" class="small">evidence 必须命中 recording 的 tick / event / action / entity</text>
+  <line x1="810" y1="1452" x2="810" y2="1482" class="internal"/><text x="826" y="1460" class="small">校验 A/B 的 judgeId、model、provider digest 彼此独立</text><text x="826" y="1475" class="small">与确定性三方任一不一致 -&gt; inconclusive；计算 releaseGate</text>
+  <line x1="810" y1="1512" x2="350" y2="1512" class="data"/><text x="580" y="1503" text-anchor="middle" class="label">EvidenceVerdict</text>
+  <line x1="350" y1="1544" x2="350" y2="1574" class="internal"/><text x="365" y="1558" class="small">删除临时 input；原子持久化 evaluation history（最多 100 条）</text>
+  <line x1="350" y1="1598" x2="130" y2="1598" class="data"/><text x="240" y="1589" text-anchor="middle" class="label">EvaluationReportRecord；自动展开评测面板</text>
+
+  <text x="54" y="1620" class="small">[stopped / failed / cancelled] 不调用 evaluate_run，只报告运行终态与错误；不产生最终评测报告。</text>
+</svg>

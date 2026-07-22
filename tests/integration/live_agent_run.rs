@@ -7,6 +7,7 @@
 //! iota-core ACP backend against a deliberately short timeout and asserts the
 //! run fails fast rather than silently degrading.
 
+use cockpit_agent::LiveTickMode;
 use cockpit_recording::{CURRENT_RUNTIME_CONTRACT_VERSION, Recording};
 use cockpit_scenario::load_scenario;
 use cockpit_simulator::{LiveRunConfig, replay_live, run_live};
@@ -16,6 +17,7 @@ fn base_config() -> LiveRunConfig {
         scenario_path: "scenarios/smoke-in-cockpit.yaml".to_string(),
         ticks: 20,
         timeout_ms: 100,
+        tick_mode: LiveTickMode::Strict,
     }
 }
 
@@ -108,6 +110,7 @@ async fn live_acp_backend_unavailable_aborts_the_run_without_a_fallback() {
         scenario_path: "scenarios/smoke-in-cockpit.yaml".to_string(),
         ticks: 5,
         timeout_ms: 50,
+        tick_mode: LiveTickMode::Strict,
     })
     .await
     .expect("run_live resolves (with a reported error) rather than panicking");
@@ -145,6 +148,7 @@ async fn bundled_live_scenarios_are_either_synthetic_successes_or_fail_closed_ac
             scenario_path: path.to_string(),
             ticks: scenario.max_ticks + 6,
             timeout_ms: 100,
+            tick_mode: LiveTickMode::Strict,
         })
         .await
         .unwrap_or_else(|error| panic!("{path}: {error}"));

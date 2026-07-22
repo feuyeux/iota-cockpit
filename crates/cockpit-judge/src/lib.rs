@@ -118,6 +118,7 @@ pub async fn run_for_backend(default_backend: AcpBackend) -> anyhow::Result<()> 
             prompt_hash,
             rubric_hash: stable_hash(&request.rubric),
             schema_hash: schema_hash(),
+            provider_sha256: None,
         },
     };
     let mut stdout = std::io::stdout().lock();

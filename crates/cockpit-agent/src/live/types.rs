@@ -12,6 +12,9 @@ use crate::{LocalMcpServer, ToolResponse, native_mcp::NativeMcpCall};
 
 use super::IMPLICIT_NARRATIVE;
 
+pub(super) const RECORDED_BACKEND_FAILURE: &str = "recorded best-effort backend failure";
+pub(super) const RECORDED_INVALID_OUTPUT_FAILURE: &str = "recorded best-effort invalid output";
+
 /// Bounded numeric adjustment to a human's dynamic state, applied after range
 /// validation. Fields are optional deltas; an absent field leaves that value
 /// unchanged this tick.
@@ -85,6 +88,36 @@ pub enum HumanTurnError {
     InvalidOutput { human_id: String, reason: String },
 }
 
+/// Transaction semantics for a live simulation tick. Strict remains the
+/// default: any scheduled human failure aborts the whole tick. Best-effort
+/// rolls back only the failed human's turn and records a redacted disposition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveTickMode {
+    #[default]
+    Strict,
+    BestEffort,
+}
+
+/// Stable, redacted category of a skipped best-effort human turn. Backend
+/// messages are intentionally excluded from durable evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HumanTurnFailureKind {
+    Backend,
+    InvalidOutput,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum HumanTurnDisposition {
+    #[default]
+    Completed,
+    Failed {
+        kind: HumanTurnFailureKind,
+    },
+}
+
 /// Per-tick record of one human's backend-driven decision, kept alongside the
 /// deterministic [`cockpit_world::simulation::StepRecord`] as
 /// recording/replay evidence.
@@ -93,6 +126,8 @@ pub enum HumanTurnError {
 pub struct HumanTurnEvidence {
     pub human_id: String,
     pub decision: HumanDecision,
+    #[serde(default)]
+    pub disposition: HumanTurnDisposition,
     #[serde(default)]
     pub tool_calls: Vec<HumanToolCall>,
     #[serde(default)]
@@ -174,7 +209,7 @@ pub trait HumanBackend {
 /// driver preserves the Action Gateway, social perception, and state-delta
 /// boundaries without another model call.
 pub struct RecordedHumanBackend {
-    outputs: std::collections::VecDeque<String>,
+    outputs: std::collections::VecDeque<Result<String, String>>,
 }
 
 impl RecordedHumanBackend {
@@ -187,16 +222,28 @@ impl RecordedHumanBackend {
             .iter()
             .flat_map(|tick| tick.iter())
             .flat_map(|evidence| {
+                if matches!(evidence.disposition, HumanTurnDisposition::Failed { .. }) {
+                    let reason = match evidence.disposition {
+                        HumanTurnDisposition::Failed {
+                            kind: HumanTurnFailureKind::Backend,
+                        } => RECORDED_BACKEND_FAILURE,
+                        HumanTurnDisposition::Failed {
+                            kind: HumanTurnFailureKind::InvalidOutput,
+                        } => RECORDED_INVALID_OUTPUT_FAILURE,
+                        HumanTurnDisposition::Completed => unreachable!("matched above"),
+                    };
+                    return vec![Err(reason.to_string())];
+                }
                 let mut outputs = evidence
                     .tool_calls
                     .iter()
                     .map(|call| {
-                        serde_json::json!({
+                        Ok(serde_json::json!({
                             "type": "toolCall",
                             "tool": call.tool.clone(),
                             "arguments": call.arguments.clone()
                         })
-                        .to_string()
+                        .to_string())
                     })
                     .collect::<Vec<_>>();
                 let mut decision = evidence.decision.clone();
@@ -208,7 +255,7 @@ impl RecordedHumanBackend {
                 if let Some(object) = final_value.as_object_mut() {
                     object.insert("type".to_string(), Value::String("final".to_string()));
                 }
-                outputs.push(final_value.to_string());
+                outputs.push(Ok(final_value.to_string()));
                 outputs
             })
             .collect();
@@ -218,8 +265,8 @@ impl RecordedHumanBackend {
 
 impl HumanBackend for RecordedHumanBackend {
     async fn run_turn(&mut self, _context: &HumanTurnContext) -> Result<String, String> {
-        self.outputs
-            .pop_front()
-            .ok_or_else(|| "recorded backend exhausted its outputs during replay".to_string())
+        self.outputs.pop_front().unwrap_or_else(|| {
+            Err("recorded backend exhausted its outputs during replay".to_string())
+        })
     }
 }

@@ -36,6 +36,24 @@ pub async fn serve_persistent(
     }
 }
 
+pub async fn serve_persistent_with_policy_bundle(
+    bind: &str,
+    session_token: impl Into<String>,
+    database_path: Option<&str>,
+    bundle: cockpit_agent::RulePolicyBundle,
+) -> io::Result<()> {
+    let session_token = session_token.into();
+    let mut handler = match database_path {
+        Some(path) => {
+            SimulatorHandler::new_persistent(session_token, path).map_err(io::Error::other)?
+        }
+        None => SimulatorHandler::new(session_token),
+    };
+    handler.configure_rule_policy_bundle(bundle);
+    let listener = TcpListener::bind(bind).await?;
+    serve_listener_with(listener, handler).await
+}
+
 pub async fn serve_listener(
     listener: TcpListener,
     session_token: impl Into<String>,

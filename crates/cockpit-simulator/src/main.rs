@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -22,6 +25,19 @@ enum Command {
         #[arg(long, default_value_t = 10000)]
         events_per_minute: u64,
     },
+    /// Benchmark serialized multi-human live ticks under strict and
+    /// best-effort failure semantics using a deterministic backend shim.
+    BenchLive {
+        scenario: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        human_count: usize,
+        #[arg(long, default_value_t = 20)]
+        ticks: u64,
+        #[arg(long, default_value_t = 25)]
+        backend_delay_ms: u64,
+        #[arg(long)]
+        failing_human_id: Option<String>,
+    },
     #[command(hide = true)]
     McpBridge {
         #[arg(long)]
@@ -36,6 +52,10 @@ enum Command {
         /// persists committed ticks so it can recover after a real restart.
         #[arg(long)]
         recording_db: Option<String>,
+        #[arg(long, requires = "rule_policy_public_key_base64")]
+        rule_policy_bundle: Option<PathBuf>,
+        #[arg(long, requires = "rule_policy_bundle")]
+        rule_policy_public_key_base64: Option<String>,
     },
     Validate {
         scenario: PathBuf,
@@ -54,10 +74,68 @@ enum Command {
         ticks: u64,
         #[arg(long, default_value_t = 2_000)]
         timeout_ms: u64,
+        /// Commit successful human turns when another scheduled human fails.
+        #[arg(long)]
+        best_effort: bool,
         /// Write the complete immutable Recording JSON for an external evaluator.
         #[arg(long)]
         recording_output: Option<PathBuf>,
     },
+    /// Generate a new Ed25519 policy signing key.
+    PolicyKeygen {
+        #[arg(long)]
+        private_key: PathBuf,
+    },
+    /// Sign the exact manifest.json bytes in a policy bundle.
+    PolicySign {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        private_key: PathBuf,
+    },
+    /// Revoke a policy in the signed manifest and append an audit record.
+    PolicyRevoke {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        policy_id: String,
+        #[arg(long)]
+        private_key: PathBuf,
+        #[arg(long)]
+        audit_log: Option<PathBuf>,
+    },
+}
+
+fn write_private_key(path: &Path, value: &str) -> anyhow::Result<()> {
+    let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = std::fs::File::create(&temp)
+        .with_context(|| format!("failed to create private key {}", temp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(value.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    std::fs::rename(&temp, path)
+        .with_context(|| format!("failed to publish private key {}", path.display()))?;
+    Ok(())
+}
+
+fn sign_policy_manifest(bundle: &Path, private_key: &Path) -> anyhow::Result<String> {
+    let manifest_path = bundle.join("manifest.json");
+    let manifest = std::fs::read(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let private = std::fs::read_to_string(private_key)
+        .with_context(|| format!("failed to read private key {}", private_key.display()))?;
+    let signature = cockpit_agent::RulePolicyBundle::sign_manifest(&private, &manifest)
+        .map_err(anyhow::Error::msg)?;
+    let signature_path = bundle.join("manifest.sig");
+    let temp = signature_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, format!("{signature}\n"))?;
+    std::fs::rename(&temp, &signature_path)?;
+    Ok(signature)
 }
 
 fn write_recording(
@@ -74,10 +152,7 @@ fn write_recording(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Keep iota-core's structured ACP phase logs visible in the simulator sidecar
-    // stderr. The guard must live until process exit so exporters can flush.
-    let _telemetry_guard =
-        iota_core::telemetry::init(&iota_core::telemetry::TelemetryConfig::default())?;
+    cockpit_agent::initialize_external_telemetry().map_err(anyhow::Error::msg)?;
     let cli = Cli::parse();
     match cli.command {
         Command::McpBridge { state } => {
@@ -98,17 +173,53 @@ async fn main() -> anyhow::Result<()> {
                 })?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        Command::BenchLive {
+            scenario,
+            human_count,
+            ticks,
+            backend_delay_ms,
+            failing_human_id,
+        } => {
+            let report = cockpit_simulator::benchmark::run_live(
+                cockpit_simulator::benchmark::LiveBenchmarkConfig {
+                    scenario_path: scenario.display().to_string(),
+                    human_count,
+                    ticks,
+                    backend_delay_ms,
+                    failing_human_id,
+                },
+            )
+            .await;
+            println!("{}", serde_json::to_string_pretty(&report?)?);
+        }
         Command::Serve {
             bind,
             session_token,
             recording_db,
+            rule_policy_bundle,
+            rule_policy_public_key_base64,
         } => {
-            cockpit_simulator::server::serve_persistent(
-                &bind,
-                session_token,
-                recording_db.as_deref(),
-            )
-            .await
+            if let (Some(bundle_path), Some(public_key)) =
+                (rule_policy_bundle, rule_policy_public_key_base64)
+            {
+                let bundle =
+                    cockpit_agent::RulePolicyBundle::discover_base64(bundle_path, &public_key)
+                        .map_err(anyhow::Error::msg)?;
+                cockpit_simulator::server::serve_persistent_with_policy_bundle(
+                    &bind,
+                    session_token,
+                    recording_db.as_deref(),
+                    bundle,
+                )
+                .await
+            } else {
+                cockpit_simulator::server::serve_persistent(
+                    &bind,
+                    session_token,
+                    recording_db.as_deref(),
+                )
+                .await
+            }
             .with_context(|| format!("failed to serve simulator on {bind}"))?;
         }
         Command::Validate { scenario } => {
@@ -155,12 +266,18 @@ async fn main() -> anyhow::Result<()> {
             scenario,
             ticks,
             timeout_ms,
+            best_effort,
             recording_output,
         } => {
             let report = cockpit_simulator::run_live(cockpit_simulator::LiveRunConfig {
                 scenario_path: scenario.display().to_string(),
                 ticks,
                 timeout_ms,
+                tick_mode: if best_effort {
+                    cockpit_agent::LiveTickMode::BestEffort
+                } else {
+                    cockpit_agent::LiveTickMode::Strict
+                },
             })
             .await
             .with_context(|| format!("failed to run live agent on {}", scenario.display()))?;
@@ -173,6 +290,91 @@ async fn main() -> anyhow::Result<()> {
                     report.error.unwrap_or_default()
                 );
             }
+        }
+        Command::PolicyKeygen { private_key } => {
+            let (private, public) = cockpit_agent::RulePolicyBundle::generate_signing_key()
+                .map_err(anyhow::Error::msg)?;
+            write_private_key(&private_key, &private)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "privateKeyPath": private_key,
+                    "publicKeyBase64": public,
+                })
+            );
+        }
+        Command::PolicySign {
+            bundle,
+            private_key,
+        } => {
+            let signature = sign_policy_manifest(&bundle, &private_key)?;
+            let private = std::fs::read_to_string(&private_key)?;
+            let public = cockpit_agent::RulePolicyBundle::public_key_from_private(&private)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "{}",
+                serde_json::json!({ "publicKeyBase64": public, "signature": signature })
+            );
+        }
+        Command::PolicyRevoke {
+            bundle,
+            policy_id,
+            private_key,
+            audit_log,
+        } => {
+            let manifest_path = bundle.join("manifest.json");
+            let manifest_bytes = std::fs::read(&manifest_path)?;
+            let mut manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+            let policies = manifest
+                .get("policies")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| anyhow::anyhow!("manifest policies must be an object"))?;
+            if !policies.contains_key(&policy_id) {
+                return Err(anyhow::anyhow!(
+                    "policy '{policy_id}' is not in the manifest"
+                ));
+            }
+            let revoked = manifest
+                .as_object_mut()
+                .expect("manifest object")
+                .entry("revokedPolicies")
+                .or_insert_with(|| serde_json::json!([]));
+            let list = revoked
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("manifest revokedPolicies must be an array"))?;
+            if !list
+                .iter()
+                .any(|item| item.as_str() == Some(policy_id.as_str()))
+            {
+                list.push(serde_json::Value::String(policy_id.clone()));
+                list.sort_by_key(|item| item.as_str().unwrap_or_default().to_string());
+            }
+            let updated = serde_json::to_vec_pretty(&manifest)?;
+            let temp = manifest_path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(&temp, &updated)?;
+            std::fs::rename(&temp, &manifest_path)?;
+            let signature = sign_policy_manifest(&bundle, &private_key)?;
+            use sha2::{Digest, Sha256};
+            let audit = serde_json::json!({
+                "action": "revoke",
+                "policyId": policy_id,
+                "manifestHash": format!("sha256:{:x}", Sha256::digest(&updated)),
+                "signature": signature,
+                "timestampMs": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis(),
+            });
+            let audit_path = audit_log.unwrap_or_else(|| bundle.join("policy-revocations.jsonl"));
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&audit_path)?;
+            writeln!(file, "{}", serde_json::to_string(&audit)?)?;
+            file.sync_all()?;
+            println!(
+                "{}",
+                serde_json::json!({ "policyId": policy_id, "auditPath": audit_path })
+            );
         }
     }
     Ok(())

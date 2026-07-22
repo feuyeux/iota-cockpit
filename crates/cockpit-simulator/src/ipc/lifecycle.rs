@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::live_run::backend_impl::backend_session;
 
 use super::handler::{HandlerResult, SimulatorHandler, deadline_reached, plugin_failure_record};
-use super::proto::{IpcError, SimulatorEvent};
+use super::proto::{EvaluationProgress, EvaluationProgressStatus, IpcError, SimulatorEvent};
 
 impl SimulatorHandler {
     pub(super) fn validate(&self, path: &str) -> HandlerResult {
@@ -38,9 +38,26 @@ impl SimulatorHandler {
             load_scenario(path).map_err(|error| Box::new(Self::simulation_error(error, None)))?;
         let run_id = format!("run-{}", scenario.id);
         self.simulation = Some(Simulation::new(run_id.clone(), scenario.clone()));
-        self.recording = Some(Recording::new(run_id.clone(), &scenario));
+        let agent = match (&self.rule_policy_bundle, &self.selected_rule_policy) {
+            (Some(bundle), Some(policy_id)) => {
+                RuleAgent::new(bundle.select(policy_id).map_err(|message| {
+                    Box::new(IpcError {
+                        code: "RULE_POLICY_NOT_TRUSTED".to_string(),
+                        message,
+                        details: None,
+                        run_id: None,
+                        tick: None,
+                        correlation_id: "create-run".to_string(),
+                    })
+                })?)
+            }
+            _ => RuleAgent::default(),
+        };
+        let mut recording = Recording::new(run_id.clone(), &scenario);
+        recording.provenance.rule_policy_hash = Some(agent.policy_hash());
+        self.recording = Some(recording);
         self.server = LocalMcpServer::default();
-        self.agent = RuleAgent::default();
+        self.agent = agent;
         self.live_driver = HumanAgentDriver::new();
         self.live_backend = None;
         self.plugin_host = PluginHost::default();
@@ -56,6 +73,56 @@ impl SimulatorHandler {
             "runId": run_id,
             "status": RunStatus::Ready,
             "scenarioHash": scenario.scenario_hash
+        }))
+    }
+
+    pub(super) fn select_rule_policy(&mut self, policy_id: &str) -> HandlerResult {
+        if self.simulation.is_some() {
+            return Err(Box::new(IpcError {
+                code: "RULE_POLICY_SELECTION_LOCKED".to_string(),
+                message: "select a rule policy before creating a run".to_string(),
+                details: None,
+                run_id: None,
+                tick: None,
+                correlation_id: "rule-policy".to_string(),
+            }));
+        }
+        let bundle = self.rule_policy_bundle.as_ref().ok_or_else(|| {
+            Box::new(IpcError {
+                code: "RULE_POLICY_BUNDLE_UNAVAILABLE".to_string(),
+                message: "no trusted rule policy bundle is configured".to_string(),
+                details: None,
+                run_id: None,
+                tick: None,
+                correlation_id: "rule-policy".to_string(),
+            })
+        })?;
+        let policy = bundle.select(policy_id).map_err(|message| {
+            Box::new(IpcError {
+                code: "RULE_POLICY_NOT_TRUSTED".to_string(),
+                message,
+                details: None,
+                run_id: None,
+                tick: None,
+                correlation_id: "rule-policy".to_string(),
+            })
+        })?;
+        self.selected_rule_policy = Some(policy_id.to_string());
+        Ok(json!({ "policyId": policy_id, "rulePolicyHash": policy.hash() }))
+    }
+
+    pub(super) fn list_rule_policies(&self) -> HandlerResult {
+        let Some(bundle) = self.rule_policy_bundle.as_ref() else {
+            return Ok(json!({
+                "available": false,
+                "policies": [],
+                "selectedPolicyId": self.selected_rule_policy,
+            }));
+        };
+        Ok(json!({
+            "available": true,
+            "policies": bundle.ids().map(str::to_string).collect::<Vec<_>>(),
+            "selectedPolicyId": self.selected_rule_policy,
         }))
     }
 
@@ -459,15 +526,14 @@ impl SimulatorHandler {
             });
         }
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation = json!({
-                "status": "pending",
-                "evaluator": "cockpit-evaluator",
-                "recordingRunId": recording.run_id,
-                "recordedTicks": recording.ticks.len()
-            });
-            self.emit(SimulatorEvent::SimulationEvaluationUpdated {
+            self.emit(SimulatorEvent::SimulationEvaluationProgress {
                 cursor: 0,
-                evaluation,
+                progress: EvaluationProgress {
+                    run_id: recording.run_id.clone(),
+                    recorded_ticks: recording.ticks.len(),
+                    status: EvaluationProgressStatus::Recording,
+                    execution_error: None,
+                },
             });
         }
         if deadline_reached(simulation.status, tick, simulation.scenario.max_ticks) {
@@ -605,15 +671,14 @@ impl SimulatorHandler {
             self.emit(SimulatorEvent::SimulationActionResult { cursor: 0, result });
         }
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation = json!({
-                "status": "pending",
-                "evaluator": "cockpit-evaluator",
-                "recordingRunId": recording.run_id,
-                "recordedTicks": recording.ticks.len()
-            });
-            self.emit(SimulatorEvent::SimulationEvaluationUpdated {
+            self.emit(SimulatorEvent::SimulationEvaluationProgress {
                 cursor: 0,
-                evaluation,
+                progress: EvaluationProgress {
+                    run_id: recording.run_id.clone(),
+                    recorded_ticks: recording.ticks.len(),
+                    status: EvaluationProgressStatus::Recording,
+                    execution_error: None,
+                },
             });
         }
         if deadline_reached(simulation.status, tick, simulation.scenario.max_ticks) {
@@ -659,18 +724,14 @@ impl SimulatorHandler {
         error: String,
     ) {
         if let Some(recording) = self.recording.as_ref() {
-            let evaluation = json!({
-                "status": "pending",
-                "passed": false,
-                "executionPassed": false,
-                "evaluator": "cockpit-evaluator",
-                "recordingRunId": recording.run_id,
-                "recordedTicks": recording.ticks.len(),
-                "executionError": error
-            });
-            self.emit(SimulatorEvent::SimulationEvaluationUpdated {
+            self.emit(SimulatorEvent::SimulationEvaluationProgress {
                 cursor: 0,
-                evaluation,
+                progress: EvaluationProgress {
+                    run_id: recording.run_id.clone(),
+                    recorded_ticks: recording.ticks.len(),
+                    status: EvaluationProgressStatus::Failed,
+                    execution_error: Some(error),
+                },
             });
         }
     }

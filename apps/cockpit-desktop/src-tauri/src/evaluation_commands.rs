@@ -27,8 +27,10 @@ pub struct EvaluationState {
 struct JudgePairConfig {
     judge_a_command: Option<String>,
     judge_a_args: Vec<String>,
+    judge_a_sha256: Option<String>,
     judge_b_command: Option<String>,
     judge_b_args: Vec<String>,
+    judge_b_sha256: Option<String>,
     timeout_ms: u64,
 }
 
@@ -37,8 +39,10 @@ impl Default for JudgePairConfig {
         Self {
             judge_a_command: None,
             judge_a_args: Vec::new(),
+            judge_a_sha256: None,
             judge_b_command: None,
             judge_b_args: Vec::new(),
+            judge_b_sha256: None,
             timeout_ms: default_judge_timeout_ms(),
         }
     }
@@ -125,9 +129,12 @@ impl EvaluationState {
             return Err("both Judge provider commands are required".to_string());
         }
         if configured_a.is_none()
-            && (!judges.judge_a_args.is_empty() || !judges.judge_b_args.is_empty())
+            && (!judges.judge_a_args.is_empty()
+                || !judges.judge_b_args.is_empty()
+                || judges.judge_a_sha256.is_some()
+                || judges.judge_b_sha256.is_some())
         {
-            return Err("Judge arguments require provider commands".to_string());
+            return Err("Judge arguments and digest pins require provider commands".to_string());
         }
 
         let mut command = Command::new(&self.evaluator_binary);
@@ -143,9 +150,15 @@ impl EvaluationState {
             for argument in &judges.judge_a_args {
                 command.arg("--judge-a-arg").arg(argument);
             }
+            if let Some(sha256) = &judges.judge_a_sha256 {
+                command.arg("--judge-a-sha256").arg(sha256);
+            }
             command.arg("--judge-b-command").arg(second);
             for argument in &judges.judge_b_args {
                 command.arg("--judge-b-arg").arg(argument);
+            }
+            if let Some(sha256) = &judges.judge_b_sha256 {
+                command.arg("--judge-b-sha256").arg(sha256);
             }
         }
         let output = command.output().map_err(|error| {
@@ -231,7 +244,7 @@ pub async fn evaluate_run(
     run_id: String,
     scenario_id: String,
 ) -> Result<EvaluationReportRecord, String> {
-    let recording = simulator.recording_snapshot(&run_id)?;
+    let recording = simulator.finalized_recording_snapshot(&run_id)?;
     if recording.scenario_id != scenario_id {
         return Err("run scenario does not match the requested rubric".to_string());
     }
@@ -361,10 +374,30 @@ fn default_judges_from_env() -> Result<JudgePairConfig, String> {
     Ok(JudgePairConfig {
         judge_a_command: first,
         judge_a_args: parse_args("COCKPIT_JUDGE_A_ARGS_JSON")?,
+        judge_a_sha256: parse_optional_sha256("COCKPIT_JUDGE_A_SHA256")?,
         judge_b_command: second,
         judge_b_args: parse_args("COCKPIT_JUDGE_B_ARGS_JSON")?,
+        judge_b_sha256: parse_optional_sha256("COCKPIT_JUDGE_B_SHA256")?,
         timeout_ms,
     })
+}
+
+fn parse_optional_sha256(name: &str) -> Result<Option<String>, String> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .into_string()
+        .map_err(|_| format!("{name} is not UTF-8"))?;
+    let valid = value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !valid {
+        return Err(format!(
+            "{name} must be a sha256:<64 lowercase-or-uppercase-hex> digest"
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn default_judge_timeout_ms() -> u64 {
@@ -398,5 +431,27 @@ mod tests {
             "cockpit-evaluator"
         });
         assert_eq!(bundled_evaluator_path(executable), Some(expected));
+    }
+
+    #[test]
+    fn judge_digest_pins_cannot_be_configured_without_judge_commands() {
+        let state = EvaluationState {
+            evaluator_binary: OsString::from("not-invoked"),
+            rubric_root: PathBuf::new(),
+            history_root: PathBuf::new(),
+            default_judges: JudgePairConfig::default(),
+        };
+        let judges = JudgePairConfig {
+            judge_a_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+            ..JudgePairConfig::default()
+        };
+        let error = state
+            .invoke_evaluator(
+                Path::new("unused-recording"),
+                Path::new("unused-rubric"),
+                &judges,
+            )
+            .expect_err("digest pin without providers must be rejected");
+        assert!(error.contains("digest pins require provider commands"));
     }
 }

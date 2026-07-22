@@ -1,6 +1,7 @@
-use cockpit_scenario::load_scenario;
+use cockpit_scenario::{load_scenario, parse_scenario_bytes};
 use cockpit_world::{
-    ConflictPolicy, InfluenceOp, InfluenceRule, InfluenceSchedule, Simulation, SimulationScenario,
+    ConflictPolicy, InfluenceOp, InfluencePatch, InfluenceRule, InfluenceSchedule, Simulation,
+    SimulationScenario,
 };
 
 fn base_scenario() -> SimulationScenario {
@@ -10,11 +11,12 @@ fn base_scenario() -> SimulationScenario {
 fn rule(id: &str, tick: u64, priority: i32, op: InfluenceOp) -> InfluenceRule {
     InfluenceRule {
         rule_id: id.to_string(),
-        rule_version: 1,
+        rule_version: 2,
         schedule: InfluenceSchedule::AtTick { tick },
-        entity_id: "pilot-1".to_string(),
-        component_path: "pilot.attention".to_string(),
-        op,
+        patch: InfluencePatch::HumanAttention {
+            human_id: "pilot-1".to_string(),
+            op,
+        },
         priority,
     }
 }
@@ -137,4 +139,16 @@ fn scenario_without_influences_is_unchanged() {
         !events.iter().any(|event| event.starts_with("Influence")),
         "no influence events without configured rules"
     );
+}
+
+#[test]
+fn scenario_rejects_an_unsupported_influence_rule_version() {
+    let legacy = include_str!("../../scenarios/medical-emergency.yaml").replacen(
+        "ruleVersion: 2",
+        "ruleVersion: 1",
+        1,
+    );
+    let error = parse_scenario_bytes(legacy.as_bytes())
+        .expect_err("unsupported influence version must fail during scenario loading");
+    assert!(error.to_string().contains("ruleVersion 1"));
 }

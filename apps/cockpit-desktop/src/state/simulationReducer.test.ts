@@ -42,6 +42,18 @@ describe("simulationReducer", () => {
     expect(state.error).toEqual(error);
   });
 
+  it("keeps recording progress separate from a final evaluation result", () => {
+    const state = simulationReducer(initialSimulationModel, {
+      type: "simulatorEvent",
+      event: {
+        type: "SimulationEvaluationProgress",
+        cursor: 4,
+        progress: { runId: "run-1", recordedTicks: 3, status: "recording" },
+      },
+    });
+    expect(state.evaluationProgress).toEqual({ runId: "run-1", recordedTicks: 3, status: "recording" });
+  });
+
   it("clears the prior run session when a new scenario starts loading", () => {
     const stale: SimulationModel = {
       ...initialSimulationModel,
@@ -59,7 +71,7 @@ describe("simulationReducer", () => {
       toolCalls: [{}] as SimulationModel["toolCalls"],
       humanTurns: [{}] as SimulationModel["humanTurns"],
       actionResults: [{}] as SimulationModel["actionResults"],
-      evaluation: {} as SimulationModel["evaluation"],
+      evaluationProgress: { runId: "old-run", recordedTicks: 12, status: "recording" },
       replayDiff: {} as SimulationModel["replayDiff"],
       lastCursor: 99,
       error: { code: "OLD_FAILURE", message: "old run failed", correlationId: "old" },
@@ -81,7 +93,7 @@ describe("simulationReducer", () => {
     expect(state.toolCalls).toEqual([]);
     expect(state.humanTurns).toEqual([]);
     expect(state.actionResults).toEqual([]);
-    expect(state.evaluation).toBeUndefined();
+    expect(state.evaluationProgress).toBeUndefined();
     expect(state.replayDiff).toBeUndefined();
     expect(state.lastCursor).toBeUndefined();
     expect(state.error).toBeUndefined();
@@ -143,6 +155,40 @@ describe("simulationReducer", () => {
 
     expect(state.state).toBe("stopped");
     expect(state.runId).toBe("run-batch");
+  });
+
+  it("tracks the earliest durable audit offset as earlier pages are loaded", () => {
+    const auditEvent = {
+      type: "SimulationEvent" as const,
+      cursor: 0,
+      event: {
+        eventId: "recorded-1",
+        eventType: "RecordedEvent",
+        runId: "run-audit",
+        tick: 1,
+        source: "recording",
+        priority: 1,
+        sequence: 1,
+        correlationId: "recorded-correlation",
+        payload: { message: "redacted durable event" }
+      }
+    };
+    const initial = simulationReducer(initialSimulationModel, {
+      type: "recordedAuditPage",
+      events: [auditEvent],
+      totalEvents: 1_200,
+      earliestOffset: 1_024
+    });
+    expect(initial.auditRecovery).toEqual({ totalEvents: 1_200, earliestOffset: 1_024 });
+
+    const expanded = simulationReducer(initial, {
+      type: "recordedAuditPage",
+      events: [],
+      totalEvents: 1_200,
+      earliestOffset: 768
+    });
+    expect(expanded.auditRecovery).toEqual({ totalEvents: 1_200, earliestOffset: 768 });
+    expect(expanded.events).toHaveLength(1);
   });
 
   it("should handle SimulationTickCommitted event", () => {

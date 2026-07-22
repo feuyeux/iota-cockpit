@@ -2,7 +2,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    process::Child,
+    process::{Child, Command},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -10,10 +10,6 @@ use std::{
 use cockpit_simulator::ipc::{
     LiveTurnControl, SimulatorHandler,
     proto::{IPC_VERSION, SimulatorCommand, SimulatorEvent, SimulatorRequest, SimulatorResponse},
-};
-use iota_core::ipc_client::{
-    ConnectionState, ReconnectConfig, backoff_delay_ms, next_backoff_delay_ms,
-    spawn_sidecar_with_probe, time_jitter_factor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +19,86 @@ const SIMULATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const SIMULATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const SIMULATOR_HEARTBEAT_MAX_MISSES: u8 = 3;
 const SIMULATOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Transport lifecycle for the desktop's versioned Simulator IPC client.
+/// ACP integration state deliberately does not cross this boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    Connected,
+    Reconnecting,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReconnectConfig {
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_percent: u8,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            initial_delay_ms: 1_000,
+            max_delay_ms: 30_000,
+            jitter_percent: 20,
+        }
+    }
+}
+
+fn backoff_delay_ms(delay_ms: u64, config: &ReconnectConfig, random_factor: f64) -> u64 {
+    let random_factor = if random_factor.is_finite() {
+        random_factor.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let jitter_range = delay_ms as f64 * (config.jitter_percent as f64 / 100.0);
+    ((delay_ms as f64 + (random_factor * 2.0 - 1.0) * jitter_range).max(100.0)) as u64
+}
+
+fn next_backoff_delay_ms(delay_ms: u64, config: &ReconnectConfig) -> u64 {
+    delay_ms.saturating_mul(2).min(config.max_delay_ms)
+}
+
+fn time_jitter_factor() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    f64::from(nanos) / 1_000_000_000.0
+}
+
+fn spawn_sidecar_with_probe<F, P>(
+    binary: &std::ffi::OsStr,
+    timeout: Duration,
+    poll_interval: Duration,
+    configure: F,
+    mut is_ready: P,
+) -> Result<Child, String>
+where
+    F: FnOnce(&mut Command),
+    P: FnMut() -> bool,
+{
+    let mut command = Command::new(binary);
+    configure(&mut command);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Err(format!("sidecar exited before readiness probe: {status}"));
+        }
+        if is_ready() {
+            return Ok(child);
+        }
+        std::thread::sleep(poll_interval);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(format!(
+        "sidecar did not become ready within {}ms",
+        timeout.as_millis()
+    ))
+}
 
 fn should_log_slow_operation(elapsed: Duration) -> bool {
     elapsed >= SLOW_COMMAND_LOG_THRESHOLD
@@ -48,6 +124,26 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 fn simulator_binary() -> Option<std::ffi::OsString> {
     std::env::var_os("COCKPIT_SIMULATOR_BIN").or_else(bundled_simulator_binary)
+}
+
+fn rule_policy_sidecar_config() -> Result<Option<(String, String)>, String> {
+    parse_rule_policy_sidecar_config(
+        std::env::var("COCKPIT_RULE_POLICY_BUNDLE").ok(),
+        std::env::var("COCKPIT_RULE_POLICY_PUBLIC_KEY_BASE64").ok(),
+    )
+}
+
+fn parse_rule_policy_sidecar_config(
+    bundle: Option<String>,
+    public_key: Option<String>,
+) -> Result<Option<(String, String)>, String> {
+    match (bundle, public_key) {
+        (None, None) => Ok(None),
+        (Some(bundle), Some(public_key)) if !bundle.trim().is_empty() && !public_key.trim().is_empty() => {
+            Ok(Some((bundle, public_key)))
+        }
+        _ => Err("COCKPIT_RULE_POLICY_BUNDLE and COCKPIT_RULE_POLICY_PUBLIC_KEY_BASE64 must be configured together as non-empty UTF-8 values".to_string()),
+    }
 }
 
 fn bundled_simulator_binary() -> Option<std::ffi::OsString> {
@@ -225,7 +321,7 @@ impl SimulatorState {
 
     /// Reconnect to (or respawn) the simulator sidecar using exponential
     /// backoff with jitter, shared with iota-desktop's daemon client via
-    /// `iota_core::ipc_client`. Blocking: intended to run on a background
+    /// the Simulator IPC transport. Blocking: intended to run on a background
     /// thread, not the async/UI-facing command path.
     fn reconnect_with_backoff(&self) -> Result<(), String> {
         self.set_connection_state(ConnectionState::Reconnecting);
@@ -301,6 +397,7 @@ impl SimulatorState {
         ));
         let recording_db_text = recording_db.to_string_lossy().to_string();
         let address_text = address.to_string();
+        let rule_policy = rule_policy_sidecar_config()?;
         let child = spawn_sidecar_with_probe(
             binary.as_os_str(),
             SIMULATOR_CONNECT_TIMEOUT,
@@ -315,6 +412,14 @@ impl SimulatorState {
                     "--recording-db",
                     &recording_db_text,
                 ]);
+                if let Some((bundle, public_key)) = &rule_policy {
+                    command.args([
+                        "--rule-policy-bundle",
+                        bundle,
+                        "--rule-policy-public-key-base64",
+                        public_key,
+                    ]);
+                }
             },
             || {
                 simulator_ping(
@@ -334,30 +439,48 @@ impl SimulatorState {
         })
     }
 
-    pub fn recording_snapshot(&self, run_id: &str) -> Result<cockpit_recording::Recording, String> {
-        let recording_db = {
+    /// Return a recording only when it is the durable, terminal state of the
+    /// currently active run. Release-gate evaluation must never certify an
+    /// in-progress or stopped trajectory.
+    pub fn finalized_recording_snapshot(
+        &self,
+        run_id: &str,
+    ) -> Result<cockpit_recording::Recording, String> {
+        let (embedded_recording, recording_db) = {
             let transport = self
                 .transport
                 .lock()
                 .map_err(|_| "simulator transport lock poisoned".to_string())?;
             match &*transport {
-                SimulatorTransport::Embedded(handler) => {
-                    return handler
-                        .recording_snapshot(run_id)
-                        .ok_or_else(|| format!("recording '{run_id}' is not available"));
+                SimulatorTransport::Embedded(handler) => (
+                    Some(
+                        handler
+                            .recording_snapshot(run_id)
+                            .ok_or_else(|| format!("recording '{run_id}' is not available"))?,
+                    ),
+                    None,
+                ),
+                SimulatorTransport::Process { recording_db, .. } => {
+                    (None, Some(recording_db.clone()))
                 }
-                SimulatorTransport::Process { recording_db, .. } => recording_db.clone(),
             }
         };
-        let store = cockpit_recording::RecordingStore::open_read_only(
-            recording_db
-                .to_str()
-                .ok_or_else(|| "recording DB path is not UTF-8".to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let recording = store.load(run_id).map_err(|error| error.to_string())?;
+        let recording = match (embedded_recording, recording_db) {
+            (Some(recording), None) => recording,
+            (None, Some(recording_db)) => {
+                let store = cockpit_recording::RecordingStore::open_read_only(
+                    recording_db
+                        .to_str()
+                        .ok_or_else(|| "recording DB path is not UTF-8".to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                store.load(run_id).map_err(|error| error.to_string())?
+            }
+            _ => return Err("simulator recording transport is invalid".to_string()),
+        };
         let snapshot = self.dispatch(SimulatorCommand::GetSimulationSnapshot)?;
-        validate_durable_recording(&recording, &snapshot)?;
+        let status = self.dispatch(SimulatorCommand::GetSimulationRunStatus)?;
+        validate_finalized_recording(&recording, &snapshot, &status)?;
         Ok(recording)
     }
 
@@ -485,6 +608,33 @@ fn validate_durable_recording(
         .map(|tick| tick.tick.saturating_add(1))
         .unwrap_or(0);
     validate_durable_position(&recording.run_id, durable_tick, snapshot)
+}
+
+fn validate_finalized_recording(
+    recording: &cockpit_recording::Recording,
+    snapshot: &Value,
+    status: &Value,
+) -> Result<(), String> {
+    validate_durable_recording(recording, snapshot)?;
+    validate_completed_status(&recording.run_id, status)
+}
+
+fn validate_completed_status(recording_run_id: &str, status: &Value) -> Result<(), String> {
+    let status_run_id = status
+        .get("runId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "simulator run status is missing runId".to_string())?;
+    let status = status
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "simulator run status is missing status".to_string())?;
+    if status_run_id != recording_run_id || status != "completed" {
+        return Err(format!(
+            "final evaluation requires completed run '{}', current run '{}' is {}",
+            recording_run_id, status_run_id, status
+        ));
+    }
+    Ok(())
 }
 
 fn validate_durable_position(
@@ -660,6 +810,50 @@ pub fn validate_scenario(
     .map_err(|error| error.to_string())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineRunSummary {
+    pub run_id: String,
+    pub status: String,
+    pub scenario_hash: String,
+}
+
+#[tauri::command]
+pub fn create_simulation_run(
+    state: tauri::State<'_, SimulatorState>,
+    path: String,
+) -> Result<OfflineRunSummary, String> {
+    let resolved_path = state.resolve_path(&path)?;
+    serde_json::from_value(state.dispatch(SimulatorCommand::CreateSimulationRun {
+        path: resolved_path,
+    })?)
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePolicyStatus {
+    pub available: bool,
+    pub policies: Vec<String>,
+    pub selected_policy_id: Option<String>,
+}
+
+#[tauri::command]
+pub fn list_rule_policies(
+    state: tauri::State<'_, SimulatorState>,
+) -> Result<RulePolicyStatus, String> {
+    serde_json::from_value(state.dispatch(SimulatorCommand::ListRulePolicies)?)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn select_rule_policy(
+    state: tauri::State<'_, SimulatorState>,
+    policy_id: String,
+) -> Result<Value, String> {
+    state.dispatch(SimulatorCommand::SelectRulePolicy { policy_id })
+}
+
 #[tauri::command]
 pub async fn create_live_simulation_run(
     state: tauri::State<'_, SimulatorState>,
@@ -738,6 +932,11 @@ pub async fn step_live_simulation(
         ),
     }
     result
+}
+
+#[tauri::command]
+pub fn step_simulation(state: tauri::State<'_, SimulatorState>) -> Result<Value, String> {
+    state.dispatch(SimulatorCommand::StepSimulation)
 }
 
 #[tauri::command]
@@ -856,6 +1055,52 @@ pub fn get_simulation_events(
 ) -> Result<SimulationEventBatch, String> {
     let result = state.dispatch(SimulatorCommand::GetSimulationEvents { cursor })?;
     serde_json::from_value(result).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_recorded_audit_events(
+    state: tauri::State<'_, SimulatorState>,
+    request: RecordedAuditRequest,
+) -> Result<RecordedAuditPage, String> {
+    let result = state.dispatch(SimulatorCommand::GetRecordedAuditEvents {
+        run_id: request.run_id,
+        start_tick: request.start_tick,
+        end_tick: request.end_tick,
+        offset: request.offset,
+        limit: request.limit,
+        after_sequence: request.after_sequence,
+        tail_limit: request.tail_limit,
+    })?;
+    serde_json::from_value(result).map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedAuditRequest {
+    pub run_id: String,
+    pub start_tick: u64,
+    pub end_tick: u64,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+    pub after_sequence: Option<u64>,
+    pub tail_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedAuditPage {
+    pub events: Vec<RecordedAuditEventItem>,
+    pub next_offset: Option<usize>,
+    pub next_sequence: Option<u64>,
+    pub total_events: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedAuditEventItem {
+    pub sequence: u64,
+    pub event: SimulatorEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

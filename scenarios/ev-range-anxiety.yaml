@@ -74,28 +74,29 @@ entities:
         - payment-handoff
 influences:
   - ruleId: cold-soak
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 1
       interval: 4
-    entityId: cabin
-    componentPath: environment.temperatureC
-    op:
-      op: delta
-      value: -0.8
+    patch:
+      kind: cabinTemperature
+      op:
+        op: delta
+        value: -0.8
     priority: 6
   - ruleId: range-anxiety
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 4
       interval: 5
-    entityId: driver-1
-    componentPath: pilot.stress
-    op:
-      op: delta
-      value: 0.06
+    patch:
+      kind: humanStress
+      humanId: driver-1
+      op:
+        op: delta
+        value: 0.06
     priority: 7
 agents:
   - id: cockpit-agent

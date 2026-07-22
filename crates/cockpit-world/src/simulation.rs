@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     action::{ActionRequest, ActionResult, ActionStatus, AgentGrant, ErrorCode, ScriptedAgent},
@@ -9,12 +8,18 @@ use crate::{
     error::{SimulationError, SimulationResult},
     event::{EventEnvelope, EventPayload, ToolCallTrace},
     influence::{ConflictPolicy, InfluenceRule, arbitrate, schedule_due},
+    plugin_failure::PluginFailureRecord,
     sensor::Observation,
+    state_patch::{StateDiff, read_component_value},
     world::{
         AlarmState, CabinEnvironment, DeviceLifecycle, DeviceState, HumanState,
         OuterEnvironmentState, WorldSnapshot,
     },
 };
+
+mod tick;
+
+pub use tick::{TICK_PHASE_ORDER, TickPhase, TickPhaseTiming};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,25 +123,23 @@ pub struct StepRecord {
     pub state_diffs: Vec<StateDiff>,
     #[serde(default)]
     pub plugin_failures: Vec<PluginFailureRecord>,
+    /// Deterministic world-state boundary hashes for every phase in the tick
+    /// transaction. Older recordings deserialize as an empty list.
+    #[serde(default)]
+    pub phase_hashes: Vec<TickPhaseHash>,
 }
 
+/// One phase boundary in a committed tick. Snapshot hashes use the canonical
+/// `WorldSnapshot::content_hash` representation; event hashes cover the
+/// ordered event sequence accumulated through the phase.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginFailureRecord {
-    pub plugin_id: String,
-    pub version: String,
-    pub reason: String,
-    pub decision: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StateDiff {
-    pub source_id: String,
-    pub entity_id: String,
-    pub component_path: String,
-    pub value: Value,
-    pub expected_state_version: u64,
+pub struct TickPhaseHash {
+    pub phase: TickPhase,
+    pub input_snapshot_hash: String,
+    pub output_snapshot_hash: String,
+    pub input_event_hash: String,
+    pub output_event_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,6 +161,9 @@ pub struct Simulation {
     pending_human_state_deltas: Vec<HumanStateDelta>,
     pending_lifecycle_events: Vec<EventEnvelope>,
     latest_results: Vec<ActionResult>,
+    /// Non-persistent diagnostic timings from the last committed tick. They
+    /// are intentionally excluded from snapshots, hashes, and recordings.
+    last_phase_timings: Vec<TickPhaseTiming>,
 }
 
 impl Simulation {
@@ -186,6 +192,7 @@ impl Simulation {
             pending_human_state_deltas: Vec::new(),
             pending_lifecycle_events: Vec::new(),
             latest_results: Vec::new(),
+            last_phase_timings: Vec::new(),
         }
     }
 
@@ -210,6 +217,7 @@ impl Simulation {
             pending_human_state_deltas: Vec::new(),
             pending_lifecycle_events: Vec::new(),
             latest_results: Vec::new(),
+            last_phase_timings: Vec::new(),
         }
     }
 
@@ -220,6 +228,12 @@ impl Simulation {
 
     pub fn run_id(&self) -> &str {
         &self.snapshot.run_id
+    }
+
+    /// Wall-clock phase timings for the latest successfully committed tick.
+    /// Consumers use this only for local diagnostics and benchmark reports.
+    pub fn last_phase_timings(&self) -> &[TickPhaseTiming] {
+        &self.last_phase_timings
     }
 
     pub fn spawn_entity(&mut self, entity: crate::world::DynamicEntity) -> SimulationResult<()> {
@@ -435,83 +449,22 @@ impl Simulation {
 
     fn commit_step(
         &mut self,
-        mut observation: Observation,
+        observation: Observation,
         state_diffs: Vec<StateDiff>,
     ) -> SimulationResult<StepRecord> {
-        if matches!(self.status, RunStatus::Ready | RunStatus::Paused) {
-            self.status = RunStatus::Running;
-        }
-        if self.status != RunStatus::Running && self.status != RunStatus::Degraded {
-            return Err(SimulationError::InvalidRunState);
-        }
-
-        let tick = self.snapshot.tick;
-        let mut events = self.pending_lifecycle_events.clone();
-
-        self.apply_digital_twin(&mut events)?;
-        for fault in self.scenario.faults.clone() {
-            if fault.at_tick == tick {
-                self.apply_fault(&fault, &mut events);
-            }
-        }
-        self.apply_influences(tick, &mut events);
-        let action_write_set = self.pending_action_write_set();
-        self.apply_pending_actions(&mut events);
-        self.apply_pending_human_state_deltas(&action_write_set, &mut events);
-        self.apply_state_diffs(&state_diffs, &mut events)?;
-        self.apply_perception(tick, &events);
-
-        let action_results = std::mem::take(&mut self.latest_results);
-        for result in &action_results {
-            if result.status == ActionStatus::Rejected {
-                let error_code = result
-                    .error_code
-                    .as_ref()
-                    .map(|code| code.stable_code().to_string());
-                events.push(self.event_with_error(
-                    "ActionRejected",
-                    "action-gateway",
-                    Some(&result.request.target),
-                    error_code,
-                    "action rejected by the Action Gateway",
-                ));
-            }
-        }
-        observation.action_results = action_results
-            .iter()
-            .map(|result| format!("{:?}:{}", result.status, result.request.request_id))
-            .collect();
-
-        self.snapshot.tick += 1;
-        self.snapshot.version += 1;
-        self.snapshot.sim_time_ms = self.snapshot.tick * self.scenario.clock.tick_ms;
-        let snapshot_hash = self.snapshot.content_hash()?;
-        self.pending_lifecycle_events.clear();
-
-        Ok(StepRecord {
-            tick,
-            snapshot_hash,
-            events,
-            observation,
-            action_results,
-            tool_calls: Vec::new(),
-            errors: Vec::new(),
-            fallback: None,
-            state_diffs,
-            plugin_failures: Vec::new(),
-        })
+        tick::TickTransaction::new(self, observation, state_diffs).commit()
     }
 
     fn apply_state_diffs(
         &mut self,
-        diffs: &[StateDiff],
+        state_diffs: Vec<StateDiff>,
         events: &mut Vec<EventEnvelope>,
-    ) -> SimulationResult<()> {
-        let mut diffs = diffs.to_vec();
+    ) -> SimulationResult<Vec<StateDiff>> {
+        let mut diffs = state_diffs;
         diffs.sort_by(|left, right| {
-            left.entity_id
-                .cmp(&right.entity_id)
-                .then(left.component_path.cmp(&right.component_path))
+            left.patch
+                .target_key()
+                .cmp(&right.patch.target_key())
                 .then(left.source_id.cmp(&right.source_id))
         });
         for diff in &diffs {
@@ -522,25 +475,27 @@ impl Simulation {
             }
             validate_state_diff(diff)?;
         }
-        for diff in diffs {
-            let value = diff.value.as_f64().ok_or_else(|| {
-                SimulationError::InvalidScenario("state diff value must be numeric".to_string())
-            })?;
-            write_component_value(
-                &mut self.snapshot,
-                &diff.entity_id,
-                &diff.component_path,
-                value,
-            );
+        for pair in diffs.windows(2) {
+            if pair[0].patch.target_key() == pair[1].patch.target_key() {
+                return Err(SimulationError::InvalidScenario(format!(
+                    "multiple state diffs target '{}:{}' in one tick",
+                    pair[0].patch.target_key().0,
+                    pair[0].patch.target_key().1
+                )));
+            }
+        }
+        for diff in &diffs {
+            let value = diff.patch.value();
+            diff.patch.apply(&mut self.snapshot);
             events.push(self.event(
                 "StateDiffApplied",
                 &diff.source_id,
-                Some(&diff.entity_id),
+                Some(diff.patch.target_key().0),
                 Some(value),
                 "validated external state diff applied during tick commit",
             ));
         }
-        Ok(())
+        Ok(diffs)
     }
 
     /// Apply the scheduled influence rules due this tick under the scenario's
@@ -570,23 +525,17 @@ impl Simulation {
         }
 
         for rule in &outcome.winners {
-            let current =
-                read_component_value(&self.snapshot, &rule.entity_id, &rule.component_path);
-            let target = current.map(|value| rule.op.resolve(value));
-            let applied = match target {
-                Some(target)
-                    if component_value_in_range(&rule.entity_id, &rule.component_path, target) =>
-                {
-                    write_component_value(
-                        &mut self.snapshot,
-                        &rule.entity_id,
-                        &rule.component_path,
-                        target,
-                    );
+            let (entity_id, component_path) = rule.target_key();
+            let patch = read_component_value(&self.snapshot, entity_id, component_path)
+                .map(|current| rule.patch.resolve(current));
+            let applied = match patch {
+                Some(patch) if patch.is_valid() => {
+                    let target = patch.value();
+                    patch.apply(&mut self.snapshot);
                     events.push(self.event(
                         "InfluenceApplied",
                         &rule.rule_id,
-                        Some(&rule.entity_id),
+                        Some(entity_id),
                         Some(target),
                         "scheduled influence rule applied during tick commit",
                     ));
@@ -598,7 +547,7 @@ impl Simulation {
                 events.push(self.event_with_error(
                     "InfluenceRejected",
                     &rule.rule_id,
-                    Some(&rule.entity_id),
+                    Some(entity_id),
                     Some("influence target is out of range or unknown".to_string()),
                     "influence rule produced an invalid component value",
                 ));
@@ -898,82 +847,9 @@ impl Simulation {
 }
 
 fn validate_state_diff(diff: &StateDiff) -> SimulationResult<()> {
-    let Some(value) = diff.value.as_f64() else {
-        return Err(SimulationError::InvalidScenario(
-            "state diff value must be numeric".to_string(),
-        ));
-    };
-    component_value_in_range(&diff.entity_id, &diff.component_path, value)
-        .then_some(())
-        .ok_or_else(|| {
-            SimulationError::InvalidScenario(
-                "state diff entity, path, or value is invalid".to_string(),
-            )
-        })
-}
-
-/// Whether `value` is within the allowed range for a writable component. Shared
-/// by external StateDiff validation and scheduled influence application so both
-/// paths honor identical bounds.
-fn component_value_in_range(entity_id: &str, component_path: &str, value: f64) -> bool {
-    match (entity_id, component_path) {
-        ("cabin", "environment.smokeDensity") => (0.0..=3.0).contains(&value),
-        ("cabin", "environment.visibility") | ("engine-1", "engine.health") => {
-            (0.0..=1.0).contains(&value)
-        }
-        ("cabin", "environment.temperatureC") => (-80.0..=100.0).contains(&value),
-        ("alarm-1", "alarm.active") => (0.0..=1.0).contains(&value),
-        (_, "pilot.stress") | (_, "pilot.attention") => (0.0..=1.0).contains(&value),
-        _ => false,
-    }
-}
-
-/// Read the current numeric value of a writable component, if the path is known.
-fn read_component_value(
-    snapshot: &WorldSnapshot,
-    entity_id: &str,
-    component_path: &str,
-) -> Option<f64> {
-    match (entity_id, component_path) {
-        ("cabin", "environment.smokeDensity") => Some(snapshot.environment.smoke_density),
-        ("cabin", "environment.visibility") => Some(snapshot.environment.visibility),
-        ("cabin", "environment.temperatureC") => Some(snapshot.environment.temperature_c),
-        ("engine-1", "engine.health") => snapshot.device("engine-1").map(|engine| engine.health),
-        ("alarm-1", "alarm.active") => Some(if snapshot.alarm.active { 1.0 } else { 0.0 }),
-        (human_id, "pilot.stress") => snapshot.human(human_id).map(|human| human.stress),
-        (human_id, "pilot.attention") => snapshot.human(human_id).map(|human| human.attention),
-        _ => None,
-    }
-}
-
-/// Write a validated numeric value to a writable component. The caller must have
-/// already confirmed the path is known and the value is in range.
-fn write_component_value(
-    snapshot: &mut WorldSnapshot,
-    entity_id: &str,
-    component_path: &str,
-    value: f64,
-) {
-    match (entity_id, component_path) {
-        ("cabin", "environment.smokeDensity") => snapshot.environment.smoke_density = value,
-        ("cabin", "environment.visibility") => snapshot.environment.visibility = value,
-        ("cabin", "environment.temperatureC") => snapshot.environment.temperature_c = value,
-        ("engine-1", "engine.health") => {
-            if let Some(engine) = snapshot.device_mut("engine-1") {
-                engine.health = value;
-            }
-        }
-        ("alarm-1", "alarm.active") => snapshot.alarm.active = value > 0.5,
-        (human_id, "pilot.stress") => {
-            if let Some(human) = snapshot.human_mut(human_id) {
-                human.stress = value;
-            }
-        }
-        (human_id, "pilot.attention") => {
-            if let Some(human) = snapshot.human_mut(human_id) {
-                human.attention = value;
-            }
-        }
-        _ => unreachable!("component path is validated before write"),
-    }
+    diff.is_valid().then_some(()).ok_or_else(|| {
+        SimulationError::InvalidScenario(
+            "state patch value is outside its allowed range".to_string(),
+        )
+    })
 }

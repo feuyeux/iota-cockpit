@@ -78,28 +78,29 @@ entities:
         - remote-unlock
 influences:
   - ruleId: parked-heat-rise
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 1
       interval: 3
-    entityId: cabin
-    componentPath: environment.temperatureC
-    op:
-      op: delta
-      value: 1.1
+    patch:
+      kind: cabinTemperature
+      op:
+        op: delta
+        value: 1.1
     priority: 9
   - ruleId: child-stress-rise
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 3
       interval: 4
-    entityId: child-1
-    componentPath: pilot.stress
-    op:
-      op: delta
-      value: 0.08
+    patch:
+      kind: humanStress
+      humanId: child-1
+      op:
+        op: delta
+        value: 0.08
     priority: 8
 agents:
   - id: cockpit-agent

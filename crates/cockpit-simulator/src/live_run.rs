@@ -1,18 +1,19 @@
-use cockpit_agent::{HumanAgentDriver, HumanTurnEvidence, LocalMcpServer};
+use cockpit_agent::{HumanAgentDriver, HumanTurnEvidence, LiveTickMode, LocalMcpServer};
 use cockpit_recording::Recording;
 use cockpit_scenario::load_scenario;
 use cockpit_world::{Simulation, clock::RunStatus};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Configuration for a live-agent run. Every human's decision each tick must
-/// come from a real backend turn; there is no fallback, retry, or circuit
-/// breaker. A backend failure aborts the run immediately.
+/// Configuration for a live-agent run. Strict mode aborts an uncommitted tick
+/// on any required backend failure; best-effort commits other human turns and
+/// records the skipped turn as a redacted failure disposition.
 #[derive(Debug, Clone)]
 pub struct LiveRunConfig {
     pub scenario_path: String,
     pub ticks: u64,
     pub timeout_ms: u64,
+    pub tick_mode: LiveTickMode,
 }
 
 /// Per-tick, per-human disposition evidence for a live run.
@@ -37,6 +38,7 @@ pub struct LiveRunReport {
     pub final_snapshot_hash: Option<String>,
     pub tick_evidence: Vec<LiveTickEvidence>,
     pub backend: &'static str,
+    pub tick_mode: LiveTickMode,
     pub evaluation: Value,
     /// Set when the run was aborted by a mandatory backend failure. `None`
     /// means every requested tick completed with a real backend decision for
@@ -63,6 +65,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
     let mut simulation = Simulation::new(run_id.clone(), scenario.clone());
     simulation.start()?;
     let mut recording = Recording::new(run_id.clone(), &scenario);
+    recording.provenance.live_tick_mode = Some(config.tick_mode);
 
     let mut driver = HumanAgentDriver::new();
     let mut server = LocalMcpServer::default();
@@ -76,7 +79,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
             break;
         }
         let step_result = driver
-            .step_with_tools(&mut simulation, &mut backend, &mut server)
+            .step_with_tools_mode(&mut simulation, &mut backend, &mut server, config.tick_mode)
             .await;
 
         match step_result {
@@ -122,6 +125,7 @@ pub async fn run_live(config: LiveRunConfig) -> anyhow::Result<LiveRunReport> {
         final_snapshot_hash: recording.final_snapshot_hash().map(str::to_string),
         tick_evidence: evidence,
         backend: backend.label(),
+        tick_mode: config.tick_mode,
         evaluation,
         error: run_error,
         recording,
@@ -154,13 +158,17 @@ pub async fn replay_live(
     let mut driver = HumanAgentDriver::new();
     let mut server = LocalMcpServer::default();
     let mut backend = RecordedHumanBackend::from_tick_evidence(&source.human_turns);
+    let tick_mode = source
+        .provenance
+        .live_tick_mode
+        .unwrap_or(LiveTickMode::Strict);
 
     for _ in 0..source.ticks.len() {
         if simulation.status != RunStatus::Running {
             break;
         }
         let (step, humans) = driver
-            .step_with_tools(&mut simulation, &mut backend, &mut server)
+            .step_with_tools_mode(&mut simulation, &mut backend, &mut server, tick_mode)
             .await
             .map_err(|error| anyhow::anyhow!("live replay diverged: {error}"))?;
         recording.push(step);
@@ -1054,6 +1062,7 @@ mod tests {
             scenario_path: "../../scenarios/smoke-in-cockpit.yaml".to_string(),
             ticks: 5,
             timeout_ms: 50,
+            tick_mode: LiveTickMode::Strict,
         })
         .await
         .expect("live run completes with the synthetic backend");

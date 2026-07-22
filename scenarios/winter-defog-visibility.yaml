@@ -67,28 +67,28 @@ entities:
         - precipitation-detection
 influences:
   - ruleId: fog-visibility-loss
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 2
       interval: 4
-    entityId: cabin
-    componentPath: environment.visibility
-    op:
-      op: delta
-      value: -0.12
+    patch:
+      kind: cabinVisibility
+      op:
+        op: delta
+        value: -0.12
     priority: 6
   - ruleId: defog-recovery
-    ruleVersion: 1
+    ruleVersion: 2
     schedule:
       kind: every
       start: 4
       interval: 4
-    entityId: cabin
-    componentPath: environment.visibility
-    op:
-      op: delta
-      value: 0.08
+    patch:
+      kind: cabinVisibility
+      op:
+        op: delta
+        value: 0.08
     priority: 8
 agents:
   - id: cockpit-agent

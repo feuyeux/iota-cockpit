@@ -4,12 +4,41 @@ import { createRoot, type Root } from "react-dom/client";
 import { SimulationEvaluation } from "./SimulationEvaluation";
 import { I18nProvider } from "../i18n";
 import { initialSimulationModel } from "../state/simulationReducer";
-import type { EvaluationResult } from "../types/simulation";
+import type { EvaluationReportRecord } from "../types/simulation";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function render(evaluationOverride?: EvaluationResult) {
+function fixtureReport(passed = true): EvaluationReportRecord {
+  return {
+    id: "report-run",
+    createdAtMs: 1,
+    runId: "run",
+    scenarioId: "smoke-in-cockpit",
+    report: {
+      schemaVersion: 1,
+      verdict: passed ? "pass" : "fail",
+      rubricId: "smoke-private",
+      rubricVersion: "1",
+      rubricHash: "sha256:rubric",
+      inputHash: "sha256:input",
+      schemaHash: "sha256:schema",
+      deterministicResults: [{
+        ruleId: passed ? "shutdown-before-spread" : "thermal-comfort-restored",
+        deadlineTick: passed ? 30 : 12,
+        verdict: passed ? "pass" : "fail",
+        result: { passed, score: passed ? 1 : 0, evidenceEventIds: ["shutdown-evidence"], firstFailureTick: passed ? null : 8, explanation: "fixture" }
+      }],
+      evidence: [{ tick: 6, eventId: "shutdown-evidence", kind: "EngineShutdown" }],
+      judges: [],
+      judgeDisagreement: false,
+      releaseGatePassed: passed,
+      explanation: passed ? "all deterministic hidden-rubric gates passed" : "one or more deterministic hidden-rubric gates failed"
+    }
+  };
+}
+
+function render(report = fixtureReport()) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -20,6 +49,7 @@ function render(evaluationOverride?: EvaluationResult) {
           model={{
             ...initialSimulationModel,
             state: "running",
+            runId: "run",
             tick: 8,
             scenario: {
               id: "smoke-in-cockpit",
@@ -56,8 +86,8 @@ function render(evaluationOverride?: EvaluationResult) {
               correlationId: "c",
               payload: { message: "" }
             }],
-            evaluation: evaluationOverride ?? { passed: true, score: 1, evidenceEventIds: ["shutdown-evidence"], firstFailureTick: null, explanation: "engine shutdown occurred within the smoke response deadline" }
           }}
+          completedReport={report}
         />
       </I18nProvider>
     );
@@ -83,39 +113,10 @@ describe("SimulationEvaluation", () => {
     expect(element.textContent).toContain("通过");
   });
 
-  it("shows execution, safety, and rule-level evaluation failures", () => {
-    const element = render({
-      passed: false,
-      score: 0,
-      evidenceEventIds: [],
-      firstFailureTick: 8,
-      explanation: "mandatory agent execution failed",
-      executionPassed: false,
-      executionError: "backend timeout",
-      safetyPassed: false,
-      safetyViolations: [{ tick: 7, requestId: "request", code: "TOOL_CALL_DENIED" }],
-      trajectoryPassed: false,
-      trajectory: {
-        actionRequests: 3,
-        appliedActions: 2,
-        rejectedActions: 1,
-        sideEffectToolCalls: 2,
-        deniedToolCalls: 1,
-        alertTickExposure: 5,
-        firstAppliedActionTick: 6
-      },
-      ruleResults: [{
-        ruleId: "thermal-comfort-restored",
-        deadlineTick: 12,
-        result: { passed: false, score: 0, evidenceEventIds: [], firstFailureTick: 8, explanation: "failed" }
-      }]
-    });
-    expect(element.textContent).toContain("执行失败");
-    expect(element.textContent).toContain("backend timeout");
-    expect(element.textContent).toContain("TOOL_CALL_DENIED");
+  it("shows a failed final report and its failing deterministic rule", () => {
+    const element = render(fixtureReport(false));
     expect(element.textContent).toContain("thermal-comfort-restored");
-    expect(element.textContent).toContain("轨迹指标");
-    expect(element.textContent).toContain("风险暴露: 5");
-    expect(element.textContent).toContain("首次动作: t6");
+    expect(element.textContent).toContain("最终独立报告");
+    expect(element.textContent).toContain("阻断");
   });
 });

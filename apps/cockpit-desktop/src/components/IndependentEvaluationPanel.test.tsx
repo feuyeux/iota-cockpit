@@ -98,6 +98,25 @@ afterEach(() => {
 });
 
 describe("IndependentEvaluationPanel", () => {
+  it("does not allow a final evaluation while the run is still recording", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <I18nProvider>
+          <IndependentEvaluationPanel model={{ ...completedModel("run-1"), state: "running" }} />
+        </I18nProvider>
+      );
+    });
+
+    const button = Array.from(container.querySelectorAll("button"))
+      .find((item) => item.textContent?.includes("一键独立评测"));
+    expect(button).toBeDefined();
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(container.textContent).toContain("仅已完成且记录已持久化");
+  });
+
   it("runs the independent evaluator and renders evidence, Judges, and history", async () => {
     mocks.evaluateRun.mockResolvedValue(report);
     container = document.createElement("div");

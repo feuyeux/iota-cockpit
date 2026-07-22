@@ -37,6 +37,7 @@ fn recording_payloads_redact_nested_secrets_before_writing_to_disk() {
             utterance: Some("token-must-not-persist".to_string()),
             ..HumanDecision::default()
         },
+        disposition: Default::default(),
         tool_calls: Vec::new(),
         latency_ms: None,
     }]);

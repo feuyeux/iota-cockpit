@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use cockpit_world::{
     action::{ActionRequest, ActionResult, ActionStatus},
@@ -9,21 +12,25 @@ use cockpit_world::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
+#[cfg(feature = "live-acp")]
 pub mod acp_adapter;
+#[cfg(feature = "live-acp")]
 pub mod iota_core_adapter;
 pub mod live;
 pub mod multi_agent;
 pub mod native_mcp;
 pub mod open_world;
 pub mod policy;
+pub mod rule_policy_bundle;
 pub mod skill;
 pub mod translation;
 
 pub use live::{
     BackendConversationUpdate, HumanAgentDriver, HumanBackend, HumanDecision, HumanToolCall,
-    HumanToolExchange, HumanTurnContext, HumanTurnError, HumanTurnEvidence, InternalStateDelta,
-    RecordedHumanBackend, RequestedAction,
+    HumanToolExchange, HumanTurnContext, HumanTurnDisposition, HumanTurnError, HumanTurnEvidence,
+    HumanTurnFailureKind, InternalStateDelta, LiveTickMode, RecordedHumanBackend, RequestedAction,
 };
 pub use multi_agent::{AgentActionBatch, MultiAgentCoordinator};
 pub use open_world::{
@@ -32,6 +39,7 @@ pub use open_world::{
     ResourceLifecycle, SkillState, ToolState,
 };
 pub use policy::{AgentRuntimePolicy, AgentTurnError};
+pub use rule_policy_bundle::{RULE_POLICY_BUNDLE_VERSION, RulePolicyBundle};
 pub use translation::{IdentityTranslator, Translator, normalize_language, same_language};
 
 pub const TOOL_GET_OBSERVATION: &str = "simulation.get_observation";
@@ -46,6 +54,26 @@ pub const TOOL_ADD_GOAL: &str = "simulation.add_goal";
 pub const TOOL_WAIT_UNTIL: &str = "simulation.wait_until";
 pub const MAX_TOOL_RESPONSE_BYTES: usize = 1_048_576;
 pub const REDACTED_SECRET: &str = "[REDACTED]";
+
+/// Initialize telemetry for the external ACP integration. Keeping this call in
+/// `cockpit-agent` prevents Simulator, Desktop, and world code from depending
+/// on the external `iota-core` boundary directly.
+pub fn initialize_external_telemetry() -> Result<(), String> {
+    #[cfg(feature = "live-acp")]
+    {
+        iota_core::telemetry::init(&iota_core::telemetry::TelemetryConfig::default())
+            .map(|_guard| {
+                // The current iota-core initializer installs global telemetry. Its
+                // guard is intentionally leaked for the process lifetime.
+                std::mem::forget(_guard);
+            })
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(feature = "live-acp"))]
+    {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -816,13 +844,171 @@ mod tests {
     }
 }
 
-#[derive(Debug, Default)]
+/// Versioned deterministic baseline policy. `alert_id` uses the stable
+/// simulator event identifier; `command` is the capability catalog wire name.
+/// The policy is data, rather than a match embedded in `RuleAgent`, so a
+/// scenario extension can supply and validate a policy fixture independently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePolicy {
+    pub version: u32,
+    pub responses: BTreeMap<String, RulePolicyAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePolicyAction {
+    pub target: String,
+    pub command: String,
+}
+
+impl Default for RulePolicy {
+    fn default() -> Self {
+        let responses = [
+            ("SmokeDetected", "engine-1", "engineShutdown"),
+            ("ThermalComfortRisk", "hvac-1", "climateComfortRestore"),
+            (
+                "WindshieldVisibilityRisk",
+                "defogger-1",
+                "windshieldDefogActivate",
+            ),
+            ("DriverFatigueRisk", "dms-1", "fatigueInterventionActivate"),
+            (
+                "ChildPresenceHeatRisk",
+                "occupant-radar-1",
+                "childProtectionActivate",
+            ),
+            (
+                "MedicalEmergencyRisk",
+                "emergency-call-1",
+                "medicalResponseActivate",
+            ),
+            (
+                "MultiUserPrivacyConflict",
+                "voice-array-1",
+                "privacyModeActivate",
+            ),
+            ("EvRangeRisk", "navigation-1", "chargingPlanAccept"),
+            (
+                "AdasTakeoverRequired",
+                "adas-controller-1",
+                "adasTakeoverAcknowledge",
+            ),
+            (
+                "CyberControlAnomaly",
+                "security-monitor-1",
+                "cyberSafeModeActivate",
+            ),
+        ]
+        .into_iter()
+        .map(|(alert, target, command)| {
+            (
+                alert.to_string(),
+                RulePolicyAction {
+                    target: target.to_string(),
+                    command: command.to_string(),
+                },
+            )
+        })
+        .collect();
+        Self {
+            version: 1,
+            responses,
+        }
+    }
+}
+
+impl RulePolicy {
+    pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(bytes).map_err(|error| format!("invalid RulePolicy: {error}"))
+    }
+
+    /// Load a versioned policy fixture from an explicit, caller-authorized
+    /// path. Selection and signature verification stay at the deployment
+    /// boundary; this API only parses the immutable fixture content.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("failed to read RulePolicy {}: {error}", path.display()))?;
+        Self::from_json(&bytes)
+            .map_err(|error| format!("failed to load RulePolicy {}: {error}", path.display()))
+    }
+
+    pub fn hash(&self) -> String {
+        let canonical =
+            serde_json::to_vec(self).expect("RulePolicy is serializable by construction");
+        let mut hasher = Sha256::new();
+        hasher.update(canonical);
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
+    fn validate_for(&self, simulation: &Simulation) -> SimulationResult<()> {
+        if self.version == 0 {
+            return Err(SimulationError::InvalidScenario(
+                "RulePolicy version must be non-zero".to_string(),
+            ));
+        }
+        for (alert_id, action) in &self.responses {
+            if alert_id.trim().is_empty()
+                || action.target.trim().is_empty()
+                || action.command.trim().is_empty()
+            {
+                return Err(SimulationError::InvalidScenario(
+                    "RulePolicy contains an empty alert, target, or command".to_string(),
+                ));
+            }
+            let capability = simulation
+                .capabilities()
+                .get_by_wire_name(&action.command)
+                .ok_or_else(|| {
+                    SimulationError::InvalidScenario(format!(
+                        "RulePolicy command '{}' is not in the capability catalog",
+                        action.command
+                    ))
+                })?;
+            if capability.target_id != action.target {
+                return Err(SimulationError::InvalidScenario(format!(
+                    "RulePolicy target '{}' does not match capability '{}' target '{}'",
+                    action.target, action.command, capability.target_id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct RuleAgent {
     sequence: u64,
-    handled_alerts: std::collections::BTreeSet<String>,
+    handled_alerts: BTreeSet<String>,
+    policy: RulePolicy,
+    validated_scenario_hash: Option<String>,
+}
+
+impl Default for RuleAgent {
+    fn default() -> Self {
+        Self::new(RulePolicy::default())
+    }
 }
 
 impl RuleAgent {
+    pub fn new(policy: RulePolicy) -> Self {
+        Self {
+            sequence: 0,
+            handled_alerts: BTreeSet::new(),
+            policy,
+            validated_scenario_hash: None,
+        }
+    }
+
+    pub fn policy_hash(&self) -> String {
+        self.policy.hash()
+    }
+
+    pub fn policy(&self) -> &RulePolicy {
+        &self.policy
+    }
+
     pub fn step(
         &mut self,
         simulation: &mut Simulation,
@@ -837,6 +1023,10 @@ impl RuleAgent {
         server: &mut LocalMcpServer,
         state_diffs: Vec<cockpit_world::StateDiff>,
     ) -> SimulationResult<StepRecord> {
+        if self.validated_scenario_hash.as_deref() != Some(&simulation.scenario.scenario_hash) {
+            self.policy.validate_for(simulation)?;
+            self.validated_scenario_hash = Some(simulation.scenario.scenario_hash.clone());
+        }
         let observation_request = self.request(simulation, TOOL_GET_OBSERVATION, json!({}));
         let (observation_response, observation_trace) =
             server.call(simulation, observation_request);
@@ -844,21 +1034,8 @@ impl RuleAgent {
             .map_err(|err| SimulationError::Serialization(err.to_string()))?;
         let mut traces = vec![observation_trace];
 
-        let action_for_alert = |alert: &str| match alert {
-            "SmokeDetected" => Some(("engine-1", "engineShutdown")),
-            "ThermalComfortRisk" => Some(("hvac-1", "climateComfortRestore")),
-            "WindshieldVisibilityRisk" => Some(("defogger-1", "windshieldDefogActivate")),
-            "DriverFatigueRisk" => Some(("dms-1", "fatigueInterventionActivate")),
-            "ChildPresenceHeatRisk" => Some(("occupant-radar-1", "childProtectionActivate")),
-            "MedicalEmergencyRisk" => Some(("emergency-call-1", "medicalResponseActivate")),
-            "MultiUserPrivacyConflict" => Some(("voice-array-1", "privacyModeActivate")),
-            "EvRangeRisk" => Some(("navigation-1", "chargingPlanAccept")),
-            "AdasTakeoverRequired" => Some(("adas-controller-1", "adasTakeoverAcknowledge")),
-            "CyberControlAnomaly" => Some(("security-monitor-1", "cyberSafeModeActivate")),
-            _ => None,
-        };
         for alert in &observation.alerts {
-            let Some((target, command)) = action_for_alert(alert) else {
+            let Some(action) = self.policy.responses.get(alert) else {
                 continue;
             };
             if !self.handled_alerts.insert(alert.clone()) {
@@ -868,8 +1045,8 @@ impl RuleAgent {
                 simulation,
                 TOOL_REQUEST_ACTION,
                 json!({
-                    "target": target,
-                    "command": command,
+                    "target": action.target,
+                    "command": action.command,
                     "expectedStateVersion": simulation.snapshot.version,
                     "expiresAtTick": simulation.snapshot.tick + 3
                 }),

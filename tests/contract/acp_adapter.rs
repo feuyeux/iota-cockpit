@@ -1,3 +1,5 @@
+#![cfg(feature = "live-acp")]
+
 use cockpit_agent::{
     HumanToolCall, HumanToolExchange, HumanTurnContext, TOOL_GET_TURN_CONTEXT, ToolResponse,
     acp_adapter::IotaCoreAcpAdapter, iota_core_adapter::IotaCoreAdapter,

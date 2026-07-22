@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cockpit_agent::{HumanAgentDriver, LocalMcpServer, RuleAgent};
+use cockpit_agent::{HumanAgentDriver, LocalMcpServer, RuleAgent, RulePolicyBundle};
 use cockpit_plugin::{PluginExecutor, PluginFailure, PluginHost, PluginPolicy};
 use cockpit_recording::{Recording, RecordingQueue, RecordingQueuePolicy, RecordingStore};
 use cockpit_world::{
@@ -29,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::live_run::backend_impl::BackendSession;
 
+use super::control::RecordedAuditQuery;
 use super::proto::{
     IPC_VERSION, IpcError, SimulatorCommand, SimulatorEvent, SimulatorRequest, SimulatorResponse,
 };
@@ -111,6 +112,8 @@ pub struct SimulatorHandler {
     pub(super) plugin_executors: BTreeMap<String, Box<dyn PluginExecutor>>,
     pub(super) recording_queue: RecordingQueue,
     pub(super) live_turn_control: LiveTurnControl,
+    pub(super) rule_policy_bundle: Option<RulePolicyBundle>,
+    pub(super) selected_rule_policy: Option<String>,
 }
 
 impl SimulatorHandler {
@@ -138,6 +141,8 @@ impl SimulatorHandler {
             plugin_executors: BTreeMap::new(),
             recording_queue: RecordingQueue::new(256, RecordingQueuePolicy::FailRun),
             live_turn_control,
+            rule_policy_bundle: None,
+            selected_rule_policy: None,
         }
     }
 
@@ -147,6 +152,13 @@ impl SimulatorHandler {
 
     pub fn session_token(&self) -> &str {
         &self.session_token
+    }
+
+    /// Install a deployment-verified policy bundle. IPC clients can select
+    /// only IDs from this already verified bundle.
+    pub fn configure_rule_policy_bundle(&mut self, bundle: RulePolicyBundle) {
+        self.rule_policy_bundle = Some(bundle);
+        self.selected_rule_policy = None;
     }
 
     /// Return an immutable snapshot of the active recording for an external
@@ -232,6 +244,8 @@ impl SimulatorHandler {
         let result = match request.command {
             SimulatorCommand::ValidateScenario { path } => self.validate(&path),
             SimulatorCommand::CreateSimulationRun { path } => self.create_run(&path),
+            SimulatorCommand::SelectRulePolicy { policy_id } => self.select_rule_policy(&policy_id),
+            SimulatorCommand::ListRulePolicies => self.list_rule_policies(),
             SimulatorCommand::CreateLiveSimulationRun { .. }
             | SimulatorCommand::ResumeLiveSimulation { .. }
             | SimulatorCommand::StepLiveSimulation
@@ -287,12 +301,30 @@ impl SimulatorHandler {
                 self.set_approval_required(required)
             }
             SimulatorCommand::GetSimulationSnapshot => self.snapshot(),
+            SimulatorCommand::GetSimulationRunStatus => self.run_status(),
             SimulatorCommand::GetSimulationEvents { cursor } => Ok(json!({
                 "events": self.events_after(cursor),
                 "nextCursor": self.next_cursor,
                 "firstAvailableCursor": self.events.first().map(SimulatorEvent::cursor).unwrap_or(self.next_cursor),
                 "resetRequired": self.cursor_reset_required(cursor)
             })),
+            SimulatorCommand::GetRecordedAuditEvents {
+                run_id,
+                start_tick,
+                end_tick,
+                offset,
+                limit,
+                after_sequence,
+                tail_limit,
+            } => self.recorded_audit_events(RecordedAuditQuery {
+                run_id: &run_id,
+                start_tick,
+                end_tick,
+                offset,
+                limit,
+                after_sequence,
+                tail_limit,
+            }),
             SimulatorCommand::GetAgentTrace => Ok(json!({
                 "events": self
                     .events
@@ -384,8 +416,8 @@ impl SimulatorHandler {
             SimulatorEvent::SimulationPluginFailure { failure, .. } => {
                 SimulatorEvent::SimulationPluginFailure { cursor, failure }
             }
-            SimulatorEvent::SimulationEvaluationUpdated { evaluation, .. } => {
-                SimulatorEvent::SimulationEvaluationUpdated { cursor, evaluation }
+            SimulatorEvent::SimulationEvaluationProgress { progress, .. } => {
+                SimulatorEvent::SimulationEvaluationProgress { cursor, progress }
             }
             SimulatorEvent::SimulationError { error, .. } => {
                 SimulatorEvent::SimulationError { cursor, error }
@@ -491,12 +523,23 @@ pub(super) fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRec
             .unwrap_or_else(|_| "disablePlugin".to_string())
             .trim_matches('"')
             .to_string(),
+        execution: failure.execution.as_ref().map(|execution| {
+            cockpit_world::PluginExecutionRecord {
+                elapsed_ms: execution.elapsed_ms,
+                exit_code: execution.exit_code,
+                timed_out: execution.timed_out,
+                terminated_process_group: execution.terminated_process_group,
+                stdout_bytes: execution.stdout_bytes,
+                stderr_bytes: execution.stderr_bytes,
+            }
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{LiveTurnControl, SimulatorEvent, SimulatorHandler, deadline_reached};
+    use crate::ipc::proto::EvaluationProgressStatus;
     use cockpit_recording::run_rule_agent_recording;
     use cockpit_scenario::load_scenario;
     use cockpit_world::clock::RunStatus;
@@ -535,13 +578,12 @@ mod tests {
         handler.recording = Some(recording);
         handler.emit_execution_failure_evaluation(&scenario, "backend timeout".to_string());
 
-        let SimulatorEvent::SimulationEvaluationUpdated { evaluation, .. } =
+        let SimulatorEvent::SimulationEvaluationProgress { progress, .. } =
             handler.events.last().expect("evaluation event")
         else {
-            panic!("last event must be an evaluation update");
+            panic!("last event must be evaluation progress");
         };
-        assert_eq!(evaluation["passed"], false);
-        assert_eq!(evaluation["executionPassed"], false);
-        assert_eq!(evaluation["executionError"], "backend timeout");
+        assert_eq!(progress.status, EvaluationProgressStatus::Failed);
+        assert_eq!(progress.execution_error.as_deref(), Some("backend timeout"));
     }
 }

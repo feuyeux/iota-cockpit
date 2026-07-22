@@ -500,11 +500,14 @@ dependencies = [
 name = "cockpit-agent"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-scenario",
  "cockpit-world",
  "iota-sympantos-core",
+ "ring",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -518,7 +521,6 @@ dependencies = [
  "cockpit-evaluation",
  "cockpit-recording",
  "cockpit-simulator",
- "iota-sympantos-core",
  "serde",
  "serde_json",
  "tauri",
@@ -549,6 +551,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
 ]
 
 [[package]]
@@ -570,19 +573,23 @@ name = "cockpit-plugin"
 version = "0.1.0"
 dependencies = [
  "cockpit-world",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "cockpit-recording"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-agent",
  "cockpit-world",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
@@ -613,13 +620,13 @@ dependencies = [
  "cockpit-recording",
  "cockpit-scenario",
  "cockpit-world",
- "iota-sympantos-core",
  "libc",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -1943,6 +1950,7 @@ dependencies = [
  "cockpit-scenario",
  "cockpit-simulator",
  "cockpit-world",
+ "rusqlite",
  "serde_json",
  "sha2",
  "tokio",

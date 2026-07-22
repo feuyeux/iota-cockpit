@@ -14,6 +14,7 @@ use cockpit_evaluation::plane::{
     HiddenRubric, IndependentJudge, JudgeDecision, JudgeRequest, Verdict, schema_hash, stable_hash,
 };
 use cockpit_recording::Recording;
+use sha2::{Digest, Sha256};
 
 mod suite;
 
@@ -64,12 +65,18 @@ struct Cli {
     /// Argument passed only to Judge A; repeat for multiple arguments.
     #[arg(long = "judge-a-arg", allow_hyphen_values = true)]
     judge_a_args: Vec<String>,
+    /// Optional SHA-256 pin for Judge A's executable.
+    #[arg(long)]
+    judge_a_sha256: Option<String>,
     /// Executable Judge provider B. Must be a different executable path from A.
     #[arg(long)]
     judge_b_command: Option<PathBuf>,
     /// Argument passed only to Judge B; repeat for multiple arguments.
     #[arg(long = "judge-b-arg", allow_hyphen_values = true)]
     judge_b_args: Vec<String>,
+    /// Optional SHA-256 pin for Judge B's executable.
+    #[arg(long)]
+    judge_b_sha256: Option<String>,
     /// Wall-clock timeout for each isolated Judge provider.
     #[arg(long, default_value_t = 120_000)]
     judge_timeout_ms: u64,
@@ -97,6 +104,7 @@ struct ExternalJudge {
     command: PathBuf,
     args: Vec<String>,
     timeout_ms: u64,
+    provider_sha256: String,
 }
 
 impl IndependentJudge for ExternalJudge {
@@ -190,8 +198,9 @@ impl IndependentJudge for ExternalJudge {
         if stdout.len() > 1_048_576 {
             return Err("Judge provider output exceeds 1 MiB".to_string());
         }
-        let decision: JudgeDecision = serde_json::from_slice(&stdout)
+        let mut decision: JudgeDecision = serde_json::from_slice(&stdout)
             .map_err(|error| format!("Judge provider returned invalid JSON: {error}"))?;
+        decision.provenance.provider_sha256 = Some(self.provider_sha256.clone());
         validate_decision(decision, input, rubric)
     }
 }
@@ -272,6 +281,26 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> anyhow::Result<T
         .with_context(|| format!("failed to parse JSON {}", path.display()))
 }
 
+fn executable_sha256(path: &PathBuf) -> anyhow::Result<String> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read Judge provider {}", path.display()))?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
+fn verify_expected_provider_hash(
+    label: &str,
+    actual: &str,
+    expected: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if expected != actual {
+        anyhow::bail!("{label} provider digest does not match configured SHA-256 pin");
+    }
+    Ok(())
+}
+
 fn evaluate_input(
     cli: &Cli,
     input: &EvaluationInput,
@@ -307,15 +336,28 @@ fn evaluate_input(
             if first_identity == second_identity {
                 anyhow::bail!("Judge A and Judge B must use different executable paths");
             }
+            let first_sha256 = executable_sha256(&first_identity)?;
+            let second_sha256 = executable_sha256(&second_identity)?;
+            verify_expected_provider_hash("Judge A", &first_sha256, cli.judge_a_sha256.as_deref())?;
+            verify_expected_provider_hash(
+                "Judge B",
+                &second_sha256,
+                cli.judge_b_sha256.as_deref(),
+            )?;
+            if first_sha256 == second_sha256 {
+                anyhow::bail!("Judge A and Judge B must use different executable digests");
+            }
             let first = ExternalJudge {
                 command: first_identity,
                 args: cli.judge_a_args.clone(),
                 timeout_ms: cli.judge_timeout_ms,
+                provider_sha256: first_sha256,
             };
             let second = ExternalJudge {
                 command: second_identity,
                 args: cli.judge_b_args.clone(),
                 timeout_ms: cli.judge_timeout_ms,
+                provider_sha256: second_sha256,
             };
             DualJudgeEvaluator {
                 deterministic: DeterministicEvaluator,

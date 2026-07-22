@@ -89,6 +89,7 @@ export function SimulationActivityFeed({ model, dispatch }: Props) {
   const { syncEvents } = useSimulator(model, dispatch);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [page, setPage] = useState(0);
+  const [loadingEarlierEvidence, setLoadingEarlierEvidence] = useState(false);
 
   const feed = useMemo(
     () => buildFeed(model),
@@ -134,6 +135,39 @@ export function SimulationActivityFeed({ model, dispatch }: Props) {
           tick: model.tick
         }
       });
+    }
+  }
+
+  async function loadEarlierEvidence() {
+    if (!model.runId || !model.auditRecovery || model.auditRecovery.earliestOffset === 0) return;
+    setLoadingEarlierEvidence(true);
+    try {
+      const offset = Math.max(0, model.auditRecovery.earliestOffset - 256);
+      const audit = await simulatorClient.recordedAuditPage({
+        runId: model.runId,
+        startTick: 0,
+        endTick: model.tick,
+        offset
+      });
+      dispatch({
+        type: "recordedAuditPage",
+        events: audit.events.map((item) => item.event),
+        totalEvents: audit.totalEvents,
+        earliestOffset: audit.offset
+      });
+    } catch (error) {
+      dispatch({
+        type: "commandRejected",
+        error: {
+          code: "RECORDED_AUDIT_LOAD_FAILED",
+          message: describeError(error, t("auditLoadFailed")),
+          correlationId: "desktop-recorded-audit",
+          runId: model.runId,
+          tick: model.tick
+        }
+      });
+    } finally {
+      setLoadingEarlierEvidence(false);
     }
   }
 
@@ -234,6 +268,22 @@ export function SimulationActivityFeed({ model, dispatch }: Props) {
           )}
         </div>
       </div>
+      {model.auditRecovery?.earliestOffset && model.auditRecovery.earliestOffset > 0 ? (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-900/60 bg-amber-950/20 px-3.5 py-2 text-[11px] text-amber-100">
+          <span>
+            {t("auditTruncated")
+              .replace("{count}", String(model.auditRecovery.earliestOffset))
+              .replace("{total}", String(model.auditRecovery.totalEvents))}
+          </span>
+          <button
+            className="control-button h-[26px] shrink-0 px-2 text-[11px]"
+            disabled={loadingEarlierEvidence}
+            onClick={() => void loadEarlierEvidence()}
+          >
+            {t("loadEarlierEvidence")}
+          </button>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         {feed.length === 0 ? (
           <div className="p-3 text-sm text-zinc-500">

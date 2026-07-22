@@ -63,6 +63,23 @@ fn slow_operation_logging_uses_a_one_second_threshold() {
 }
 
 #[test]
+fn rule_policy_sidecar_configuration_requires_a_complete_nonempty_pair() {
+    assert_eq!(parse_rule_policy_sidecar_config(None, None), Ok(None));
+    assert!(parse_rule_policy_sidecar_config(Some("bundle".to_string()), None).is_err());
+    assert!(parse_rule_policy_sidecar_config(None, Some("key".to_string())).is_err());
+    assert!(
+        parse_rule_policy_sidecar_config(Some(" ".to_string()), Some("key".to_string())).is_err()
+    );
+    assert_eq!(
+        parse_rule_policy_sidecar_config(
+            Some("/policies".to_string()),
+            Some("base64-key".to_string())
+        ),
+        Ok(Some(("/policies".to_string(), "base64-key".to_string())))
+    );
+}
+
+#[test]
 fn bundled_simulator_is_resolved_next_to_the_desktop_executable() {
     let executable = Path::new("target/release/cockpit-desktop");
     let expected = Path::new("target/release").join(if cfg!(windows) {
@@ -121,6 +138,24 @@ fn durable_recording_must_match_current_simulator_position() {
     assert!(validate_durable_position("run-1", 4, &current).is_ok());
     assert!(validate_durable_position("run-1", 3, &current).is_err());
     assert!(validate_durable_position("other-run", 4, &current).is_err());
+}
+
+#[test]
+fn final_evaluation_requires_a_completed_run() {
+    assert!(
+        validate_completed_status(
+            "run-1",
+            &serde_json::json!({ "runId": "run-1", "status": "completed" })
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_completed_status(
+            "run-1",
+            &serde_json::json!({ "runId": "run-1", "status": "running" })
+        )
+        .is_err()
+    );
 }
 
 fn state_with_workspace_root(root: &str) -> SimulatorState {

@@ -38,6 +38,8 @@ tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "ti
 tokio-util = "0.7.18"
 thiserror = "2.0.18"
 libc = "0.2.186"
+base64 = "0.22.1"
+ring = "0.17.14"
 cockpit-world = { path = "crates/cockpit-world" }
 cockpit-scenario = { path = "crates/cockpit-scenario" }
 cockpit-recording = { path = "crates/cockpit-recording" }
@@ -70,6 +72,7 @@ sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+rusqlite.workspace = true
 
 [[test]]
 name = "smoke_replay"
