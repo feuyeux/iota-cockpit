@@ -3,12 +3,35 @@
 :root {
   color-scheme: dark;
   font-synthesis: none;
+  --primary-100: #4CAF50;
+  --primary-200: #2a9235;
+  --primary-300: #005100;
+  --accent-100: #FFC107;
+  --accent-200: #916400;
+  --text-100: #333333;
+  --text-200: #5c5c5c;
+  --bg-100: #F5F5F5;
+  --bg-200: #ebebeb;
+  --bg-300: #c2c2c2;
   --desktop-font-size: clamp(14px, 0.92vw, 15.5px);
   --desktop-small-font-size: clamp(12.5px, 0.82vw, 13.5px);
   --desktop-micro-font-size: clamp(11.5px, 0.75vw, 12px);
   --world-font-size: clamp(14px, 0.92vw, 15.5px);
   --world-small-font-size: clamp(12.5px, 0.82vw, 13.5px);
   --world-micro-font-size: clamp(11.5px, 0.75vw, 12px);
+}
+
+@theme {
+  --color-primary-100: var(--primary-100);
+  --color-primary-200: var(--primary-200);
+  --color-primary-300: var(--primary-300);
+  --color-accent-100: var(--accent-100);
+  --color-accent-200: var(--accent-200);
+  --color-text-100: var(--text-100);
+  --color-text-200: var(--text-200);
+  --color-bg-100: var(--bg-100);
+  --color-bg-200: var(--bg-200);
+  --color-bg-300: var(--bg-300);
 }
 
 * {
