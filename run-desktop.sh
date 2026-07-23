@@ -104,19 +104,27 @@ ensure_frontend_deps() {
   # beforeDevCommand needs; its absence is what produces a confusing
   # "vite: command not found" failure deep inside the tauri process, so treat
   # it as the install signal rather than only checking for `node_modules`.
-  # On Windows, npm writes `vite.cmd` (not the bare `vite`) inside .bin, so
-  # accept either form.
-  if [[ -x node_modules/.bin/vite ]] || [[ -x node_modules/.bin/vite.cmd ]]; then
+  # npm workspaces can hoist it to the repository root, rather than retaining
+  # a package-local .bin directory. On Windows, npm writes `vite.cmd` (not
+  # the bare `vite`) inside .bin, so accept either form.
+  if vite_binary_available; then
     return 0
   fi
 
   echo "Frontend dependencies not found, running npm install"
   npm install
 
-  if [[ ! -x node_modules/.bin/vite ]] && [[ ! -x node_modules/.bin/vite.cmd ]]; then
-    echo "npm install completed but vite is still missing from node_modules/.bin" >&2
+  if ! vite_binary_available; then
+    echo "npm install completed but vite is still missing from npm's executable paths" >&2
     exit 1
   fi
+}
+
+vite_binary_available() {
+  [[ -x node_modules/.bin/vite ]] \
+    || [[ -x node_modules/.bin/vite.cmd ]] \
+    || [[ -x ../../node_modules/.bin/vite ]] \
+    || [[ -x ../../node_modules/.bin/vite.cmd ]]
 }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

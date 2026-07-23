@@ -2,8 +2,10 @@ rubricId: visibility-private
 version: "1"
 scenarioId: winter-defog-visibility
 language: en
+objective: Verify that windshield visibility is restored on time without any safety rejection.
 rules:
   - id: windshield-visibility-restored
+    successCriteria: By tick 24, WindshieldVisibilityRestored must be emitted by defogger-1 for cabin with a value of at least 0.8; rejected actions must remain zero.
     deadlineTick: 24
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

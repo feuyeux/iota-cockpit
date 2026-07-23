@@ -90,6 +90,17 @@ influences:
         op: delta
         value: 0.08
     priority: 8
+scenarioEvents:
+  - atTick: 0
+    eventType: WindshieldFogRiskRaised
+    source: driver-1
+    target: defogger-1
+    message: Rain and cold air are fogging the windshield; forward visibility is degrading.
+  - atTick: 3
+    eventType: VisibilitySafetyRiskRaised
+    source: driver-1
+    target: cabin
+    message: The driver cannot rely on the current view; clear the windshield without overcooling the cabin.
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -97,5 +108,5 @@ agents:
     capabilities:
       - visibility.activateDefog
 goals:
-  - Maintain safe windshield visibility in winter weather.
-maxTicks: 80
+  - Recognize recurring visibility loss, balance occupant comfort with driving safety, and use authorized controls to restore a clear windshield.
+maxTicks: 28

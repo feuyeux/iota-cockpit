@@ -10,7 +10,9 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cockpit_world::{StatePatch, StatePatchTarget, WorldSnapshot};
+use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -60,6 +62,13 @@ pub struct PluginManifest {
     /// an empty list is omitted from canonical hashing for old manifests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filesystem_read_paths: Vec<String>,
+    /// SHA-256 of the executable named by `command[0]`, hex-encoded (no
+    /// `sha256:` prefix, matching a plain `sha256sum` digest). Verified
+    /// against the on-disk executable immediately before every spawn
+    /// (result.md C-03 / AC7.2), so a manifest cannot be signed once and
+    /// then have its underlying binary swapped out from under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -158,14 +167,6 @@ impl ProcessPluginExecutor {
         self
     }
 
-    pub fn from_command_with_permissions(
-        command: Vec<String>,
-        deadline: Duration,
-        permissions: impl IntoIterator<Item = PluginPermission>,
-    ) -> Result<Self, String> {
-        Ok(Self::from_command(command, deadline)?.with_permissions(permissions))
-    }
-
     pub fn with_filesystem_read_paths(
         mut self,
         paths: impl IntoIterator<Item = impl Into<PathBuf>>,
@@ -184,16 +185,33 @@ impl ProcessPluginExecutor {
             .with_permissions(permissions)
             .with_filesystem_read_paths(filesystem_read_paths))
     }
-
-    pub fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
-        self.max_output_bytes = max_output_bytes;
-        self
-    }
 }
 
 impl PluginExecutor for ProcessPluginExecutor {
     fn tick(&mut self, snapshot: &WorldSnapshot) -> Result<Vec<StateDiff>, String> {
         self.last_execution = None;
+        // SECURITY (result.md C-04 / AC8.1, AC8.2): Windows has no sandbox
+        // implementation in this crate (macOS uses `sandbox-exec`, Linux
+        // uses seccomp+Landlock; see `plugin_command`/`apply_linux_sandbox`
+        // below). Previously a plugin declaring `Network`/`ChildProcess`
+        // permissions ran completely unconfined on Windows — the
+        // permission system silently downgraded to "allow everything"
+        // instead of enforcing what it advertised. Refuse to execute any
+        // plugin that declares a permission this platform cannot actually
+        // confine, rather than running it unconfined.
+        if !platform_process_sandbox_available() {
+            return Err(
+                "process plugins are disabled on this platform because a complete OS sandbox is unavailable"
+                    .to_string(),
+            );
+        }
+        if let Some(unenforceable) = first_unenforceable_permission(&self.permissions) {
+            return Err(format!(
+                "plugin declares permission {unenforceable:?} which cannot be sandboxed on this \
+                 platform; refusing to execute unconfined (see PluginError::PermissionDenied \
+                 semantics — this is a fail-closed platform limitation, not a manifest error)"
+            ));
+        }
         let started = Instant::now();
         let mut command = plugin_command(
             &self.program,
@@ -375,6 +393,56 @@ impl PluginExecutor for ProcessPluginExecutor {
 
     fn take_execution_evidence(&mut self) -> Option<PluginExecutionEvidence> {
         self.last_execution.take()
+    }
+}
+
+/// Returns the first permission in `permissions` that the current
+/// platform's process sandbox cannot actually enforce, or `None` if every
+/// declared permission is backed by real OS-level enforcement.
+///
+/// - macOS (`sandbox-exec`) and Linux (seccomp denies the syscalls behind
+///   `Network` and `ChildProcess`; Landlock confines `FilesystemRead`)
+///   enforce those permissions, so this always returns `None` for them
+///   there. Note `Threads` has no syscall-level denial on any platform
+///   today (Linux's `clone`/`clone3` denial for `ChildProcess` may
+///   incidentally restrict some thread-creation paths, but this is not a
+///   dedicated `Threads` enforcement and is out of scope for this fix) —
+///   tracked as a pre-existing gap, not part of result.md C-04.
+/// - Windows and any other platform have no sandbox implementation in this
+///   crate yet, so `Network`/`FilesystemRead`/`ChildProcess` declared in a
+///   manifest are unenforceable there and must fail closed.
+///   `WorldRead`/`WorldWrite` are excluded from this check: they gate
+///   access to the simulation's world state and are enforced at the
+///   `PluginHost::validate_state_diff` layer, not by the OS process
+///   sandbox this function guards, so they are equally enforced on every
+///   platform.
+fn platform_process_sandbox_available() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
+fn first_unenforceable_permission(
+    permissions: &BTreeSet<PluginPermission>,
+) -> Option<PluginPermission> {
+    if permissions.contains(&PluginPermission::Threads) {
+        return Some(PluginPermission::Threads);
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        permissions
+            .iter()
+            .find(|permission| {
+                matches!(
+                    permission,
+                    PluginPermission::Network
+                        | PluginPermission::FilesystemRead
+                        | PluginPermission::ChildProcess
+                )
+            })
+            .cloned()
     }
 }
 
@@ -811,13 +879,47 @@ fn create_windows_job(
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE},
-        System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW},
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        },
     };
     // SAFETY: null attributes/name request a private unnamed Job Object.
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() {
         return Err(std::io::Error::last_os_error());
     }
+
+    // SECURITY (result.md C-04 / AC8.3): bound the plugin process' memory
+    // so a misbehaving/malicious plugin cannot exhaust host memory. This
+    // mirrors the intent of the Linux/macOS sandboxes, which do not
+    // themselves impose a memory cap either but rely on this crate adding
+    // one uniformly; Windows previously had no limit of any kind beyond
+    // group termination on deadline.
+    const PLUGIN_MAX_PROCESS_MEMORY_BYTES: usize = 256 * 1024 * 1024; // 256 MiB
+    let mut limit_info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limit_info.BasicLimitInformation = JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        LimitFlags: JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        ..unsafe { std::mem::zeroed() }
+    };
+    limit_info.ProcessMemoryLimit = PLUGIN_MAX_PROCESS_MEMORY_BYTES;
+    // SAFETY: job was just created above and limit_info is a valid,
+    // correctly-sized structure for JobObjectExtendedLimitInformation.
+    let set_ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limit_info as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if set_ok == 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { CloseHandle(job) };
+        return Err(error);
+    }
+
     let process = child.as_raw_handle() as HANDLE;
     // SAFETY: process is the live child handle and job is owned above.
     if unsafe { AssignProcessToJobObject(job, process) } == 0 {
@@ -865,6 +967,12 @@ pub enum PluginError {
     PermissionDenied(PluginPermission),
     #[error("plugin signature is required")]
     SignatureRequired,
+    #[error("plugin signature verification failed for manifest '{0}'")]
+    SignatureInvalid(String),
+    #[error("plugin executable hash mismatch: expected {expected}, actual {actual}")]
+    ExecutableHashMismatch { expected: String, actual: String },
+    #[error("plugin command path is not a canonical path inside an allowed directory: {0}")]
+    UnsafeCommandPath(String),
     #[error("invalid state diff: {0}")]
     InvalidStateDiff(String),
     #[error("failed to read plugin manifest: {0}")]
@@ -876,6 +984,12 @@ pub struct PluginPolicy {
     pub api_contract: u32,
     pub allowed_permissions: BTreeSet<PluginPermission>,
     pub require_signature: bool,
+    /// Ed25519 public keys (32 bytes each) trusted to sign plugin
+    /// manifests. Required and non-empty whenever `require_signature` is
+    /// `true` — a manifest's `signature` field is verified against these
+    /// keys, not merely checked for non-emptiness (result.md C-03 /
+    /// AC7.1, AC7.5).
+    pub trust_roots: Vec<[u8; 32]>,
     pub failure_policy: PluginFailurePolicy,
     /// Cooperative per-tick wall-clock budget in milliseconds. A plugin whose
     /// `tick` returns after this budget is treated as a failure and handled by
@@ -893,7 +1007,14 @@ impl Default for PluginPolicy {
         Self {
             api_contract: PLUGIN_API_VERSION,
             allowed_permissions: [PluginPermission::WorldRead].into_iter().collect(),
-            require_signature: false,
+            // SECURITY (result.md C-03 / AC7.5): production deployments
+            // must require a verified signature by default. Development
+            // workflows that need to load unsigned plugins must opt in
+            // explicitly (`require_signature: false` with an empty
+            // `trust_roots`), which is a visible, deliberate choice in the
+            // policy construction rather than a silent default.
+            require_signature: true,
+            trust_roots: Vec::new(),
             failure_policy: PluginFailurePolicy::DisablePlugin,
             tick_budget_ms: Some(50),
         }
@@ -943,8 +1064,13 @@ impl PluginHost {
             match fs::read(&path)
                 .map_err(|error| PluginError::Io(error.to_string()))
                 .and_then(|bytes| parse_manifest(&bytes))
-                .and_then(|manifest| validate_manifest(manifest, policy))
-            {
+                .and_then(|manifest| {
+                    validate_manifest(
+                        manifest,
+                        policy,
+                        path.parent().unwrap_or(directory.as_ref()),
+                    )
+                }) {
                 Ok(manifest) => {
                     self.plugins.insert(
                         manifest.id.clone(),
@@ -1145,6 +1271,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<PluginManifest, PluginError> {
 fn validate_manifest(
     mut manifest: PluginManifest,
     policy: &PluginPolicy,
+    manifest_directory: &Path,
 ) -> Result<PluginManifest, PluginError> {
     if manifest.id.trim().is_empty() {
         return Err(PluginError::InvalidField("id".to_string()));
@@ -1164,9 +1291,6 @@ fn validate_manifest(
             expected: policy.api_contract,
             actual: manifest.api_contract,
         });
-    }
-    if policy.require_signature && manifest.signature.as_deref().unwrap_or("").is_empty() {
-        return Err(PluginError::SignatureRequired);
     }
     for permission in &manifest.permissions {
         if !policy.allowed_permissions.contains(permission) {
@@ -1191,7 +1315,42 @@ fn validate_manifest(
     }) {
         return Err(PluginError::InvalidField("filesystemReadPaths".to_string()));
     }
+    // Path-escape hardening (result.md C-03 / AC7.3): the command executable
+    // must not be a bare name resolved via PATH, a relative path, or a
+    // symlink that resolves outside the manifest's own directory. Without
+    // this, a manifest whose `command` is e.g. `["bash", "-c", "..."]` or a
+    // relative `"../../../usr/bin/whoami"` would let a plugin escape its
+    // declared filesystem scope purely through argv, regardless of any
+    // sandbox applied to the *running* process.
+    if let Some(command) = manifest.command.as_ref()
+        && let Some(program) = command.first()
+    {
+        let program_path = Path::new(program);
+        if !program_path.is_absolute() {
+            return Err(PluginError::UnsafeCommandPath(format!(
+                "command '{program}' must be an absolute path, not resolved via PATH or a \
+                 relative path"
+            )));
+        }
+        let canonical = fs::canonicalize(program_path).map_err(|error| {
+            PluginError::UnsafeCommandPath(format!(
+                "command path '{program}' could not be resolved: {error}"
+            ))
+        })?;
+        let canonical_directory = fs::canonicalize(manifest_directory).map_err(|error| {
+            PluginError::UnsafeCommandPath(format!(
+                "plugin directory could not be resolved: {error}"
+            ))
+        })?;
+        if !canonical.is_file() || !canonical.starts_with(&canonical_directory) {
+            return Err(PluginError::UnsafeCommandPath(format!(
+                "command path '{program}' must resolve to a regular file inside the plugin directory"
+            )));
+        }
+    }
+
     let expected = manifest.hash.clone();
+    let signature = manifest.signature.take();
     manifest.hash.clear();
     let canonical = serde_json::to_vec(&manifest)
         .map_err(|error| PluginError::ManifestParse(error.to_string()))?;
@@ -1202,5 +1361,88 @@ fn validate_manifest(
         return Err(PluginError::HashMismatch { expected, actual });
     }
     manifest.hash = actual;
+    manifest.signature = signature;
+
+    // SECURITY (result.md C-03 / AC7.1, AC7.2, AC7.5): verify the manifest
+    // signature cryptographically against the policy's trust roots — the
+    // previous implementation only checked that `signature` was
+    // non-empty, which any manifest author could satisfy trivially with a
+    // junk string. The signature covers the manifest's own content hash
+    // (`manifest.hash`, computed above), so the signer is attesting to the
+    // exact manifest content, and separately covers the executable's
+    // SHA-256 (`executable_sha256`) when present, so a signed manifest
+    // cannot be paired with a swapped-out binary without invalidating the
+    // signature.
+    if policy.require_signature {
+        if manifest.command.is_some() && manifest.executable_sha256.is_none() {
+            return Err(PluginError::InvalidField(
+                "executableSha256 is required for signed process plugins".to_string(),
+            ));
+        }
+        let signature_b64 = manifest
+            .signature
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(PluginError::SignatureRequired)?;
+        if policy.trust_roots.is_empty() {
+            return Err(PluginError::SignatureInvalid(
+                "policy requires signatures but declares no trust roots".to_string(),
+            ));
+        }
+        let signature = STANDARD
+            .decode(signature_b64.trim())
+            .map_err(|_| PluginError::SignatureInvalid(manifest.id.clone()))?;
+        let signed_bytes = signed_manifest_bytes(&manifest);
+        let verified = policy.trust_roots.iter().any(|trust_root| {
+            UnparsedPublicKey::new(&ED25519, trust_root)
+                .verify(&signed_bytes, &signature)
+                .is_ok()
+        });
+        if !verified {
+            return Err(PluginError::SignatureInvalid(manifest.id.clone()));
+        }
+
+        // Verify the executable hash before allowing the plugin to load at
+        // all (a second, defense-in-depth check happens again immediately
+        // before every spawn in `plugin_command`/`ProcessPluginExecutor`,
+        // since the file on disk could change between load and first tick).
+        if let (Some(expected_exec_hash), Some(command)) = (
+            manifest.executable_sha256.as_deref(),
+            manifest.command.as_ref(),
+        ) && let Some(program) = command.first()
+        {
+            verify_executable_hash(Path::new(program), expected_exec_hash)?;
+        }
+    }
+
     Ok(manifest)
+}
+
+/// Builds the exact byte sequence a plugin manifest's `signature` field
+/// attests to: the manifest's own canonical content hash, concatenated with
+/// the executable hash if declared. Verifiers and signers must use this
+/// same construction, or every signature will fail to verify.
+fn signed_manifest_bytes(manifest: &PluginManifest) -> Vec<u8> {
+    let mut bytes = manifest.hash.as_bytes().to_vec();
+    if let Some(executable_sha256) = &manifest.executable_sha256 {
+        bytes.push(b':');
+        bytes.extend_from_slice(executable_sha256.as_bytes());
+    }
+    bytes
+}
+
+/// Hashes the file at `path` with SHA-256 and compares it (case-insensitive)
+/// against `expected_hex`, a plain hex digest with no `sha256:` prefix.
+fn verify_executable_hash(path: &Path, expected_hex: &str) -> Result<(), PluginError> {
+    let bytes = fs::read(path).map_err(|error| PluginError::Io(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = format!("{:x}", hasher.finalize());
+    if !actual.eq_ignore_ascii_case(expected_hex.trim()) {
+        return Err(PluginError::ExecutableHashMismatch {
+            expected: expected_hex.to_string(),
+            actual,
+        });
+    }
+    Ok(())
 }

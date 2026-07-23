@@ -91,18 +91,10 @@ export interface ActionResult {
     requestId: string;
     agentId: string;
     target: string;
-    command:
-      | "engineShutdown"
-      | "alarmActivate"
-      | "climateComfortRestore"
-      | "windshieldDefogActivate"
-      | "fatigueInterventionActivate"
-      | "childProtectionActivate"
-      | "medicalResponseActivate"
-      | "privacyModeActivate"
-      | "chargingPlanAccept"
-      | "adasTakeoverAcknowledge"
-      | "cyberSafeModeActivate";
+    // The Action Gateway serializes the granted capability id (e.g.
+    // "privacy.activateMode"), not a wire command. Use `capabilityLabel`
+    // to render it; the capability catalog maps ids to human-readable text.
+    capabilityId: string;
     expectedStateVersion: number;
     expiresAtTick: number;
     correlationId: string;

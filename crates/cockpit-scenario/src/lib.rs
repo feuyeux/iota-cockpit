@@ -6,7 +6,7 @@ use cockpit_world::{
     clock::ClockConfig,
     error::{SimulationError, SimulationResult},
     influence::{ConflictPolicy, InfluenceRule},
-    simulation::{Fault, SimulationScenario},
+    simulation::{Fault, ScenarioEvent, SimulationScenario},
     world::{AlarmState, CabinEnvironment, DeviceState, HumanState, OuterEnvironmentState},
 };
 use serde::Deserialize;
@@ -20,6 +20,7 @@ pub const MAX_SCENARIO_GOALS: usize = 32;
 pub const MAX_SCENARIO_IDENTIFIER_BYTES: usize = 128;
 pub const MAX_AGENT_CAPABILITIES: usize = 64;
 pub const MAX_SCENARIO_INFLUENCES: usize = 10_000;
+pub const MAX_SCENARIO_EVENTS: usize = 1_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -40,6 +41,8 @@ struct ScenarioDocument {
     max_ticks: u64,
     #[serde(default)]
     influences: Vec<InfluenceRule>,
+    #[serde(default)]
+    scenario_events: Vec<ScenarioEvent>,
     #[serde(default)]
     conflict_policy: Option<ConflictPolicy>,
 }
@@ -171,6 +174,7 @@ pub fn parse_scenario_bytes(bytes: &[u8]) -> SimulationResult<SimulationScenario
                 fault_type: fault.fault_type,
             })
             .collect(),
+        scenario_events: document.scenario_events,
         agent: AgentGrant {
             agent_id: agent.id.clone(),
             capabilities: agent.capabilities.clone(),
@@ -281,6 +285,19 @@ fn validate_document(
         document.influences.len(),
         MAX_SCENARIO_INFLUENCES,
     )?;
+    validate_limit("scenario events", document.scenario_events.len(), MAX_SCENARIO_EVENTS)?;
+    for event in &document.scenario_events {
+        validate_identifier("scenario event source", &event.source)?;
+        validate_identifier("scenario event type", &event.event_type)?;
+        if let Some(target) = &event.target {
+            validate_identifier("scenario event target", target)?;
+        }
+        if event.message.trim().is_empty() || event.message.len() > 1_024 {
+            return Err(SimulationError::InvalidScenario(
+                "scenario event message must be 1..=1024 bytes".to_string(),
+            ));
+        }
+    }
     for influence in &document.influences {
         validate_identifier("influence rule id", &influence.rule_id)?;
         if influence.rule_version != cockpit_world::CURRENT_INFLUENCE_RULE_VERSION {

@@ -137,14 +137,35 @@ impl AuthenticatedReplicaStore {
     fn publish(&self, path: PathBuf, bytes: &[u8]) -> Result<(), RecordingStoreError> {
         fs::create_dir_all(path.parent().expect("replica parent"))
             .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
-        let temp = path.with_file_name(format!(".{}.{}.tmp", uuid::Uuid::new_v4(), "replica"));
-        let mut file =
-            fs::File::create(&temp).map_err(|error| RecordingStoreError::Io(error.to_string()))?;
-        file.write_all(bytes)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            fs::set_permissions(
+                path.parent().expect("replica parent"),
+                fs::Permissions::from_mode(0o700),
+            )
             .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
-        file.sync_all()
-            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
-        fs::rename(&temp, path).map_err(|error| RecordingStoreError::Io(error.to_string()))
+            let temp = path.with_file_name(format!(".{}.{}.tmp", uuid::Uuid::new_v4(), "replica"));
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&temp)
+                .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+            file.write_all(bytes)
+                .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+            file.sync_all()
+                .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+            return fs::rename(&temp, path)
+                .map_err(|error| RecordingStoreError::Io(error.to_string()));
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(RecordingStoreError::Io(
+                "authenticated replicas require owner-only ACL support on this platform"
+                    .to_string(),
+            ));
+        }
     }
 }
 

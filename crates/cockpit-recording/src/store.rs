@@ -5,7 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -16,12 +19,138 @@ use crate::{
     SequencedRecordedAuditEvent,
 };
 
+/// Signed evidence for one finalized recording generation. This is distinct
+/// from the ordinary SHA-256 payload checks: hashes detect corruption, while
+/// this Ed25519 signature authenticates who finalized the evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSeal {
+    pub signer_key_id: String,
+    pub public_key_base64: String,
+    pub generation: u64,
+    pub digest_sha256: String,
+    pub signature_base64: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingSigningKey {
+    pub key_id: String,
+    pub pkcs8: Vec<u8>,
+}
+
+fn ensure_owner_only_dir(path: &Path) -> Result<(), RecordingStoreError> {
+    fs::create_dir_all(path).map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+    }
+    #[cfg(windows)]
+    {
+        return Err(RecordingStoreError::Io(
+            "persistent recordings are disabled on Windows until owner-only DACL enforcement is configured"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn lock_file_owner_only(path: &Path) -> Result<(), RecordingStoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+    }
+    #[cfg(windows)]
+    {
+        return Err(RecordingStoreError::Io(
+            "persistent recordings are disabled on Windows until owner-only DACL enforcement is configured"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn create_owner_only_staging_file(path: &Path) -> Result<fs::File, RecordingStoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        return fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| RecordingStoreError::Io(error.to_string()));
+    }
+    #[cfg(not(unix))]
+    {
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| RecordingStoreError::Io(error.to_string()))
+    }
+}
+fn secure_recording_database(path: &Path) -> Result<(), RecordingStoreError> {
+    // The database path can be an explicit CLI/API argument. Its parent may
+    // be a shared directory such as the system temp directory, so never
+    // mutate that directory's permissions here. Callers that own the parent
+    // (the desktop sidecar and payload stores) create an owner-only child
+    // directory before opening the database; this function only locks files
+    // belonging to this recording.
+    for sidecar in [
+        path.to_path_buf(),
+        path.with_file_name(format!(
+            "{}-wal",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+        )),
+        path.with_file_name(format!(
+            "{}-shm",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+        )),
+    ] {
+        if sidecar.exists() {
+            lock_file_owner_only(&sidecar)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct PayloadStore {
     root: PathBuf,
     replica_root: Option<PathBuf>,
     authenticated_replica: Option<AuthenticatedReplicaStore>,
     restore_enabled: bool,
+}
+
+fn configured_signing_key() -> Result<Option<RecordingSigningKey>, RecordingStoreError> {
+    match (
+        std::env::var("COCKPIT_RECORDING_SIGNING_KEY_PKCS8_BASE64").ok(),
+        std::env::var("COCKPIT_RECORDING_SIGNER_KEY_ID").ok(),
+    ) {
+        (None, None) => Ok(None),
+        (Some(pkcs8), Some(key_id)) if !pkcs8.trim().is_empty() && !key_id.trim().is_empty() => {
+            Ok(Some(RecordingSigningKey {
+                key_id,
+                pkcs8: STANDARD.decode(pkcs8.trim()).map_err(|_| {
+                    RecordingStoreError::Signature(
+                        "COCKPIT_RECORDING_SIGNING_KEY_PKCS8_BASE64 is not valid base64".to_string(),
+                    )
+                })?,
+            }))
+        }
+        _ => Err(RecordingStoreError::Signature(
+            "COCKPIT_RECORDING_SIGNING_KEY_PKCS8_BASE64 and COCKPIT_RECORDING_SIGNER_KEY_ID must be configured together"
+                .to_string(),
+        )),
+    }
 }
 
 impl PayloadStore {
@@ -33,11 +162,9 @@ impl PayloadStore {
             root,
             restore_enabled: true,
         };
-        fs::create_dir_all(&store.root)
-            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+        ensure_owner_only_dir(&store.root)?;
         if let Some(replica_root) = &store.replica_root {
-            fs::create_dir_all(replica_root)
-                .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+            ensure_owner_only_dir(replica_root)?;
         }
         Ok(store)
     }
@@ -66,8 +193,7 @@ impl PayloadStore {
             }
             return Ok((hash, payload_size));
         }
-        fs::create_dir_all(path.parent().expect("payload parent"))
-            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+        ensure_owner_only_dir(path.parent().expect("payload parent"))?;
         // Each writer owns a distinct staging path. A shared `.tmp` name lets
         // concurrent saves corrupt one another before the content-addressed
         // publish rename runs.
@@ -76,8 +202,7 @@ impl PayloadStore {
             uuid::Uuid::new_v4(),
             digest = hash.strip_prefix("sha256:").unwrap_or(&hash)
         ));
-        let mut file =
-            fs::File::create(&temp).map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+        let mut file = create_owner_only_staging_file(&temp)?;
         file.write_all(&payload)
             .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
         file.sync_all()
@@ -92,6 +217,7 @@ impl PayloadStore {
                 return Err(RecordingStoreError::Io(error.to_string()));
             }
         }
+        lock_file_owner_only(&path)?;
         self.publish_replica(&hash, &payload)?;
         if let Some(replica) = &self.authenticated_replica {
             replica.put(&hash, &payload)?;
@@ -193,15 +319,13 @@ impl PayloadStore {
             self.read_verified(path, hash)?;
             return Ok(());
         }
-        fs::create_dir_all(path.parent().expect("payload parent"))
-            .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+        ensure_owner_only_dir(path.parent().expect("payload parent"))?;
         let temp = path.with_file_name(format!(
             ".{}.{}.tmp",
             hash.strip_prefix("sha256:").unwrap_or(hash),
             uuid::Uuid::new_v4()
         ));
-        let mut file =
-            fs::File::create(&temp).map_err(|error| RecordingStoreError::Io(error.to_string()))?;
+        let mut file = create_owner_only_staging_file(&temp)?;
         file.write_all(payload)
             .map_err(|error| RecordingStoreError::Io(error.to_string()))?;
         file.sync_all()
@@ -214,6 +338,7 @@ impl PayloadStore {
                 return Err(RecordingStoreError::Io(error.to_string()));
             }
         }
+        lock_file_owner_only(path)?;
         Ok(())
     }
 
@@ -416,6 +541,10 @@ pub enum RecordingStoreError {
     PayloadMissing(String),
     #[error("authenticated replica key must contain at least 16 bytes")]
     InvalidReplicaAuth,
+    #[error("recording signature error: {0}")]
+    Signature(String),
+    #[error("recording seal verification failed")]
+    SealVerificationFailed,
     #[error("audit window start tick {start_tick} is after end tick {end_tick}")]
     InvalidAuditWindow { start_tick: u64, end_tick: u64 },
 }
@@ -423,15 +552,22 @@ pub enum RecordingStoreError {
 pub struct RecordingStore {
     connection: Connection,
     payloads: PayloadStore,
+    database_path: Option<PathBuf>,
+    signing_key: Option<RecordingSigningKey>,
 }
 
 impl RecordingStore {
     pub fn open(path: &str) -> Result<Self, RecordingStoreError> {
-        let connection = Connection::open(path)?;
-        let payloads = PayloadStore::new(Path::new(path).with_extension("payloads"))?;
+        let database_path = PathBuf::from(path);
+        secure_recording_database(&database_path)?;
+        let connection = Connection::open(&database_path)?;
+        secure_recording_database(&database_path)?;
+        let payloads = PayloadStore::new(database_path.with_extension("payloads"))?;
         let mut store = Self {
             connection,
             payloads,
+            database_path: Some(database_path),
+            signing_key: configured_signing_key()?,
         };
         store.initialize()?;
         Ok(store)
@@ -442,12 +578,17 @@ impl RecordingStore {
         replica_root: impl Into<PathBuf>,
         key: impl AsRef<[u8]>,
     ) -> Result<Self, RecordingStoreError> {
-        let connection = Connection::open(path)?;
-        let payloads = PayloadStore::new(Path::new(path).with_extension("payloads"))?
+        let database_path = PathBuf::from(path);
+        secure_recording_database(&database_path)?;
+        let connection = Connection::open(&database_path)?;
+        secure_recording_database(&database_path)?;
+        let payloads = PayloadStore::new(database_path.with_extension("payloads"))?
             .with_authenticated_replica(replica_root, key)?;
         let mut store = Self {
             connection,
             payloads,
+            database_path: Some(database_path),
+            signing_key: configured_signing_key()?,
         };
         store.initialize()?;
         Ok(store)
@@ -467,6 +608,8 @@ impl RecordingStore {
         Ok(Self {
             connection,
             payloads,
+            database_path: Some(PathBuf::from(path)),
+            signing_key: None,
         })
     }
     pub fn in_memory() -> Result<Self, RecordingStoreError> {
@@ -477,9 +620,73 @@ impl RecordingStore {
         let mut store = Self {
             connection,
             payloads,
+            database_path: None,
+            signing_key: None,
         };
         store.initialize()?;
         Ok(store)
+    }
+
+    /// Enable Ed25519 seals for all subsequently saved generations. Production
+    /// deployments must configure this with a deployment-held PKCS#8 key;
+    /// leaving it unset is intentionally distinguishable from a sealed run.
+    pub fn with_signing_key(
+        mut self,
+        signing_key: RecordingSigningKey,
+    ) -> Result<Self, RecordingStoreError> {
+        Ed25519KeyPair::from_pkcs8(&signing_key.pkcs8).map_err(|_| {
+            RecordingStoreError::Signature("invalid Ed25519 PKCS#8 signing key".to_string())
+        })?;
+        self.signing_key = Some(signing_key);
+        Ok(self)
+    }
+
+    /// Returns the active generation seal, if this recording was finalized by
+    /// a configured deployment signer. `None` means integrity hashes are
+    /// available but authenticity was not configured for that generation.
+    pub fn seal(&self, run_id: &str) -> Result<Option<RecordingSeal>, RecordingStoreError> {
+        self.connection
+            .query_row(
+                "SELECT signer_key_id, public_key_base64, generation, digest_sha256, signature_base64
+                 FROM recording_generation_seals
+                 WHERE run_id = ?1 AND generation = (SELECT active_generation FROM recordings WHERE run_id = ?1)",
+                params![run_id],
+                |row| Ok(RecordingSeal {
+                    signer_key_id: row.get(0)?,
+                    public_key_base64: row.get(1)?,
+                    generation: row.get(2)?,
+                    digest_sha256: row.get(3)?,
+                    signature_base64: row.get(4)?,
+                }),
+            )
+            .optional()
+            .map_err(RecordingStoreError::from)
+    }
+
+    /// Verifies a seal against a caller-supplied trusted public key. Evaluator
+    /// code must use this boundary instead of treating same-database hashes as
+    /// evidence of origin.
+    pub fn verify_seal(
+        &self,
+        run_id: &str,
+        trusted_public_key: &[u8; 32],
+    ) -> Result<RecordingSeal, RecordingStoreError> {
+        let seal = self
+            .seal(run_id)?
+            .ok_or(RecordingStoreError::SealVerificationFailed)?;
+        let public_key = STANDARD
+            .decode(&seal.public_key_base64)
+            .map_err(|_| RecordingStoreError::SealVerificationFailed)?;
+        if public_key.as_slice() != trusted_public_key {
+            return Err(RecordingStoreError::SealVerificationFailed);
+        }
+        let signature = STANDARD
+            .decode(&seal.signature_base64)
+            .map_err(|_| RecordingStoreError::SealVerificationFailed)?;
+        UnparsedPublicKey::new(&ED25519, trusted_public_key)
+            .verify(seal.digest_sha256.as_bytes(), &signature)
+            .map_err(|_| RecordingStoreError::SealVerificationFailed)?;
+        Ok(seal)
     }
 
     pub fn save(&mut self, recording: &Recording) -> Result<(), RecordingStoreError> {
@@ -574,6 +781,10 @@ impl RecordingStore {
             )?;
         }
         transaction.commit()?;
+        self.create_generation_seal(recording, generation)?;
+        if let Some(database_path) = &self.database_path {
+            secure_recording_database(database_path)?;
+        }
         // A crash before this best-effort cleanup leaves an inactive
         // generation, never a partially visible active recording. `open`
         // repeats the cleanup during recovery.
@@ -859,6 +1070,56 @@ impl RecordingStore {
         })
     }
 
+    fn create_generation_seal(
+        &mut self,
+        recording: &Recording,
+        generation: u64,
+    ) -> Result<(), RecordingStoreError> {
+        let Some(signing_key) = &self.signing_key else {
+            return Ok(());
+        };
+        let payload_hashes = self.connection.prepare(
+            "SELECT payload_hash FROM recording_generation_ticks WHERE run_id = ?1 AND generation = ?2 ORDER BY tick ASC",
+        )?.query_map(params![recording.run_id, generation], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let audit_hashes = self.connection.prepare(
+            "SELECT event_hash FROM recording_generation_audit_events WHERE run_id = ?1 AND generation = ?2 ORDER BY sequence ASC",
+        )?.query_map(params![recording.run_id, generation], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "runId": recording.run_id,
+            "generation": generation,
+            "schemaVersion": recording.schema_version,
+            "runtimeContractVersion": recording.runtime_contract_version,
+            "worldModelVersion": recording.world_model_version,
+            "applicationCommit": recording.application_commit,
+            "pluginHashes": recording.plugin_hashes,
+            "scenarioHash": recording.scenario_hash,
+            "payloadHashes": payload_hashes,
+            "auditHashes": audit_hashes,
+        }))?;
+        let digest_sha256 = hash_payload(&canonical);
+        let key_pair = Ed25519KeyPair::from_pkcs8(&signing_key.pkcs8).map_err(|_| {
+            RecordingStoreError::Signature("invalid Ed25519 PKCS#8 signing key".to_string())
+        })?;
+        let public_key_base64 = STANDARD.encode(key_pair.public_key().as_ref());
+        let signature_base64 = STANDARD.encode(key_pair.sign(digest_sha256.as_bytes()).as_ref());
+        self.connection.execute(
+            "INSERT OR REPLACE INTO recording_generation_seals
+             (run_id, generation, signer_key_id, public_key_base64, digest_sha256, signature_base64)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                recording.run_id,
+                generation,
+                signing_key.key_id,
+                public_key_base64,
+                digest_sha256,
+                signature_base64
+            ],
+        )?;
+        Ok(())
+    }
+
     fn initialize(&mut self) -> Result<(), RecordingStoreError> {
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
@@ -909,7 +1170,16 @@ impl RecordingStore {
                 PRIMARY KEY(run_id, generation, sequence)
              );
              CREATE INDEX IF NOT EXISTS recording_generation_audit_events_by_window
-               ON recording_generation_audit_events(run_id, generation, tick, sequence);",
+               ON recording_generation_audit_events(run_id, generation, tick, sequence);
+             CREATE TABLE IF NOT EXISTS recording_generation_seals (
+                run_id TEXT NOT NULL REFERENCES recordings(run_id) ON DELETE CASCADE,
+                generation INTEGER NOT NULL,
+                signer_key_id TEXT NOT NULL,
+                public_key_base64 TEXT NOT NULL,
+                digest_sha256 TEXT NOT NULL,
+                signature_base64 TEXT NOT NULL,
+                PRIMARY KEY(run_id, generation)
+             );",
         )?;
         let has_human_turns = self
             .connection

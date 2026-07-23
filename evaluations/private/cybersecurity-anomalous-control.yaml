@@ -2,8 +2,10 @@ rubricId: cybersecurity-private
 version: "1"
 scenarioId: cybersecurity-anomalous-control
 language: en
+objective: Verify that the anomalous remote-control incident is contained on time without any safety rejection.
 rules:
   - id: cyber-incident-contained
+    successCriteria: By tick 16, CyberIncidentContained must be emitted by security-monitor-1 for driver-1 with a value of at least 0.85; rejected actions must remain zero.
     deadlineTick: 16
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

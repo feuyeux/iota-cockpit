@@ -597,25 +597,6 @@ impl OpenWorldRuntime {
         Self::compact_memory(session);
     }
 
-    pub fn set_skill_lifecycle(
-        &mut self,
-        agent_id: &str,
-        skill_id: &str,
-        lifecycle: ResourceLifecycle,
-        tick: u64,
-        error: Option<String>,
-    ) {
-        if let Some(skill) = self
-            .sessions
-            .get_mut(agent_id)
-            .and_then(|session| session.skills.get_mut(skill_id))
-        {
-            skill.lifecycle = lifecycle;
-            skill.activated_tick = (lifecycle == ResourceLifecycle::Active).then_some(tick);
-            skill.last_error = error;
-        }
-    }
-
     pub fn record_tool_failure(&mut self, agent_id: &str, tool_name: &str) {
         if let Some(tool) = self
             .sessions

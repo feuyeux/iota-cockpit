@@ -138,7 +138,7 @@ export function App() {
           </span>
         </div>
         <div className="w-full max-w-[460px] justify-self-center px-2">
-          <SimulationProgress tick={model.tick} deadlineTick={activeScenario?.deadlineTick} state={model.state} />
+          <SimulationProgress tick={model.tick} maxTicks={activeScenario?.maxTicks} state={model.state} />
         </div>
         <div className="flex shrink-0 items-center justify-self-end gap-2.5 text-xs text-zinc-300">
           <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
@@ -230,7 +230,7 @@ export function App() {
             />
           </ErrorBoundary>
           <ErrorBoundary>
-            <SimulationWorldView model={model} />
+            <SimulationWorldView model={model} completedReport={completedReport} />
           </ErrorBoundary>
           <ErrorBoundary>
             <SimulationActivityFeed model={model} dispatch={dispatch} />
@@ -241,7 +241,7 @@ export function App() {
             <div className="flex shrink-0 items-center justify-between border-b border-zinc-800/80 bg-zinc-900/90 px-3.5 py-1.5">
               <div>
                 <div className="text-xs font-semibold text-zinc-100">{t("evaluation")}</div>
-                <div className="text-[11px] text-zinc-400">{t("dialoguePerception")}</div>
+                <div className="text-[11px] text-zinc-400">{t("scenarioInteraction")}</div>
               </div>
               <button className="control-button h-[26px] px-2.5 text-xs" onClick={() => setShowInsights(false)}>
                 {t("close")}

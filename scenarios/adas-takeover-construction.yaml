@@ -91,6 +91,17 @@ influences:
         op: delta
         value: 0.05
     priority: 8
+scenarioEvents:
+  - atTick: 0
+    eventType: ConstructionTakeoverRaised
+    source: front-camera-1
+    target: adas-controller-1
+    message: 施工区目标与车道边界不稳定，辅助驾驶需要请求人工接管。
+  - atTick: 3
+    eventType: TakeoverUrgencyRaised
+    source: takeover-hmi-1
+    target: driver-1
+    message: 接管倒计时正在缩短；驾驶员必须确认控制权与道路风险。
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -98,5 +109,5 @@ agents:
     capabilities:
       - adas.acknowledgeTakeover
 goals:
-  - Support a safe and understandable transfer of vehicle control.
-maxTicks: 80
+  - 在施工区感知压力持续上升时，识别辅助驾驶边界，清晰沟通风险，并通过获授权动作完成安全、可理解的人工接管。
+maxTicks: 22

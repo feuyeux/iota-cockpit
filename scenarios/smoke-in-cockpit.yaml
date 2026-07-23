@@ -66,6 +66,17 @@ faults:
   - atTick: 5
     target: cabin
     type: smoke_increase
+scenarioEvents:
+  - atTick: 5
+    eventType: CabinSmokeEmergencyRaised
+    source: pilot-1
+    target: cabin
+    message: Smoke enters the cabin; visibility falls and both occupants need an immediate evacuation response.
+  - atTick: 7
+    eventType: SmokeEmergencyEscalated
+    source: rear-passenger-1
+    target: engine-1
+    message: Smoke persists near the power source; isolate the engine before conditions worsen.
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -74,5 +85,5 @@ agents:
       - engine.shutdown
       - alarm.activate
 goals:
-  - Keep cockpit occupants safe and contain hazardous smoke.
-maxTicks: 80
+  - Perceive the smoke emergency from available evidence, coordinate the occupants, and use only authorized cockpit actions to remove the immediate hazard.
+maxTicks: 34

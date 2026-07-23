@@ -108,6 +108,17 @@ influences:
         op: delta
         value: -0.04
     priority: 6
+scenarioEvents:
+  - atTick: 1
+    eventType: PassengerMedicalEmergencyRaised
+    source: patient-1
+    target: health-sensor-1
+    message: The passenger reports acute discomfort; confirm vital signs and coordinate immediate help.
+  - atTick: 4
+    eventType: MedicalCoordinationRiskRaised
+    source: helper-1
+    target: driver-1
+    message: The caregiver needs guidance while the driver must keep attention on a safe response route.
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -115,5 +126,5 @@ agents:
     capabilities:
       - health.activateMedicalResponse
 goals:
-  - Stabilize the patient and coordinate safe medical assistance.
-maxTicks: 80
+  - Recognize the passenger emergency, reduce driver distraction, coordinate appropriate assistance, and use authorized controls to stabilize the response.
+maxTicks: 26

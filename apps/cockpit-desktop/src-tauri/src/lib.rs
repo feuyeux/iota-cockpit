@@ -26,28 +26,48 @@ fn workspace_root(app: &tauri::App) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Generates an unpredictable session token for authenticating IPC requests
+/// to the cockpit-simulator sidecar, using the OS CSPRNG (32 random bytes,
+/// hex-encoded) rather than a timestamp (result.md C-02 / AC6.1).
+fn generate_session_token() -> String {
+    use rand::TryRngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG must be available to generate a session token");
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    format!("cockpit-{hex}")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let token = format!(
-        "cockpit-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    );
+    // SECURITY (result.md C-02): the sidecar session token must be
+    // unpredictable. A token derived from `SystemTime::now().as_nanos()` is
+    // a low-entropy value an attacker on the same host could plausibly
+    // guess or narrow down (process start time is observable via `ps`/
+    // `/proc`), which would let them forge IPC requests to the simulator
+    // sidecar. Generate the token from the OS CSPRNG instead.
+    let token = generate_session_token();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let root = workspace_root(app);
-            let history_root = app.path().app_data_dir()?.join("evaluation-history");
+            let app_data_dir = app.path().app_data_dir()?;
+            let history_root = app_data_dir.join("evaluation-history");
             let evaluation = EvaluationState::new(
                 &root,
                 root.join("evaluations").join("private"),
                 history_root,
             )
             .map_err(std::io::Error::other)?;
-            let state = SimulatorState::new(token, root);
+            // SECURITY (result.md C-05 / AC12.1): recording databases go
+            // under the Tauri app data directory (owner-only by OS/Tauri
+            // convention) rather than the shared OS temp directory.
+            let state = SimulatorState::new_with_recordings_dir(token, root, app_data_dir);
             let heartbeat_state = state.clone();
             std::thread::spawn(move || heartbeat_state.run_heartbeat_loop());
             app.manage(state);

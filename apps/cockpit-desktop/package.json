@@ -8,11 +8,17 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:ui": "vitest --ui",
     "test:tsc": "tsc -b --noEmit",
+    "test:coverage": "vitest run --coverage",
     "version:bundle": "node scripts/bump-bundle-version.mjs",
     "tauri:prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "tauri:dev": "npm run tauri:prepare-sidecar && tauri dev",
-    "tauri:build": "npm run version:bundle && npm run tauri:prepare-sidecar && tauri build"
+    "tauri:build": "npm run version:bundle && npm run tauri:prepare-sidecar && tauri build",
+    "tauri:build:debug": "npm run tauri:prepare-sidecar && tauri build --debug",
+    "lint": "tsc -b --noEmit",
+    "clean": "rm -rf dist node_modules src-tauri/target src-tauri/binaries",
+    "postinstall": "npm run tauri:prepare-sidecar"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.2",

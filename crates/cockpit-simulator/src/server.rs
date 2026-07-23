@@ -12,20 +12,62 @@ use crate::ipc::{
 
 pub const MAX_IPC_REQUEST_BYTES: usize = 1_048_576;
 
+/// Rejects binding this simulator sidecar to a non-loopback address unless
+/// the operator has explicitly opted in via `allow_remote`.
+///
+/// SECURITY (result.md C-06 / AC13.1, AC13.2): the simulator IPC protocol
+/// has no TLS/mTLS, and its only authentication is a shared session token
+/// compared in plaintext over the wire — acceptable for loopback-only
+/// local IPC, but binding it to a network-reachable address without
+/// explicit operator opt-in would expose that same weak authentication to
+/// the network. This mirrors the equivalent guard in iota-sympantos'
+/// `daemon::guard_daemon_bind_addr`.
+pub fn guard_bind_addr(addr: &str, allow_remote: bool) -> io::Result<()> {
+    let is_loopback = addr
+        .rsplit_once(':')
+        .map(|(host, _port)| host.trim_start_matches('[').trim_end_matches(']'))
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false);
+    if !is_loopback {
+        let detail = if allow_remote {
+            "--allow-remote was requested, but this build has no TLS/mTLS transport; configure a future TLS-enabled endpoint instead"
+        } else {
+            "use a loopback address (for example 127.0.0.1:0)"
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing non-loopback cockpit-simulator bind '{addr}': plaintext shared-token IPC must not be network exposed; {detail}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn serve(bind: &str, session_token: impl Into<String>) -> io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     serve_listener(listener, session_token).await
 }
 
 /// Serve with an optional persistent recording store. When `database_path` is
 /// set, the served handler persists each committed tick so an external simulator
 /// process can recover its snapshot and event cursor after a real restart.
+///
+/// Prints `SIMULATOR_READY <addr>\n` to stdout as soon as the listener is
+/// bound and before accepting any connections, so a parent process that
+/// requested an OS-assigned port (`--bind 127.0.0.1:0`) can read the actual
+/// bound address back over a channel it already controls (the child's
+/// stdout) rather than needing a fixed, hardcoded port (result.md C-02 /
+/// AC6.3).
 pub async fn serve_persistent(
     bind: &str,
     session_token: impl Into<String>,
     database_path: Option<&str>,
 ) -> io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     match database_path {
         Some(path) => {
             let handler =
@@ -34,6 +76,17 @@ pub async fn serve_persistent(
         }
         None => serve_listener(listener, session_token).await,
     }
+}
+
+/// Prints the listener's actual bound address to stdout and flushes
+/// immediately, so a parent process reading the child's stdout line-by-line
+/// observes it as soon as it is written rather than waiting for a buffered
+/// flush. See [`serve_persistent`] for why this exists.
+fn print_ready_address(listener: &TcpListener) -> io::Result<()> {
+    use std::io::Write;
+    let addr = listener.local_addr()?;
+    println!("SIMULATOR_READY {addr}");
+    std::io::stdout().flush()
 }
 
 pub async fn serve_persistent_with_policy_bundle(
@@ -51,6 +104,7 @@ pub async fn serve_persistent_with_policy_bundle(
     };
     handler.configure_rule_policy_bundle(bundle);
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     serve_listener_with(listener, handler).await
 }
 

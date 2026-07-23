@@ -73,6 +73,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 rusqlite.workspace = true
+ring.workspace = true
+base64.workspace = true
 
 [[test]]
 name = "smoke_replay"

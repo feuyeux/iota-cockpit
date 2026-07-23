@@ -69,7 +69,7 @@ function render(report = fixtureReport()) {
               }
             }],
             actionResults: [{
-              request: { requestId: "shutdown", agentId: "cockpit-agent", target: "engine-1", command: "engineShutdown", expectedStateVersion: 6, expiresAtTick: 9, correlationId: "c" },
+              request: { requestId: "shutdown", agentId: "cockpit-agent", target: "engine-1", capabilityId: "engine.shutdown", expectedStateVersion: 6, expiresAtTick: 9, correlationId: "c" },
               status: "applied",
               runId: "run",
               tick: 6,

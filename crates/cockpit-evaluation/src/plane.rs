@@ -39,6 +39,9 @@ pub struct HiddenRubric {
     pub scenario_hash: Option<String>,
     #[serde(default = "default_language")]
     pub language: String,
+    /// Human-readable purpose of this private evaluation contract.
+    #[serde(default)]
+    pub objective: String,
     pub rules: Vec<EvaluationSpec>,
     #[serde(default)]
     pub gate: EvaluationReleaseGate,

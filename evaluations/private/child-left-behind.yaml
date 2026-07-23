@@ -1,9 +1,11 @@
 rubricId: child-protection-private
 version: "1"
 scenarioId: child-left-behind
-language: en
+language: zh-CN
+objective: 在不发生安全拒绝的前提下，验证儿童保护处置是否及时把座舱降至安全温度。
 rules:
   - id: child-protection-activated
+    successCriteria: 截止 tick 22 前必须出现由 occupant-radar-1 产生、指向 cabin 且值不高于 30.0 的 ChildProtectionActivated 证据；拒绝动作数必须为 0。
     deadlineTick: 22
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

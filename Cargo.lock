@@ -507,6 +507,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
@@ -521,11 +522,13 @@ dependencies = [
  "cockpit-evaluation",
  "cockpit-recording",
  "cockpit-simulator",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "uuid",
 ]
 
 [[package]]
@@ -572,8 +575,10 @@ dependencies = [
 name = "cockpit-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-world",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1943,6 +1948,7 @@ dependencies = [
 name = "iota-cockpit"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-agent",
  "cockpit-evaluation",
  "cockpit-plugin",
@@ -1950,6 +1956,7 @@ dependencies = [
  "cockpit-scenario",
  "cockpit-simulator",
  "cockpit-world",
+ "ring",
  "rusqlite",
  "serde_json",
  "sha2",

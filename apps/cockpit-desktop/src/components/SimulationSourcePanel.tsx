@@ -132,9 +132,9 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
       if (event.target instanceof HTMLElement && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
         return;
       }
-      if (event.key === KEYBOARD_SHORTCUTS.PAUSE && canPause(model) && !liveTurnInFlight && !autoRunInFlight) {
+      if (event.key === KEYBOARD_SHORTCUTS.PAUSE && canPause(model)) {
         event.preventDefault();
-        void runCommand(simulatorClient.pause);
+        void pauseRun();
       } else if (
         event.key.toLowerCase() === KEYBOARD_SHORTCUTS.STEP
         && canStep(model)
@@ -200,6 +200,25 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
     }
   }
 
+  async function startRun() {
+    if (scenarioLoadInFlight || liveTurnInFlight || autoRunInFlight) return;
+    // A connected cockpit has a selected scenario but no run yet. Make the
+    // initial Start control useful by creating that run before starting it.
+    if (model.state === "connectedIdle" || !model.runId) {
+      const loaded = await loadScenario(scenarioPath);
+      if (!loaded) return;
+    }
+    await runCommand(simulatorClient.start);
+  }
+
+  async function pauseRun() {
+    // "Run & Evaluate" advances in a local loop. Stop scheduling subsequent
+    // ticks before pausing the simulator so the operator can inspect and step
+    // from the exact point where the current tick completes.
+    autoRunCancelled.current = true;
+    await runCommand(simulatorClient.pause);
+  }
+
   async function autoRunScenario() {
     if (autoRunInFlight || liveTurnInFlight || scenarioLoadInFlight) return;
     autoRunCancelled.current = false;
@@ -216,7 +235,15 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
       // updated synchronously between ACP-backed ticks.
       const initialBatch = await simulatorClient.snapshot(model.lastCursor);
       cursor = initialBatch.nextCursor;
-      const maxTicks = selectedScenario?.deadlineTick ?? 20;
+      // Run to the scenario's natural completion, not just the evaluation
+      // deadline. The release-gate evaluation only certifies a *completed*
+      // run, and the simulator marks a run completed at `maxTicks`. Stopping
+      // early at `deadlineTick` would leave the run "running" forever, so the
+      // final evaluation below could never fire. The `+ 1` margin absorbs any
+      // off-by-one between the local step count and the simulator's own
+      // deadline check; the loop still exits as soon as a terminal status is
+      // observed.
+      const maxTicks = (selectedScenario?.maxTicks ?? 80) + 1;
 
       let terminalStatus = "";
       for (let index = 0; index < maxTicks && !autoRunCancelled.current; index += 1) {
@@ -399,9 +426,9 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
           <div className="shrink-0 border-t border-zinc-800/80 pt-1.5">
             <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">{t("useForCloseInspection")}</div>
             <div className="grid grid-cols-4 gap-1.5">
-              <button aria-label={t("start")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!canStart(model)} onClick={() => runCommand(simulatorClient.start)}><Play className="h-3 w-3" />{t("start")}</button>
+              <button aria-label={t("start")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!canStart(model) || scenarioLoadInFlight || liveTurnInFlight || autoRunInFlight} onClick={() => void startRun()}><Play className="h-3 w-3" />{t("start")}</button>
               <button aria-label={t("step")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!canStep(model) || liveTurnInFlight} onClick={() => void stepOnce()}><SkipForward className="h-3 w-3" />{t("step")}</button>
-              <button aria-label={t("pause")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!canPause(model) || liveTurnInFlight} onClick={() => runCommand(simulatorClient.pause)}><Pause className="h-3 w-3" />{t("pause")}</button>
+              <button aria-label={t("pause")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!canPause(model)} onClick={() => void pauseRun()}><Pause className="h-3 w-3" />{t("pause")}</button>
               <button aria-label={t("stop")} className="control-button h-[26px] flex-row gap-1 rounded text-[11px]" disabled={!model.serviceConnected || (!canStop(model) && !liveTurnInFlight && !autoRunInFlight)} onClick={() => void stopRun()}><Square className="h-3 w-3" />{t("stop")}</button>
             </div>
           </div>
@@ -460,6 +487,10 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
                 <span className="text-zinc-200">{localize(selectedScenario.objective, locale)}</span>
               </div>
               <div>
+                <span className="text-zinc-500">{t("evaluationObjective")}: </span>
+                <span className="text-violet-200">{localize(selectedScenario.evaluationObjective, locale)}</span>
+              </div>
+              <div>
                 <span className="text-zinc-500">{t("risk")}: </span>
                 <span className="text-amber-200">{localize(selectedScenario.risk, locale)}</span>
               </div>
@@ -490,6 +521,8 @@ export function SimulationSourcePanel({ model, dispatch, onEvaluationCompleted }
                   <dd className="break-all font-mono text-violet-200">{selectedScenario.evidenceEvent}</dd>
                   <dt className="text-zinc-600">{t("deadlineTick")}</dt>
                   <dd className="font-mono text-amber-200">t{selectedScenario.deadlineTick}</dd>
+                  <dt className="text-zinc-600">{t("verificationWindow")}</dt>
+                  <dd className="font-mono text-emerald-200">t{selectedScenario.deadlineTick + 1}–t{selectedScenario.maxTicks} · {t("verificationWindowHint")}</dd>
                 </dl>
               </div>
               <div className="border-t border-zinc-800 pt-2">

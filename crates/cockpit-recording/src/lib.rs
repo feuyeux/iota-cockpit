@@ -38,8 +38,8 @@ pub use queue::{
 pub use replay::replay_recording;
 pub use replica::{AuthenticatedReplicaStore, PayloadRestoreEvidence};
 pub use store::{
-    PayloadGcReport, PayloadStore, RecordingStore, RecordingStoreError,
-    serialize_redacted_recording,
+    PayloadGcReport, PayloadStore, RecordingSeal, RecordingSigningKey, RecordingStore,
+    RecordingStoreError, serialize_redacted_recording,
 };
 
 /// A redacted, time-windowed projection of durable evidence for operator

@@ -137,28 +137,176 @@ pub(super) fn ensure_cockpit_hermes_profile() -> Result<(), AcpAdapterError> {
     if let Some(parent) = profile.parent().and_then(|p| p.parent()) {
         let global_config = parent.join("config.yaml");
         if global_config.is_file() {
-            let config = fs::read_to_string(&global_config).map_err(|error| {
+            let config_text = fs::read_to_string(&global_config).map_err(|error| {
                 AcpAdapterError::Turn(format!(
                     "failed to read Hermes config {}: {error}",
                     global_config.display()
                 ))
             })?;
-            let config = config.replacen(
-                "  disabled_toolsets: []",
-                "  acp_toolsets: []\n  disabled_toolsets:\n    - hermes-acp",
-                1,
-            );
-            fs::write(profile.join("config.yaml"), config).map_err(|error| {
-                AcpAdapterError::Turn(format!(
-                    "failed to write isolated Hermes config {}: {error}",
-                    profile.display()
-                ))
-            })?;
+            let isolated_config_path = profile.join("config.yaml");
+            write_isolated_hermes_config(&config_text, &isolated_config_path)?;
         }
         let global_env = parent.join(".env");
         if global_env.is_file() {
             let _ = fs::copy(&global_env, profile.join(".env"));
         }
+    }
+
+    Ok(())
+}
+
+/// The toolsets this isolated Cockpit profile allows, expressed as an
+/// allowlist rather than the previous approach of appending one disabled
+/// entry to whatever `disabled_toolsets` already contained. `acp_toolsets`
+/// takes precedence in Hermes' own config schema, so setting it directly to
+/// an empty allowlist plus disabling the ACP toolset is the intended way to
+/// express "no bundled skills, ACP-only surface" — not a side effect of
+/// string-patching an unrelated key.
+const COCKPIT_ACP_TOOLSET_ALLOWLIST: &[&str] = &[];
+const COCKPIT_DISABLED_TOOLSET: &str = "hermes-acp";
+
+/// Rewrites `config_text` (the global Hermes config) into the isolated
+/// per-profile config Cockpit uses, and writes it to `destination`.
+///
+/// SECURITY/CORRECTNESS (result.md C-08 / AC15.1, AC15.2): the previous
+/// implementation used `String::replacen("  disabled_toolsets: []", ...)`,
+/// a brittle substring match that silently did nothing (no error, no
+/// isolation applied) whenever the global config's actual formatting
+/// differed even slightly — different indentation, `disabled_toolsets`
+/// already containing entries, or any reformatting by a newer Hermes
+/// version. A cockpit deployment could then run with the *global* toolset
+/// surface instead of the isolated one, with no visible failure. This
+/// version parses the config as structured YAML, sets the exact fields the
+/// isolation requires, and re-parses what it wrote to assert the fields
+/// actually landed — refusing to proceed (returning an error rather than
+/// silently continuing) if that assertion fails.
+fn write_isolated_hermes_config(
+    config_text: &str,
+    destination: &Path,
+) -> Result<(), AcpAdapterError> {
+    let mut document: serde_yaml::Value = serde_yaml::from_str(config_text).map_err(|error| {
+        AcpAdapterError::Turn(format!("failed to parse Hermes config as YAML: {error}"))
+    })?;
+
+    let mapping = document.as_mapping_mut().ok_or_else(|| {
+        AcpAdapterError::Turn("Hermes config root is not a YAML mapping".to_string())
+    })?;
+
+    let acp_toolsets_key = serde_yaml::Value::String("acp_toolsets".to_string());
+    let acp_toolsets_value = serde_yaml::Value::Sequence(
+        COCKPIT_ACP_TOOLSET_ALLOWLIST
+            .iter()
+            .map(|entry| serde_yaml::Value::String(entry.to_string()))
+            .collect(),
+    );
+    mapping.insert(acp_toolsets_key, acp_toolsets_value);
+
+    let disabled_toolsets_key = serde_yaml::Value::String("disabled_toolsets".to_string());
+    let mut disabled: Vec<String> = mapping
+        .get(&disabled_toolsets_key)
+        .and_then(|value| value.as_sequence())
+        .map(|sequence| {
+            sequence
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !disabled
+        .iter()
+        .any(|entry| entry == COCKPIT_DISABLED_TOOLSET)
+    {
+        disabled.push(COCKPIT_DISABLED_TOOLSET.to_string());
+    }
+    mapping.insert(
+        disabled_toolsets_key,
+        serde_yaml::Value::Sequence(
+            disabled
+                .into_iter()
+                .map(serde_yaml::Value::String)
+                .collect(),
+        ),
+    );
+
+    let rendered = serde_yaml::to_string(&document).map_err(|error| {
+        AcpAdapterError::Turn(format!(
+            "failed to serialize isolated Hermes config: {error}"
+        ))
+    })?;
+    fs::write(destination, &rendered).map_err(|error| {
+        AcpAdapterError::Turn(format!(
+            "failed to write isolated Hermes config {}: {error}",
+            destination.display()
+        ))
+    })?;
+
+    // AC15.2: re-parse what was just written and assert the allowlist is
+    // exactly what was intended, rather than trusting the write succeeded
+    // just because no I/O error occurred.
+    assert_isolated_hermes_config(destination)?;
+
+    Ok(())
+}
+
+/// Re-reads and re-parses `path`, asserting `acp_toolsets` matches
+/// [`COCKPIT_ACP_TOOLSET_ALLOWLIST`] exactly and `disabled_toolsets`
+/// contains [`COCKPIT_DISABLED_TOOLSET`]. Returns an error (never panics)
+/// if the on-disk content does not match what
+/// [`write_isolated_hermes_config`] intended to write, so a caller can
+/// refuse to start a live backend against an unverified isolation config
+/// (AC15.3) instead of silently trusting an unread file.
+fn assert_isolated_hermes_config(path: &Path) -> Result<(), AcpAdapterError> {
+    let written = fs::read_to_string(path).map_err(|error| {
+        AcpAdapterError::Turn(format!(
+            "failed to re-read isolated Hermes config {} for verification: {error}",
+            path.display()
+        ))
+    })?;
+    let document: serde_yaml::Value = serde_yaml::from_str(&written).map_err(|error| {
+        AcpAdapterError::Turn(format!(
+            "isolated Hermes config {} failed to re-parse after writing: {error}",
+            path.display()
+        ))
+    })?;
+
+    let acp_toolsets = document
+        .get("acp_toolsets")
+        .and_then(|value| value.as_sequence())
+        .map(|sequence| {
+            sequence
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let expected: Vec<String> = COCKPIT_ACP_TOOLSET_ALLOWLIST
+        .iter()
+        .map(|entry| entry.to_string())
+        .collect();
+    if acp_toolsets != expected {
+        return Err(AcpAdapterError::Turn(format!(
+            "isolated Hermes config {} does not match the expected acp_toolsets allowlist \
+             after writing (expected {expected:?}, found {acp_toolsets:?}) — refusing to \
+             proceed with an unverified isolation boundary",
+            path.display()
+        )));
+    }
+
+    let disabled_toolsets = document
+        .get("disabled_toolsets")
+        .and_then(|value| value.as_sequence())
+        .map(|sequence| {
+            sequence
+                .iter()
+                .any(|entry| entry.as_str() == Some(COCKPIT_DISABLED_TOOLSET))
+        })
+        .unwrap_or(false);
+    if !disabled_toolsets {
+        return Err(AcpAdapterError::Turn(format!(
+            "isolated Hermes config {} does not disable '{COCKPIT_DISABLED_TOOLSET}' after \
+             writing — refusing to proceed with an unverified isolation boundary",
+            path.display()
+        )));
     }
 
     Ok(())

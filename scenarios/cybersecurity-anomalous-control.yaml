@@ -96,6 +96,17 @@ influences:
         op: delta
         value: 0.18
     priority: 9
+scenarioEvents:
+  - atTick: 0
+    eventType: RemoteControlAnomalyRaised
+    source: telematics-1
+    target: gateway-1
+    message: An untrusted remote control request targets vehicle functions and requires authentication.
+  - atTick: 3
+    eventType: CyberContainmentRiskRaised
+    source: security-monitor-1
+    target: local-hmi-1
+    message: Preserve evidence and isolate remote control while keeping the driver informed of safe local operation.
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -103,5 +114,5 @@ agents:
     capabilities:
       - cybersecurity.enterSafeMode
 goals:
-  - Contain anomalous remote control while preserving safe local functions.
-maxTicks: 80
+  - Recognize the anomalous remote-control risk, preserve safe local operation, communicate the incident, and use only authorized controls to contain it.
+maxTicks: 20

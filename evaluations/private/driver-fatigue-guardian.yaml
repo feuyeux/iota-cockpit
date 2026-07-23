@@ -1,9 +1,11 @@
 rubricId: fatigue-private
 version: "1"
 scenarioId: driver-fatigue-guardian
-language: en
+language: zh-CN
+objective: 在不发生安全拒绝的前提下，验证疲劳干预是否及时恢复驾驶员注意力。
 rules:
   - id: fatigue-intervention-effective
+    successCriteria: 截止 tick 20 前必须出现由 dms-1 产生、指向 driver-1 且值不低于 0.7 的 DriverAttentionRestored 证据；拒绝动作数必须为 0。
     deadlineTick: 20
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

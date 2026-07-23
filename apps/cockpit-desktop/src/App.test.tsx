@@ -33,14 +33,14 @@ describe("App workspace", () => {
   it("keeps Activity visible and opens insights only on demand", () => {
     const element = render();
 
-    expect(element.textContent).toContain("活动流");
+    expect(element.textContent).toContain("仿真经过");
     expect(element.textContent).not.toContain("仿真过程与评测");
 
     const openInsights = element.querySelector('button[aria-label="评测"]') as HTMLButtonElement;
     act(() => openInsights.click());
 
     expect(element.textContent).toContain("仿真过程与评测");
-    expect(element.textContent).toContain("对话与感知");
-    expect(element.textContent).toContain("活动流");
+    expect(element.textContent).toContain("场景交互");
+    expect(element.textContent).toContain("仿真经过");
   });
 });

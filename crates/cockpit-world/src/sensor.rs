@@ -80,6 +80,9 @@ impl Observation {
         }
         if has_device("voice-array-1")
             && snapshot.humans.len() >= 4
+            && snapshot
+                .primary_human()
+                .is_some_and(|human| human.attention <= 0.84)
             && !systems.experience.privacy_mode_active
         {
             alerts.push("MultiUserPrivacyConflict".to_string());

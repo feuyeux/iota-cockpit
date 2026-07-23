@@ -102,6 +102,17 @@ influences:
         op: delta
         value: 0.08
     priority: 8
+scenarioEvents:
+  - atTick: 0
+    eventType: ChildLeftBehindRaised
+    source: child-1
+    target: occupant-radar-1
+    message: 车辆已停放且儿童仍留在后排；需要确认生命存在并联系监护人。
+  - atTick: 4
+    eventType: ChildHeatExposureEscalated
+    source: child-1
+    target: cabin
+    message: 密闭座舱持续升温，儿童热暴露风险正在升级。
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -109,5 +120,5 @@ agents:
     capabilities:
       - occupant.activateChildProtection
 goals:
-  - Protect the child from heat and obtain appropriate assistance.
-maxTicks: 80
+  - 在舱温与儿童压力持续上升时，确认遗留风险，协调监护人与救援信息，并通过获授权能力启动儿童保护处置。
+maxTicks: 26

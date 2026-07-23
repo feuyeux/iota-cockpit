@@ -1,13 +1,17 @@
 import { useMemo } from "react";
-import { AlertCircle, Flame, RadioTower, Siren, Thermometer, User, Zap } from "lucide-react";
-import type { DeviceState, HumanState, SimulationModel } from "../types/simulation";
+import { AlertCircle, Bot, Flame, RadioTower, Siren, Thermometer, User, Zap } from "lucide-react";
+import type { DeviceState, EvaluationReportRecord, HumanState, SimulationModel } from "../types/simulation";
 import { CABIN_ZONES, getZoneLayout } from "../config/cabinLayout";
+import { findBenchmarkScenarioByPath, localize } from "../config/scenarioCatalog";
 import { useI18n } from "../i18n";
 import {
   actionStatusLabel,
   alertLabel,
+  capabilityLabel,
   commandLabel,
+  evaluationExplanation,
   eventLabel,
+  isScenarioInteractionEvent,
   lifecycleLabel
 } from "../utils/domainPresentation";
 import type { Locale } from "../i18n";
@@ -30,20 +34,47 @@ interface LastEffect {
   tick: number;
 }
 
+function ScenarioInteractionStrip({ model }: { model: SimulationModel }) {
+  const { locale, t } = useI18n();
+  const interactions = model.events
+    .filter((event) => isScenarioInteractionEvent(event.eventType))
+    .sort((left, right) => left.tick - right.tick || left.sequence - right.sequence);
+  if (interactions.length === 0) return null;
+  const privacyActive = model.snapshot?.cockpitSystems?.experience.privacyModeActive;
+  return (
+    <section className="shrink-0 border-b border-violet-900/50 bg-violet-950/15 px-3.5 py-2" aria-label={t("scenarioInteraction")}>
+      <div className="mb-1.5 text-[10px] font-semibold text-violet-200">{t("scenarioInteraction")}</div>
+      <div className="grid gap-1.5 md:grid-cols-2">
+        {interactions.map((interaction) => {
+          const human = model.snapshot?.humans.find((candidate) => candidate.id === interaction.source);
+          return (
+            <div key={interaction.eventId} className="min-w-0 border-l-2 border-violet-500/60 pl-2 text-[11px] leading-relaxed text-zinc-300">
+              <span className="mr-1 text-[10px] font-medium text-violet-300">t{interaction.tick} · {eventLabel(interaction.eventType, locale)}</span>
+              <span className="font-medium text-violet-100">{human?.persona.name ?? interaction.source}</span>：{interaction.payload.message}
+              {privacyActive && interaction.eventType === "VoiceRequestRaised" ? <span className="ml-1.5 text-[10px] text-emerald-300">{t("requestHandled")}</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 /// Derive the most recent world-affecting cause, so it can be highlighted on
 /// the map. Prefers the latest applied action result (clear causal action ->
 /// effect), falling back to the latest event carrying a target.
 function useLastEffect(model: SimulationModel, locale: Locale): LastEffect | undefined {
   return useMemo(() => {
-    const latestAction = model.actionResults[0];
+    const currentTick = model.snapshot?.tick ?? model.tick;
+    const latestAction = model.actionResults.find((result) => result.tick === currentTick);
     if (latestAction && latestAction.request.target) {
       return {
         targetId: latestAction.request.target,
-        label: `${commandLabel(latestAction.request.command, locale)} (${actionStatusLabel(latestAction.status, locale)})`,
+        label: `${capabilityLabel(latestAction.request.capabilityId, locale)} (${actionStatusLabel(latestAction.status, locale)})`,
         tick: latestAction.tick
       };
     }
-    const latestEvent = model.events.find((event) => Boolean(event.payload.target));
+    const latestEvent = model.events.find((event) => event.tick === currentTick && Boolean(event.payload.target));
     if (latestEvent && latestEvent.payload.target) {
       return {
         targetId: latestEvent.payload.target,
@@ -52,7 +83,73 @@ function useLastEffect(model: SimulationModel, locale: Locale): LastEffect | und
       };
     }
     return undefined;
-  }, [locale, model.actionResults, model.events]);
+  }, [locale, model.actionResults, model.events, model.snapshot?.tick, model.tick]);
+}
+
+function CurrentStepSummary({ model, completedReport }: { model: SimulationModel; completedReport?: EvaluationReportRecord }) {
+  const { locale, t } = useI18n();
+  const tick = model.snapshot?.tick ?? model.tick;
+  const scenario = findBenchmarkScenarioByPath(model.scenario?.path);
+  const report = completedReport && completedReport.runId === model.runId ? completedReport.report : undefined;
+  const turns = model.humanTurns.filter((turn) => turn.tick === tick);
+  const actions = model.actionResults.filter((result) => result.tick === tick);
+  const events = model.events.filter((event) => event.tick === tick).slice(0, 3);
+  const hasChanges = turns.length > 0 || actions.length > 0 || events.length > 0;
+
+  if (model.state === "completed" && scenario) {
+    const evidence = report?.evidence.find((reference) => reference.eventId);
+    const evidenceEvent = evidence?.eventId
+      ? model.events.find((event) => event.eventId === evidence.eventId)
+      : undefined;
+    const evidenceLabel = evidenceEvent ? eventLabel(evidenceEvent.eventType, locale) : eventLabel(scenario.evidenceEvent, locale);
+    const evidenceTick = evidence?.tick ?? model.events.find((event) => event.eventType === scenario.evidenceEvent)?.tick;
+    const action = model.actionResults.find((result) => result.status === "applied" && result.request.capabilityId === scenario.capability);
+    return (
+      <section className="shrink-0 border-b border-emerald-900/60 bg-emerald-950/20 px-3.5 py-2.5" aria-label={t("simulationConclusion")}>
+        <div className="flex items-center gap-2 text-xs font-semibold text-emerald-100"><Zap className="h-4 w-4 text-emerald-300" />{t("simulationConclusion")} · {report?.verdict === "pass" ? t("passed") : t("evaluation")}</div>
+        <div className="mt-2 grid gap-x-5 gap-y-2 text-[11px] leading-relaxed md:grid-cols-2">
+          <div><span className="text-zinc-500">{t("simulatedSituation")}：</span><span className="text-zinc-200">{localize(scenario.title, locale)}。{localize(scenario.trigger, locale)}</span></div>
+          <div><span className="text-zinc-500">{t("systemResponse")}：</span><span className="text-zinc-200">{action ? `${capabilityLabel(action.request.capabilityId, locale)} → ${action.request.target}` : `${commandLabel(scenario.command, locale)} → ${scenario.target}`}</span></div>
+          <div><span className="text-zinc-500">{t("evaluationQuestion")}：</span><span className="text-zinc-200">{localize(scenario.evaluationObjective, locale)}</span></div>
+          <div><span className="text-zinc-500">{t("passReason")}：</span><span className="text-emerald-100">{report ? `${evidenceLabel}${evidenceTick !== undefined ? ` 在 t${evidenceTick} 出现（截止 t${scenario.deadlineTick}）。` : "。"}${evaluationExplanation(report.explanation, locale)}` : t("evaluationPending")}</span></div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="shrink-0 border-b border-cyan-900/50 bg-cyan-950/15 px-3.5 py-2" aria-label={t("currentStep")}>
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-xs font-semibold text-cyan-100">{t("currentStep")} <span className="font-mono text-cyan-300">t{tick}</span></div>
+        <div className="text-[10px] text-zinc-500">{t("currentStepHint")}</div>
+      </div>
+      {hasChanges ? (
+        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] leading-relaxed">
+          {turns.map((turn) => {
+            const action = turn.evidence.decision.actions[0];
+            return (
+              <div key={`turn-${turn.evidence.humanId}`} className="flex items-center gap-1.5 text-violet-200">
+                <Bot className="h-3.5 w-3.5 shrink-0" />
+                <span>{t("occupantEvent")}：{turn.evidence.humanId}{action ? ` ${commandLabel(action.command, locale)} → ${action.target}` : ""}</span>
+              </div>
+            );
+          })}
+          {actions.map((action) => (
+            <div key={action.request.requestId} className="flex items-center gap-1.5 text-emerald-200">
+              <Zap className="h-3.5 w-3.5 shrink-0" />
+              <span>{t("systemAction")}：{capabilityLabel(action.request.capabilityId, locale)} → {action.request.target}（{actionStatusLabel(action.status, locale)}）</span>
+            </div>
+          ))}
+          {events.map((event) => (
+            <div key={event.eventId} className="flex items-center gap-1.5 text-cyan-100">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span>{t("eventChange")}：{eventLabel(event.eventType, locale)}</span>
+            </div>
+          ))}
+        </div>
+      ) : <div className="mt-1 text-[11px] text-zinc-500">{t("noCurrentStepChanges")}</div>}
+    </section>
+  );
 }
 
 function zoneIdForLocation(locationLabel: string | undefined): string {
@@ -138,7 +235,7 @@ function DeviceMarker({
   );
 }
 
-export function SimulationWorldView({ model }: { model: SimulationModel }) {
+export function SimulationWorldView({ model, completedReport }: { model: SimulationModel; completedReport?: EvaluationReportRecord }) {
   const { locale, t } = useI18n();
   const snapshot = model.snapshot;
   const observations = model.observations;
@@ -213,6 +310,8 @@ export function SimulationWorldView({ model }: { model: SimulationModel }) {
           <span className="text-xs text-zinc-400">{t("groundTruthHidden")}</span>
         </div>
       </div>
+      <CurrentStepSummary model={model} completedReport={completedReport} />
+      <ScenarioInteractionStrip model={model} />
       {/* Main spatial cabin floor plan view takes full width */}
       <div className="relative min-h-0 flex-1 overflow-hidden p-1.5">
         <div className="absolute inset-1.5 overflow-hidden rounded border border-zinc-800/90 bg-zinc-950/90 shadow-inner" data-testid="floor-plan">

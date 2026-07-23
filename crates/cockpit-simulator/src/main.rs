@@ -44,10 +44,28 @@ enum Command {
         state: PathBuf,
     },
     Serve {
-        #[arg(long, default_value = "127.0.0.1:47701")]
+        /// Address to bind. Defaults to an OS-assigned loopback port
+        /// (`127.0.0.1:0`) rather than a fixed port, so multiple sidecar
+        /// instances never collide and a fixed port cannot be pre-bound by
+        /// another process to intercept connections (result.md C-02 /
+        /// AC6.3). The actual bound address is printed to stdout as
+        /// `SIMULATOR_READY <addr>` for the parent process to read back.
+        #[arg(long, default_value = "127.0.0.1:0")]
         bind: String,
+        /// Session token clients must present on every IPC request. The
+        /// desktop parent supplies it through an inherited anonymous stdin
+        /// pipe, so the secret is absent from argv and environment. This flag
+        /// remains only for explicit standalone/test compatibility and should
+        /// not be used for desktop sidecars.
         #[arg(long)]
-        session_token: String,
+        session_token: Option<String>,
+        /// Allow binding to a non-loopback address. Off by default
+        /// (result.md C-06 / AC13.1): this sidecar's IPC protocol has no
+        /// TLS and authenticates with a plaintext shared session token, so
+        /// exposing it to the network requires an explicit, visible
+        /// operator opt-in.
+        #[arg(long)]
+        allow_remote: bool,
         /// Optional SQLite recording database. When set, the served process
         /// persists committed ticks so it can recover after a real restart.
         #[arg(long)]
@@ -198,7 +216,27 @@ async fn main() -> anyhow::Result<()> {
             recording_db,
             rule_policy_bundle,
             rule_policy_public_key_base64,
+            allow_remote,
         } => {
+            let session_token = match session_token {
+                Some(token) => token,
+                None => {
+                    use std::io::BufRead;
+                    let mut token = String::new();
+                    std::io::stdin()
+                        .lock()
+                        .read_line(&mut token)
+                        .context("failed to read session token from inherited stdin pipe")?;
+                    let token = token.trim().to_string();
+                    anyhow::ensure!(
+                        !token.is_empty(),
+                        "session token is required through inherited stdin or --session-token"
+                    );
+                    token
+                }
+            };
+            cockpit_simulator::server::guard_bind_addr(&bind, allow_remote)
+                .with_context(|| format!("refusing to bind {bind}"))?;
             if let (Some(bundle_path), Some(public_key)) =
                 (rule_policy_bundle, rule_policy_public_key_base64)
             {

@@ -23,6 +23,10 @@ pub struct EvaluationPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct EvaluationSpec {
     pub id: String,
+    /// Human-readable, rubric-local success condition. Deterministic dispatch
+    /// still uses `id`; this text makes the private contract auditable.
+    #[serde(default)]
+    pub success_criteria: String,
     pub deadline_tick: u64,
     #[serde(default)]
     pub policy: EvaluationPolicy,
@@ -129,14 +133,6 @@ pub struct TrajectoryMetrics {
     /// model is supplied by a scenario evaluator.
     pub alert_tick_exposure: u64,
     pub first_applied_action_tick: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BenchmarkSplit {
-    Development,
-    Regression,
-    HiddenRelease,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

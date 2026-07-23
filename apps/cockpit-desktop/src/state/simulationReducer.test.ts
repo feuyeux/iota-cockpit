@@ -393,7 +393,10 @@ describe("simulationReducer", () => {
 });
 
 describe("state guards", () => {
-  it("canStart should return true for ready, paused, and stopped states", () => {
+  it("canStart should return true once connected, including before the first run is created", () => {
+    expect(
+      canStart({ ...initialSimulationModel, state: "connectedIdle", serviceConnected: true })
+    ).toBe(true);
     expect(
       canStart({ ...initialSimulationModel, state: "ready", serviceConnected: true })
     ).toBe(true);

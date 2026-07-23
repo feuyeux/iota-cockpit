@@ -1,0 +1,41 @@
+{
+  "name": "iota-cockpit-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "./run.sh",
+    "dev:clean": "./run.sh --clean",
+    "dev:web": "npm run dev --workspace=apps/cockpit-desktop",
+    "build": "cargo build --workspace && npm run build --workspace=apps/cockpit-desktop",
+    "build:release": "cargo build --release --workspace && npm run tauri:build --workspace=apps/cockpit-desktop",
+    "test": "cargo test --workspace && npm test --workspace=apps/cockpit-desktop",
+    "test:rust": "cargo test --workspace",
+    "test:desktop": "npm test --workspace=apps/cockpit-desktop",
+    "test:watch": "npm run test:watch --workspace=apps/cockpit-desktop",
+    "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "lint:fix": "cargo fmt --all && cargo clippy --workspace --all-targets --fix --allow-dirty -- -D warnings",
+    "validate": "npm run validate:scenarios && npm run validate:dependencies",
+    "validate:scenarios": "for scenario in scenarios/*.yaml; do cargo run -q -p cockpit-simulator -- validate \"$scenario\" || exit 1; done",
+    "validate:dependencies": "pwsh ./tools/audit-dependencies.ps1",
+    "calibrate": "python3 calibration/calibrate.py && python3 calibration/calibrate_vehicle_fire.py && python3 calibration/validate_human_heat_stress.py && python3 calibration/verify.py",
+    "simulator:run": "cargo run -p cockpit-simulator -- run scenarios/smoke-in-cockpit.yaml --ticks 80",
+    "simulator:run-live": "cargo run -p cockpit-simulator -- run-live scenarios/smoke-in-cockpit.yaml --ticks 80",
+    "simulator:run-live:acp": "cargo run -p cockpit-simulator --features live-acp -- run-live scenarios/smoke-in-cockpit.yaml --ticks 80",
+    "simulator:validate": "cargo run -p cockpit-simulator -- validate scenarios/smoke-in-cockpit.yaml",
+    "simulator:bench": "cargo run -p cockpit-simulator -- bench scenarios/smoke-in-cockpit.yaml",
+    "eval:suite": "cargo build -p cockpit-simulator -p cockpit-evaluator && ./target/debug/cockpit-evaluator --suite evaluations/suite.yaml --simulator-command ./target/debug/cockpit-simulator --json-report target/evaluation-report.json --junit-report target/evaluation-junit.xml",
+    "eval:suite:release": "cargo build --release -p cockpit-simulator -p cockpit-evaluator && ./target/release/cockpit-evaluator --suite evaluations/suite.yaml --simulator-command ./target/release/cockpit-simulator --json-report target/evaluation-report.json --junit-report target/evaluation-junit.xml",
+    "prepare:sidecar": "npm run tauri:prepare-sidecar --workspace=apps/cockpit-desktop",
+    "check": "npm run lint && npm run test && npm run validate",
+    "ci": "npm run check && npm run build",
+    "clean": "cargo clean && rm -rf apps/cockpit-desktop/dist apps/cockpit-desktop/node_modules apps/cockpit-desktop/src-tauri/target apps/cockpit-desktop/src-tauri/binaries"
+  },
+  "workspaces": [
+    "apps/cockpit-desktop"
+  ],
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

@@ -6,6 +6,7 @@ import { I18nProvider } from "../i18n";
 import { simulatorClient } from "../simulatorClient";
 import { initialSimulationModel } from "../state/simulationReducer";
 import type { EvaluationReportRecord } from "../types/simulation";
+import { APP_CONFIG } from "../config/constants";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -45,8 +46,8 @@ describe("SimulationSourcePanel auto-run", () => {
   it("uses the offline RuleAgent path when the offline source is selected", async () => {
     const dispatch = vi.fn();
     vi.spyOn(simulatorClient, "validateScenario").mockResolvedValue({
-      id: "smoke-in-cockpit",
-      path: "scenarios/smoke-in-cockpit.yaml",
+      id: "voice-privacy-conflict",
+      path: APP_CONFIG.DEFAULT_SCENARIO_PATH,
       schemaVersion: 1,
       scenarioHash: "hash",
       seed: 42,
@@ -73,7 +74,7 @@ describe("SimulationSourcePanel auto-run", () => {
       await Promise.resolve();
     });
 
-    expect(createOfflineRun).toHaveBeenCalledWith("scenarios/smoke-in-cockpit.yaml");
+    expect(createOfflineRun).toHaveBeenCalledWith(APP_CONFIG.DEFAULT_SCENARIO_PATH);
     expect(createLiveRun).not.toHaveBeenCalled();
     expect(stepLive).not.toHaveBeenCalled();
   });

@@ -14,7 +14,7 @@ function render(tick: number, state: "running" | "completed" = "running") {
   act(() => {
     root!.render(
       <I18nProvider>
-        <SimulationProgress deadlineTick={20} state={state} tick={tick} />
+        <SimulationProgress maxTicks={20} state={state} tick={tick} />
       </I18nProvider>
     );
   });

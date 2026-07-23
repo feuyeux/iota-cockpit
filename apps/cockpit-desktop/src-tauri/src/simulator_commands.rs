@@ -14,6 +14,52 @@ use cockpit_simulator::ipc::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Creates `dir` (and parents) if missing, then locks it to owner-only
+/// permissions (`0700` on Unix). See result.md C-05 / AC12.1: recording
+/// databases must not live in a shared, world-readable location.
+fn ensure_owner_only_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Best-effort permission lock-down (`0600` on Unix) for a file that may or
+/// may not exist yet. No-op if the file is missing.
+fn lock_down_file_owner_only(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.exists() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+/// The SQLite main database file plus its WAL/SHM sidecar files, which are
+/// created alongside it while the database is open in WAL mode.
+fn recording_db_sidecar_paths(db_path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![db_path.to_path_buf()];
+    if let (Some(parent), Some(file_name)) = (
+        db_path.parent(),
+        db_path.file_name().and_then(|n| n.to_str()),
+    ) {
+        paths.push(parent.join(format!("{file_name}-wal")));
+        paths.push(parent.join(format!("{file_name}-shm")));
+    }
+    paths
+}
+
 const SLOW_COMMAND_LOG_THRESHOLD: Duration = Duration::from_secs(1);
 const SIMULATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const SIMULATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -68,36 +114,89 @@ fn time_jitter_factor() -> f64 {
     f64::from(nanos) / 1_000_000_000.0
 }
 
-fn spawn_sidecar_with_probe<F, P>(
+/// Spawns `binary` with stdout piped, and reads its first line looking for
+/// `SIMULATOR_READY <addr>` to learn the actual bound socket address
+/// (result.md C-02 / AC6.3 — the sidecar is started with an OS-assigned
+/// port, so the real address is not known ahead of spawning). Blocks the
+/// calling thread until that line arrives or `timeout` elapses; the caller
+/// (`SimulatorState::connect`) already runs this off the async/UI-facing
+/// command path.
+fn spawn_sidecar_with_stdout_address<F>(
     binary: &std::ffi::OsStr,
+    token: &str,
     timeout: Duration,
-    poll_interval: Duration,
     configure: F,
-    mut is_ready: P,
-) -> Result<Child, String>
+) -> Result<(Child, SocketAddr), String>
 where
     F: FnOnce(&mut Command),
-    P: FnMut() -> bool,
 {
     let mut command = Command::new(binary);
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
     configure(&mut command);
     let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "sidecar stdin was not captured".to_string())?;
+    stdin
+        .write_all(format!("{token}\n").as_bytes())
+        .map_err(|error| format!("failed to send sidecar token over inherited pipe: {error}"))?;
+    drop(stdin);
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "sidecar stdout was not captured".to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_ok() {
+            let _ = tx.send(line);
+        }
+    });
+
     let started = std::time::Instant::now();
-    while started.elapsed() < timeout {
+    loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(format!("sidecar exited before readiness probe: {status}"));
+            return Err(format!(
+                "sidecar exited before printing its ready address: {status}"
+            ));
         }
-        if is_ready() {
-            return Ok(child);
+        match rx.try_recv() {
+            Ok(line) => {
+                let address = parse_ready_address(&line).ok_or_else(|| {
+                    format!("sidecar printed an unexpected readiness line: {line:?}")
+                })?;
+                return Ok((child, address));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "sidecar did not report its bound address within {}ms",
+                        timeout.as_millis()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("sidecar closed stdout before printing its ready address".to_string());
+            }
         }
-        std::thread::sleep(poll_interval);
     }
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(format!(
-        "sidecar did not become ready within {}ms",
-        timeout.as_millis()
-    ))
+}
+
+/// Parses a `SIMULATOR_READY <addr>` line printed by the sidecar on
+/// startup (see `cockpit_simulator::server::print_ready_address`).
+fn parse_ready_address(line: &str) -> Option<SocketAddr> {
+    let rest = line.trim().strip_prefix("SIMULATOR_READY ")?;
+    rest.trim().parse().ok()
 }
 
 fn should_log_slow_operation(elapsed: Duration) -> bool {
@@ -181,10 +280,32 @@ enum SimulatorTransport {
 
 impl SimulatorTransport {
     fn stop_process(&mut self) {
-        if let Self::Process { child, .. } = self {
+        if let Self::Process {
+            child,
+            recording_db,
+            ..
+        } = self
+        {
             let _ = child.kill();
             let _ = child.wait();
+            cleanup_temporary_recording(recording_db);
         }
+    }
+}
+
+/// The process sidecar's recording storage is a per-session temporary
+/// artifact. Remove its database, WAL/SHM sidecars, primary payloads and
+/// replicas after the child exits so ground-truth evidence is not retained
+/// in an app-data directory beyond this desktop session (result.md C-05).
+fn cleanup_temporary_recording(recording_db: &Path) {
+    for path in recording_db_sidecar_paths(recording_db) {
+        let _ = std::fs::remove_file(path);
+    }
+    for directory in [
+        recording_db.with_extension("payloads"),
+        recording_db.with_extension("replicas"),
+    ] {
+        let _ = std::fs::remove_dir_all(directory);
     }
 }
 
@@ -203,12 +324,39 @@ pub struct SimulatorState {
     token: String,
     sequence: Arc<Mutex<u64>>,
     workspace_root: PathBuf,
+    /// Owner-only directory (see `ensure_owner_only_dir`) for sidecar
+    /// recording databases. Previously these lived directly under the
+    /// shared, world-readable OS temp directory (result.md C-05 / AC12.1);
+    /// simulation recordings can contain scenario content and audit
+    /// events, so they must not be readable by other local users.
+    recordings_dir: PathBuf,
 }
 
 impl SimulatorState {
+    /// Create a new simulator state with recordings in the system temp directory.
+    ///
+    /// **Note**: This method is primarily for testing. Production code should use
+    /// [`Self::new_with_recordings_dir`] with a secure app-data directory to comply
+    /// with security requirements (result.md C-05 / AC12.1).
+    #[cfg(test)]
     pub fn new(token: impl Into<String>, workspace_root: PathBuf) -> Self {
+        Self::new_with_recordings_dir(token, workspace_root, std::env::temp_dir())
+    }
+
+    /// Like [`Self::new`], but lets the caller supply the directory
+    /// recording databases are created under. Production callers should
+    /// pass `app.path().app_data_dir()` (owner-only by OS convention and
+    /// distinct from the shared temp directory); tests may keep using the
+    /// temp directory default via [`Self::new`].
+    pub fn new_with_recordings_dir(
+        token: impl Into<String>,
+        workspace_root: PathBuf,
+        recordings_base_dir: PathBuf,
+    ) -> Self {
         let token = token.into();
         let live_turn_control = LiveTurnControl::default();
+        let recordings_dir = recordings_base_dir.join("simulator-recordings");
+        let _ = ensure_owner_only_dir(&recordings_dir);
         Self {
             transport: Arc::new(Mutex::new(SimulatorTransport::Embedded(Box::new(
                 SimulatorHandler::with_live_turn_control(token.clone(), live_turn_control.clone()),
@@ -219,6 +367,7 @@ impl SimulatorState {
             token,
             sequence: Arc::new(Mutex::new(0)),
             workspace_root,
+            recordings_dir,
         }
     }
 
@@ -260,7 +409,6 @@ impl SimulatorState {
             self.set_connection_state(ConnectionState::Connected);
             return Ok("embedded".to_string());
         };
-        let address = simulator_address()?;
         let mut transport = self
             .transport
             .lock()
@@ -287,7 +435,7 @@ impl SimulatorState {
             return Ok("process".to_string());
         }
 
-        // The existing child must release the fixed loopback port before a
+        // The existing child must release its loopback port before a
         // replacement is spawned. Otherwise a raw readiness probe can connect
         // to the old process and incorrectly bless a new child that failed to
         // bind.
@@ -297,11 +445,24 @@ impl SimulatorState {
             .lock()
             .map_err(|_| "simulator process address lock poisoned".to_string())? = None;
 
-        *transport = Self::spawn_process(binary, address, &self.token)?;
+        // `spawn_process` requests an OS-assigned port and learns the real
+        // bound address from the sidecar's own stdout announcement (see
+        // `spawn_sidecar_with_stdout_address`), so the address recorded here
+        // always reflects where the child actually bound, never a
+        // pre-guessed fixed port.
+        let new_transport = self.spawn_process(binary, &self.token)?;
+        let bound_address = match &new_transport {
+            SimulatorTransport::Process { address, .. } => *address,
+            SimulatorTransport::Embedded(_) => {
+                return Err("spawn_process unexpectedly returned an embedded transport".to_string());
+            }
+        };
+        *transport = new_transport;
         *self
             .process_address
             .lock()
-            .map_err(|_| "simulator process address lock poisoned".to_string())? = Some(address);
+            .map_err(|_| "simulator process address lock poisoned".to_string())? =
+            Some(bound_address);
         self.set_connection_state(ConnectionState::Connected);
         Ok("process".to_string())
     }
@@ -384,34 +545,58 @@ impl SimulatorState {
     }
 
     fn spawn_process(
+        &self,
         binary: std::ffi::OsString,
-        address: SocketAddr,
         token: &str,
     ) -> Result<SimulatorTransport, String> {
         // Persist committed ticks so the external simulator process can recover its
         // snapshot and event cursor if it is restarted (see the simulator crate's
         // process_restart_recovery integration test).
-        let recording_db = std::env::temp_dir().join(format!(
+        //
+        // SECURITY (result.md C-05 / AC12.1): this used to be
+        // `std::env::temp_dir()` directly — the shared, world-readable OS
+        // temp directory on many systems/configurations. Recordings can
+        // contain scenario content and audit trail data, so the database
+        // now lives under `self.recordings_dir`, an owner-only directory
+        // (see `ensure_owner_only_dir`), and the resulting file is itself
+        // locked to owner-only permissions immediately after creation.
+        let recording_db = self.recordings_dir.join(format!(
             "cockpit-simulator-recording-{}.sqlite",
-            std::process::id()
+            uuid::Uuid::new_v4()
         ));
         let recording_db_text = recording_db.to_string_lossy().to_string();
-        let address_text = address.to_string();
+        // SECURITY (result.md C-02 / AC6.3): request an OS-assigned loopback
+        // port (`:0`) rather than a fixed one, so multiple sidecar instances
+        // (or a stale/leftover process from a crashed prior run) can never
+        // collide on the same well-known port, and nothing else on the host
+        // can pre-bind that fixed port to intercept connections. The
+        // *actual* bound address is read back from the child's stdout.
+        let bind_text = "127.0.0.1:0".to_string();
         let rule_policy = rule_policy_sidecar_config()?;
-        let child = spawn_sidecar_with_probe(
+        let agent_workspace = self
+            .recordings_dir
+            .parent()
+            .unwrap_or(&self.recordings_dir)
+            .join("agent-workspace");
+        ensure_owner_only_dir(&agent_workspace)?;
+        let agent_workspace_text = agent_workspace.to_string_lossy().to_string();
+        // SECURITY (result.md C-02 / AC6.2): send the session token through
+        // the child's inherited anonymous stdin pipe. It never appears in
+        // argv or the child environment and the write end is held only by
+        // this parent process.
+        let (child, bound_address) = spawn_sidecar_with_stdout_address(
             binary.as_os_str(),
+            token,
             SIMULATOR_CONNECT_TIMEOUT,
-            Duration::from_millis(20),
             |command| {
                 command.args([
                     "serve",
                     "--bind",
-                    &address_text,
-                    "--session-token",
-                    token,
+                    &bind_text,
                     "--recording-db",
                     &recording_db_text,
                 ]);
+                command.env("COCKPIT_SIMULATOR_AGENT_WORKSPACE", &agent_workspace_text);
                 if let Some((bundle, public_key)) = &rule_policy {
                     command.args([
                         "--rule-policy-bundle",
@@ -421,20 +606,22 @@ impl SimulatorState {
                     ]);
                 }
             },
-            || {
-                simulator_ping(
-                    address,
-                    token,
-                    0,
-                    Duration::from_millis(20),
-                    Duration::from_millis(100),
-                )
-            },
         )
         .map_err(|error| format!("failed to start cockpit-simulator: {error}"))?;
+        // Best-effort: the recording DB file is created lazily by the child
+        // process' SQLite driver, so it may not exist yet at this exact
+        // instant (e.g. before the first write). Lock it down now if it
+        // already exists; `RecordingStore`/`PayloadStore` on the
+        // `cockpit-simulator` side are also expected to apply owner-only
+        // permissions to files they create directly, so this is
+        // defense-in-depth for the SQLite main/WAL/SHM files specifically,
+        // not the only permission boundary.
+        for sidecar in recording_db_sidecar_paths(&recording_db) {
+            let _ = lock_down_file_owner_only(&sidecar);
+        }
         Ok(SimulatorTransport::Process {
             child,
-            address,
+            address: bound_address,
             recording_db,
         })
     }
@@ -657,12 +844,6 @@ fn validate_durable_position(
         ));
     }
     Ok(())
-}
-
-fn simulator_address() -> Result<SocketAddr, String> {
-    "127.0.0.1:47701"
-        .parse()
-        .map_err(|error| format!("invalid simulator address: {error}"))
 }
 
 fn simulator_ping(

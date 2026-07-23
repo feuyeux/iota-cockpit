@@ -406,8 +406,98 @@ pub(crate) mod backend_impl {
     };
     use tokio_util::sync::CancellationToken;
 
+    /// Resolves the workspace root that contains the `skills/` directory
+    /// (for `IotaCoreAdapter`) needed by the live ACP backend.
+    ///
+    /// SECURITY/CORRECTNESS (result.md C-01 / AC3.1-AC3.3): this used to be
+    /// `env!("CARGO_MANIFEST_DIR")`, a path baked in at *compile* time that
+    /// only exists on the machine that built the binary. A packaged release
+    /// build run on any other machine (or even the same machine after the
+    /// source checkout moves/is deleted) would silently fail to find
+    /// `skills/cockpit-world/SKILL.md` or crash with a confusing "no such
+    /// file" error far from the real cause. Resolution order:
+    /// 1. `COCKPIT_SIMULATOR_WORKSPACE` env var, if set — explicit operator
+    ///    override, e.g. for a non-standard packaging layout.
+    /// 2. Directories relative to the running executable's own location
+    ///    (`<exe_dir>/../..`, `<exe_dir>` itself, and — for the common
+    ///    "target/debug|release/<exe>" cargo layout — the exe's
+    ///    grandparent's grandparent), each accepted only if it actually
+    ///    contains a `skills` directory, so a real bundled resource layout
+    ///    is required, not merely assumed.
+    /// 3. `CARGO_MANIFEST_DIR` at compile time, but *only* as a
+    ///    last-resort development fallback (guarded by `debug_assertions`)
+    ///    for `cargo run`/`cargo test` workflows where no packaged resource
+    ///    directory exists yet.
+    /// 4. The current working directory, as a final fallback so callers
+    ///    always get *some* path rather than a panic; if it also lacks a
+    ///    `skills` directory, the caller's own error handling (skill lookup
+    ///    failing with a clear "not registered" message) surfaces the
+    ///    problem instead of this function guessing further.
+    ///
+    /// Error messages from callers that fail against the returned path must
+    /// not include this resolution logic's internal detail beyond the final
+    /// path tried, so operators are not shown compile-time-only information
+    /// that describes the build machine rather than the runtime one.
+    pub fn resolve_agent_workspace() -> PathBuf {
+        if let Ok(path) = std::env::var("COCKPIT_SIMULATOR_WORKSPACE") {
+            let candidate = PathBuf::from(path);
+            if candidate.join("skills").is_dir() {
+                return candidate;
+            }
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            let mut candidates = Vec::new();
+            if let Some(exe_dir) = exe.parent() {
+                candidates.push(exe_dir.to_path_buf());
+                candidates.push(exe_dir.join(".."));
+                candidates.push(exe_dir.join("../.."));
+                // cargo's `target/{debug,release}/<exe>` layout: workspace
+                // root is two levels above `target/`.
+                candidates.push(exe_dir.join("../../.."));
+            }
+            for candidate in candidates {
+                let canonical = candidate.canonicalize().unwrap_or(candidate);
+                if canonical.join("skills").is_dir() {
+                    return canonical;
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let dev_workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            if dev_workspace.join("skills").is_dir() {
+                return dev_workspace;
+            }
+        }
+
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    fn resolve_isolated_agent_cwd() -> anyhow::Result<PathBuf> {
+        let candidate = std::env::var_os("COCKPIT_SIMULATOR_AGENT_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join(format!("cockpit-agent-workspace-{}", uuid::Uuid::new_v4()))
+            });
+        std::fs::create_dir_all(&candidate)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let canonical = candidate.canonicalize()?;
+        anyhow::ensure!(
+            !canonical.join("evaluations").join("private").exists(),
+            "isolated ACP workspace unexpectedly contains private evaluation resources"
+        );
+        Ok(canonical)
+    }
+
     fn load_skill(language: &str) -> anyhow::Result<CockpitSkill> {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workspace = resolve_agent_workspace();
         IotaCoreAdapter::new(workspace)
             .load_cockpit_skill_localized(language)
             .map_err(anyhow::Error::msg)
@@ -865,7 +955,7 @@ pub(crate) mod backend_impl {
     ) -> anyhow::Result<BackendSession> {
         let skill = load_skill(&scenario.language)?;
         let adapter_config = AcpAdapterConfig {
-            cwd: Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            cwd: resolve_isolated_agent_cwd()?,
             timeout_ms,
             native_mcp_bridge_command: Some(native_mcp_bridge_command()),
             native_mcp_state_path: Some(native_mcp_state_path()),

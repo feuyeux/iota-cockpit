@@ -29,6 +29,19 @@ pub struct Fault {
     pub fault_type: String,
 }
 
+/// A public, scheduled interaction injected by a scenario. Unlike a fault or
+/// state influence, it records an observable situation without silently
+/// mutating physical world state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioEvent {
+    pub at_tick: u64,
+    pub event_type: String,
+    pub source: String,
+    pub target: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimulationScenario {
@@ -53,6 +66,9 @@ pub struct SimulationScenario {
     #[serde(default)]
     pub physics: DigitalTwinParameters,
     pub faults: Vec<Fault>,
+    /// Scheduled public interactions, such as concurrent occupant requests.
+    #[serde(default)]
+    pub scenario_events: Vec<ScenarioEvent>,
     pub agent: AgentGrant,
     #[serde(default)]
     pub agents: Vec<AgentGrant>,
@@ -82,13 +98,6 @@ impl SimulationScenario {
     /// invariant is ever relaxed.
     pub fn primary_human(&self) -> Option<&HumanState> {
         self.humans.first()
-    }
-
-    /// The scenario's primary device (first entry in `devices`). Unlike
-    /// `humans`, scenarios are not required to declare any `device` entity,
-    /// so this can legitimately be `None`.
-    pub fn primary_device(&self) -> Option<&DeviceState> {
-        self.devices.first()
     }
 }
 
@@ -352,13 +361,6 @@ impl Simulation {
         self.commit_step(observation, Vec::new())
     }
 
-    pub fn step_with_recorded_actions(
-        &mut self,
-        actions: Vec<ActionRequest>,
-    ) -> SimulationResult<StepRecord> {
-        self.step_with_recorded_inputs(actions, Vec::new())
-    }
-
     pub fn step_with_recorded_inputs(
         &mut self,
         actions: Vec<ActionRequest>,
@@ -502,6 +504,7 @@ impl Simulation {
     /// conflict policy. No-op when the scenario declares no influences, so
     /// replay hashes are unchanged for scenarios without influence rules.
     fn apply_influences(&mut self, tick: u64, events: &mut Vec<EventEnvelope>) {
+        self.apply_scenario_events(tick, events);
         if self.scenario.influences.is_empty() {
             return;
         }
@@ -552,6 +555,31 @@ impl Simulation {
                     "influence rule produced an invalid component value",
                 ));
             }
+        }
+    }
+
+    fn apply_scenario_events(&mut self, tick: u64, events: &mut Vec<EventEnvelope>) {
+        let mut due = self
+            .scenario
+            .scenario_events
+            .iter()
+            .filter(|event| event.at_tick == tick)
+            .cloned()
+            .collect::<Vec<_>>();
+        due.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then(left.event_type.cmp(&right.event_type))
+                .then(left.message.cmp(&right.message))
+        });
+        for event in due {
+            events.push(self.event(
+                &event.event_type,
+                &event.source,
+                event.target.as_deref(),
+                None,
+                &event.message,
+            ));
         }
     }
 
@@ -772,6 +800,9 @@ impl Simulation {
             "ChargingPlanAccepted",
             "AdasTakeoverCompleted",
             "CyberIncidentContained",
+            "VoiceRequestRaised",
+            "MessagePrivacyRiskRaised",
+            "DriverDistractionRaised",
         ];
         for event in events {
             if !PERCEIVABLE_EVENT_TYPES.contains(&event.event_type.as_str()) {

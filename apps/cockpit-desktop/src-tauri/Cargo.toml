@@ -24,5 +24,7 @@ cockpit-recording.workspace = true
 cockpit-evaluation.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
+rand = "0.9.4"
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.1"

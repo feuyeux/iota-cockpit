@@ -43,6 +43,7 @@ fn plugin_manifest() -> PluginManifest {
         signature: None,
         command: None,
         filesystem_read_paths: Vec::new(),
+        executable_sha256: None,
     };
     let bytes = serde_json::to_vec(&manifest).expect("manifest");
     let mut hasher = Sha256::new();
@@ -84,6 +85,7 @@ fn configure_simulator_plugin(
             .into_iter()
             .collect(),
         failure_policy: policy,
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(
@@ -729,6 +731,7 @@ fn simulator_discovers_and_runs_a_manifest_process_executor() {
         ]
         .into_iter()
         .collect(),
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(
@@ -794,6 +797,7 @@ fn simulator_records_process_plugin_deadline_evidence() {
             .into_iter()
             .collect(),
         tick_budget_ms: Some(20),
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(
