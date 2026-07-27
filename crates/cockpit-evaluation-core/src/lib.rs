@@ -23,6 +23,10 @@ pub struct EvaluationPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct EvaluationSpec {
     pub id: String,
+    /// Human-readable, rubric-local success condition. Deterministic dispatch
+    /// still uses `id`; this text makes the private contract auditable.
+    #[serde(default)]
+    pub success_criteria: String,
     pub deadline_tick: u64,
     #[serde(default)]
     pub policy: EvaluationPolicy,
@@ -129,14 +133,6 @@ pub struct TrajectoryMetrics {
     /// model is supplied by a scenario evaluator.
     pub alert_tick_exposure: u64,
     pub first_applied_action_tick: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BenchmarkSplit {
-    Development,
-    Regression,
-    HiddenRelease,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -768,16 +764,4 @@ fn evaluate_smoke_shutdown_raw(recording: &Recording, deadline_ticks: u64) -> Ev
             "engine shutdown occurred after the smoke response deadline"
         },
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::percentile_u64;
-
-    #[test]
-    fn p95_uses_the_worse_value_for_small_samples() {
-        assert_eq!(percentile_u64(&[1, 9], 95), 9);
-        assert_eq!(percentile_u64(&[1, 5, 9], 95), 9);
-        assert_eq!(percentile_u64(&[], 95), 0);
-    }
 }

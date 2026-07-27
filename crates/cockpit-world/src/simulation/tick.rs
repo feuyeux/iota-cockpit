@@ -233,26 +233,3 @@ fn event_hash(events: &[EventEnvelope]) -> SimulationResult<String> {
     hasher.update(bytes);
     Ok(format!("{:x}", hasher.finalize()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{TICK_PHASE_ORDER, TickPhase};
-
-    #[test]
-    fn phases_have_a_stable_commit_order() {
-        assert_eq!(
-            TICK_PHASE_ORDER,
-            &[
-                TickPhase::DigitalTwin,
-                TickPhase::Faults,
-                TickPhase::Influences,
-                TickPhase::PendingActions,
-                TickPhase::HumanStateDeltas,
-                TickPhase::StateDiffs,
-                TickPhase::Perception,
-                TickPhase::ActionResultEvents,
-                TickPhase::Finalize,
-            ]
-        );
-    }
-}

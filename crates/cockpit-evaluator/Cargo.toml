@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-cockpit-evaluation.workspace = true
+cockpit-evaluation-core.workspace = true
 cockpit-recording.workspace = true
 serde.workspace = true
 serde_json.workspace = true

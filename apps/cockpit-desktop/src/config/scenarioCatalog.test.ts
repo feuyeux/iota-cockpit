@@ -16,6 +16,7 @@ describe("benchmark scenario catalog", () => {
       expect(scenario.evidenceEvent).toMatch(/^[A-Z]/);
       expect(scenario.deadlineTick).toBeGreaterThan(0);
       expect(scenario.deadlineTick).toBeLessThanOrEqual(30);
+      expect(scenario.maxTicks).toBeGreaterThan(scenario.deadlineTick);
       expect(scenario.occupants).toBeGreaterThanOrEqual(2);
       expect(scenario.systems).toBeGreaterThanOrEqual(1);
     }
@@ -45,6 +46,7 @@ describe("benchmark scenario catalog", () => {
       expect(localize(scenario.title, "zh-CN").length).toBeGreaterThan(4);
       expect(localize(scenario.title, "en-US").length).toBeGreaterThan(8);
       expect(localize(scenario.objective, "zh-CN")).not.toBe(localize(scenario.objective, "en-US"));
+      expect(localize(scenario.evaluationObjective, "zh-CN")).not.toBe(localize(scenario.evaluationObjective, "en-US"));
     }
   });
 });

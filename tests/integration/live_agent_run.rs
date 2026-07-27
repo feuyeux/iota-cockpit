@@ -152,7 +152,7 @@ async fn bundled_live_scenarios_are_either_synthetic_successes_or_fail_closed_ac
         })
         .await
         .unwrap_or_else(|error| panic!("{path}: {error}"));
-        let evaluation: cockpit_evaluation::EvaluationResult =
+        let evaluation: cockpit_evaluation_core::EvaluationResult =
             serde_json::from_value(report.evaluation).expect("evaluation serializes");
 
         // Cargo workspace feature unification can enable the simulator's

@@ -53,7 +53,7 @@ export function exportActionResultsAsJSON(results: ActionResult[]): void {
 
 export function exportEvaluationReportAsJSON(record: EvaluationReportRecord): void {
   const data = JSON.stringify(redactValue(record), null, 2);
-  downloadFile(data, `cockpit-evaluation-${record.scenarioId}-${record.id}.json`, "application/json");
+  downloadFile(data, `cockpit-evaluation-core-${record.scenarioId}-${record.id}.json`, "application/json");
 }
 
 function escapeCSV(value: string): string {

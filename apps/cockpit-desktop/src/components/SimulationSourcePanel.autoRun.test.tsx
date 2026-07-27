@@ -6,6 +6,7 @@ import { I18nProvider } from "../i18n";
 import { simulatorClient } from "../simulatorClient";
 import { initialSimulationModel } from "../state/simulationReducer";
 import type { EvaluationReportRecord } from "../types/simulation";
+import { APP_CONFIG } from "../config/constants";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -45,12 +46,13 @@ describe("SimulationSourcePanel auto-run", () => {
   it("uses the offline RuleAgent path when the offline source is selected", async () => {
     const dispatch = vi.fn();
     vi.spyOn(simulatorClient, "validateScenario").mockResolvedValue({
-      id: "smoke-in-cockpit",
-      path: "scenarios/smoke-in-cockpit.yaml",
+      id: "voice-privacy-conflict",
+      path: APP_CONFIG.DEFAULT_SCENARIO_PATH,
       schemaVersion: 1,
       scenarioHash: "hash",
       seed: 42,
       agentId: "cockpit-agent",
+      maxTicks: 80,
     });
     const createOfflineRun = vi.spyOn(simulatorClient, "createOfflineRun").mockResolvedValue({
       runId: "offline-run",
@@ -73,7 +75,7 @@ describe("SimulationSourcePanel auto-run", () => {
       await Promise.resolve();
     });
 
-    expect(createOfflineRun).toHaveBeenCalledWith("scenarios/smoke-in-cockpit.yaml");
+    expect(createOfflineRun).toHaveBeenCalledWith(APP_CONFIG.DEFAULT_SCENARIO_PATH);
     expect(createLiveRun).not.toHaveBeenCalled();
     expect(stepLive).not.toHaveBeenCalled();
   });
@@ -95,6 +97,7 @@ describe("SimulationSourcePanel auto-run", () => {
       scenarioHash: "hash",
       seed: 42,
       agentId: "cockpit-agent",
+      maxTicks: 80,
     });
     vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({ runId: "run-complete", backend: "synthetic" });
     vi.spyOn(simulatorClient, "start").mockResolvedValue();
@@ -125,6 +128,7 @@ describe("SimulationSourcePanel auto-run", () => {
       scenarioHash: "hash",
       seed: 42,
       agentId: "cockpit-agent",
+      maxTicks: 80,
     });
     vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({ runId: "run-stopped", backend: "synthetic" });
     vi.spyOn(simulatorClient, "start").mockResolvedValue();
@@ -153,6 +157,7 @@ describe("SimulationSourcePanel auto-run", () => {
       scenarioHash: "hash",
       seed: 42,
       agentId: "cockpit-agent",
+      maxTicks: 80,
     });
     vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({ runId: "run-timeout", backend: "iota-core-acp" });
     vi.spyOn(simulatorClient, "start").mockResolvedValue();
@@ -203,6 +208,7 @@ describe("SimulationSourcePanel auto-run", () => {
       scenarioHash: "hash",
       seed: 42,
       agentId: "cockpit-agent",
+      maxTicks: 80,
     });
     vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({ runId: "run-concurrent", backend: "iota-core-acp" });
     vi.spyOn(simulatorClient, "start").mockResolvedValue();
@@ -238,5 +244,49 @@ describe("SimulationSourcePanel auto-run", () => {
     await act(async () => {
       await Promise.resolve();
     });
+  });
+
+  it("uses the validated maxTicks for scenarios longer than 80 ticks", async () => {
+    const dispatch = vi.fn();
+    vi.spyOn(window, "setTimeout").mockImplementation((handler: TimerHandler) => {
+      if (typeof handler === "function") handler();
+      return 0;
+    });
+    vi.spyOn(simulatorClient, "validateScenario").mockResolvedValue({
+      id: "custom-long-scenario",
+      path: "/tmp/custom-long-scenario.yaml",
+      schemaVersion: 1,
+      scenarioHash: "long-hash",
+      seed: 42,
+      agentId: "cockpit-agent",
+      maxTicks: 100,
+    });
+    vi.spyOn(simulatorClient, "createLiveRun").mockResolvedValue({
+      runId: "run-long",
+      backend: "synthetic",
+    });
+    vi.spyOn(simulatorClient, "start").mockResolvedValue();
+    let ticks = 0;
+    const stepLive = vi.spyOn(simulatorClient, "stepLive").mockImplementation(async () => {
+      ticks += 1;
+      return { status: ticks === 82 ? "completed" : "running" };
+    });
+    vi.spyOn(simulatorClient, "snapshot").mockResolvedValue(emptyBatch());
+    vi.spyOn(simulatorClient, "evaluateRun").mockResolvedValue({
+      id: "report-long",
+      createdAtMs: 1,
+      runId: "run-long",
+      scenarioId: "custom-long-scenario",
+      report: { verdict: "pass" },
+    } as EvaluationReportRecord);
+    const element = render(dispatch);
+
+    await act(async () => {
+      (element.querySelector('button[aria-label="一键运行"]') as HTMLButtonElement).click();
+      for (let index = 0; index < 400; index += 1) await Promise.resolve();
+    });
+
+    expect(stepLive).toHaveBeenCalledTimes(82);
+    expect(simulatorClient.evaluateRun).toHaveBeenCalledWith("run-long", "custom-long-scenario");
   });
 });

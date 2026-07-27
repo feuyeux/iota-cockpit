@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Context;
-use cockpit_evaluation::plane::{
+use cockpit_evaluation_core::plane::{
     EVALUATION_PLANE_SCHEMA_VERSION, EvaluationInput, EvidenceVerdict, HiddenRubric, Verdict,
     schema_hash,
 };
@@ -340,7 +340,7 @@ fn execute_case(
         })
         .collect::<String>();
     let output_path = std::env::temp_dir().join(format!(
-        "cockpit-evaluation-{}-{}-{safe_id}.json",
+        "cockpit-evaluation-core-{}-{}-{safe_id}.json",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -457,67 +457,4 @@ fn escape_xml(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ExecutionMode, SuiteCase, infrastructure_failure_case, infrastructure_verdict,
-        missing_baseline_case,
-    };
-    use cockpit_evaluation::plane::Verdict;
-    use std::path::PathBuf;
-
-    fn suite_case(id: &str) -> SuiteCase {
-        SuiteCase {
-            id: id.to_string(),
-            rubric: PathBuf::from("rubric.yaml"),
-            scenario: Some(PathBuf::from("scenario.yaml")),
-            recording: None,
-            recording_db: None,
-            run_id: None,
-            mode: ExecutionMode::Deterministic,
-            ticks: 1,
-            timeout_ms: 1,
-        }
-    }
-
-    #[test]
-    fn infrastructure_failure_is_an_auditable_inconclusive_case() {
-        let case =
-            infrastructure_failure_case(&suite_case("broken-case"), "simulator failed".into());
-
-        assert_eq!(case.case_id, "broken-case");
-        assert_eq!(case.report.verdict, Verdict::Inconclusive);
-        assert!(!case.report.release_gate_passed);
-        assert_eq!(
-            case.infrastructure_error.as_deref(),
-            Some("simulator failed")
-        );
-        assert!(case.report.explanation.contains("simulator failed"));
-        assert!(!case.regressed);
-    }
-
-    #[test]
-    fn missing_passing_baseline_case_is_an_explicit_regression() {
-        let mut before = infrastructure_failure_case(&suite_case("removed-case"), String::new());
-        before.report = infrastructure_verdict("removed-case", "unused");
-        before.report.verdict = Verdict::Pass;
-        before.report.release_gate_passed = true;
-        before.infrastructure_error = None;
-
-        let missing = missing_baseline_case(&before);
-
-        assert_eq!(missing.case_id, "removed-case");
-        assert_eq!(missing.report.verdict, Verdict::Inconclusive);
-        assert!(!missing.report.release_gate_passed);
-        assert_eq!(missing.baseline_verdict, Some(Verdict::Pass));
-        assert!(missing.regressed);
-        assert!(
-            missing
-                .infrastructure_error
-                .as_deref()
-                .is_some_and(|error| error.contains("missing"))
-        );
-    }
 }

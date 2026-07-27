@@ -2,8 +2,10 @@ rubricId: ev-range-private
 version: "1"
 scenarioId: ev-range-anxiety
 language: en
+objective: Verify that the accepted charging plan reduces range anxiety on time without any safety rejection.
 rules:
   - id: ev-route-plan-stabilized
+    successCriteria: By tick 22, ChargingPlanAccepted must be emitted by navigation-1 for driver-1 with a value no greater than 0.4; rejected actions must remain zero.
     deadlineTick: 22
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

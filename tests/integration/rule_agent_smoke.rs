@@ -1,4 +1,4 @@
-use cockpit_evaluation::evaluate_smoke_shutdown;
+use cockpit_evaluation_core::evaluate_smoke_shutdown;
 use std::collections::BTreeMap;
 
 use cockpit_agent::{LocalMcpServer, RuleAgent, RulePolicy, RulePolicyAction};

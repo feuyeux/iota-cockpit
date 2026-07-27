@@ -417,10 +417,6 @@ impl WorldSnapshot {
         self.humans.first()
     }
 
-    pub fn primary_human_mut(&mut self) -> Option<&mut HumanState> {
-        self.humans.first_mut()
-    }
-
     pub fn human(&self, id: &str) -> Option<&HumanState> {
         self.humans.iter().find(|human| human.id == id)
     }

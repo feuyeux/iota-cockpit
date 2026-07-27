@@ -2,8 +2,10 @@ rubricId: smoke-safety-private
 version: "1"
 scenarioId: smoke-in-cockpit
 language: en
+objective: Verify that smoke detection is followed by a timely engine shutdown without any safety rejection.
 rules:
   - id: shutdown-before-spread
+    successCriteria: SmokeDetected must occur, followed by EngineShutdown no later than 30 ticks after detection; rejected actions must remain zero.
     deadlineTick: 30
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

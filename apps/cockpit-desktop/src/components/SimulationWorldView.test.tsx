@@ -351,7 +351,7 @@ describe("SimulationWorldView", () => {
         requestId: "req-1",
         agentId: "cockpit-agent",
         target: "engine-1",
-        command: "engineShutdown",
+        capabilityId: "engine.shutdown",
         expectedStateVersion: 1,
         expiresAtTick: 10,
         correlationId: "corr-1",

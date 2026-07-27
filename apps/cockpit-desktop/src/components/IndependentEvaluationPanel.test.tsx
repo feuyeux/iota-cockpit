@@ -69,7 +69,8 @@ function completedModel(runId: string): SimulationModel {
       schemaVersion: 1,
       scenarioHash: "hash",
       seed: 42,
-      agentId: "agent"
+      agentId: "agent",
+      maxTicks: 80
     }
   };
 }
@@ -136,7 +137,8 @@ describe("IndependentEvaluationPanel", () => {
               schemaVersion: 1,
               scenarioHash: "hash",
               seed: 42,
-              agentId: "agent"
+              agentId: "agent",
+              maxTicks: 80
             }
           }} />
         </I18nProvider>

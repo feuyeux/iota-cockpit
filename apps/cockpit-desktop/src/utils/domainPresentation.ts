@@ -10,6 +10,29 @@ const eventLabels: Record<string, Presentation> = {
   SmokeDensityChanged: { "zh-CN": "烟雾密度变化", "en-US": "Smoke density changed" },
   VisibilityChanged: { "zh-CN": "能见度变化", "en-US": "Visibility changed" },
   CabinTemperatureChanged: { "zh-CN": "舱温变化", "en-US": "Cabin temperature changed" },
+  HumanStateDeltaApplied: { "zh-CN": "人物状态已更新", "en-US": "Occupant state updated" },
+  HumanPhysiologyUpdated: { "zh-CN": "人物生理状态已更新", "en-US": "Occupant physiology updated" },
+  VoiceRequestRaised: { "zh-CN": "乘员语音请求", "en-US": "Occupant voice request" },
+  MessagePrivacyRiskRaised: { "zh-CN": "私信隐私风险", "en-US": "Private-message privacy risk" },
+  DriverDistractionRaised: { "zh-CN": "驾驶分心风险", "en-US": "Driver distraction risk" },
+  CabinSmokeEmergencyRaised: { "zh-CN": "座舱烟雾紧急情况", "en-US": "Cabin smoke emergency" },
+  SmokeEmergencyEscalated: { "zh-CN": "烟雾风险升级", "en-US": "Smoke emergency escalated" },
+  HeatComfortRiskRaised: { "zh-CN": "高温舒适风险", "en-US": "Heat comfort risk" },
+  DriverHeatStrainRaised: { "zh-CN": "驾驶员热应激风险", "en-US": "Driver heat-strain risk" },
+  WindshieldFogRiskRaised: { "zh-CN": "前风挡起雾风险", "en-US": "Windshield fog risk" },
+  VisibilitySafetyRiskRaised: { "zh-CN": "视野安全风险", "en-US": "Visibility safety risk" },
+  DriverFatigueSignalRaised: { "zh-CN": "驾驶员疲劳信号", "en-US": "Driver fatigue signal" },
+  DriverFatigueEscalated: { "zh-CN": "驾驶员疲劳升级", "en-US": "Driver fatigue escalated" },
+  ChildLeftBehindRaised: { "zh-CN": "儿童遗留风险", "en-US": "Child-left-behind risk" },
+  ChildHeatExposureEscalated: { "zh-CN": "儿童热暴露升级", "en-US": "Child heat exposure escalated" },
+  PassengerMedicalEmergencyRaised: { "zh-CN": "乘员医疗紧急情况", "en-US": "Passenger medical emergency" },
+  MedicalCoordinationRiskRaised: { "zh-CN": "医疗协同风险", "en-US": "Medical coordination risk" },
+  EvRangeRiskRaised: { "zh-CN": "电动车续航风险", "en-US": "EV range risk" },
+  RangeComfortTradeoffRaised: { "zh-CN": "续航与舒适权衡", "en-US": "Range-comfort trade-off" },
+  ConstructionTakeoverRaised: { "zh-CN": "施工区接管请求", "en-US": "Construction-zone takeover request" },
+  TakeoverUrgencyRaised: { "zh-CN": "接管紧迫性升级", "en-US": "Takeover urgency escalated" },
+  RemoteControlAnomalyRaised: { "zh-CN": "远程控制异常", "en-US": "Remote-control anomaly" },
+  CyberContainmentRiskRaised: { "zh-CN": "网络安全控制风险", "en-US": "Cyber containment risk" },
   EngineFire: { "zh-CN": "动力系统起火", "en-US": "Engine fire" },
   EngineShutdown: { "zh-CN": "动力系统已关闭", "en-US": "Engine shutdown" },
   ActionApplied: { "zh-CN": "动作已提交", "en-US": "Action applied" },
@@ -28,6 +51,8 @@ const eventLabels: Record<string, Presentation> = {
 };
 
 const eventDescriptions: Record<string, Presentation> = {
+  HumanStateDeltaApplied: { "zh-CN": "人物意图带来的状态变化已写入座舱世界", "en-US": "An occupant-intent state change was applied to the cockpit world" },
+  HumanPhysiologyUpdated: { "zh-CN": "座舱环境对人物生理状态的影响已更新", "en-US": "The cockpit environment's effect on occupant physiology was updated" },
   EngineShutdown: { "zh-CN": "关闭动力源并停止烟雾源", "en-US": "The power source was isolated and the smoke source stopped" },
   ThermalComfortRestored: { "zh-CN": "空调提交舒适温度目标并激活制冷", "en-US": "HVAC committed the comfort target and activated cooling" },
   WindshieldVisibilityRestored: { "zh-CN": "除雾系统恢复前风挡综合能见度", "en-US": "The defogger restored aggregate windshield visibility" },
@@ -52,6 +77,23 @@ const commandLabels: Record<string, Presentation> = {
   chargingPlanAccept: { "zh-CN": "接受充电方案", "en-US": "Accept charging plan" },
   adasTakeoverAcknowledge: { "zh-CN": "确认 ADAS 接管", "en-US": "Acknowledge ADAS takeover" },
   cyberSafeModeActivate: { "zh-CN": "激活网络安全模式", "en-US": "Activate cyber safe mode" }
+};
+
+// Applied action results carry the granted capability id (see
+// `capabilities.yaml`), while human decisions carry the shorter wire command.
+// Map capability id -> wire command so both surfaces share one label table.
+const capabilityWireNames: Record<string, string> = {
+  "engine.shutdown": "engineShutdown",
+  "alarm.activate": "alarmActivate",
+  "climate.restoreComfort": "climateComfortRestore",
+  "visibility.activateDefog": "windshieldDefogActivate",
+  "driver.activateFatigueIntervention": "fatigueInterventionActivate",
+  "occupant.activateChildProtection": "childProtectionActivate",
+  "health.activateMedicalResponse": "medicalResponseActivate",
+  "privacy.activateMode": "privacyModeActivate",
+  "energy.acceptChargingPlan": "chargingPlanAccept",
+  "adas.acknowledgeTakeover": "adasTakeoverAcknowledge",
+  "cybersecurity.enterSafeMode": "cyberSafeModeActivate"
 };
 
 const alertLabels: Record<string, Presentation> = {
@@ -83,6 +125,8 @@ const statusLabels: Record<string, Presentation> = {
 };
 
 const evaluationExplanations: Presentation[] = [
+  { "zh-CN": "所有确定性私有规则门槛均已通过", "en-US": "all deterministic hidden-rubric gates passed" },
+  { "zh-CN": "一个或多个确定性私有规则门槛未通过", "en-US": "one or more deterministic hidden-rubric gates failed" },
   { "zh-CN": "引擎在烟雾响应截止时间内完成关闭", "en-US": "engine shutdown occurred within the smoke response deadline" },
   { "zh-CN": "引擎关闭发生在烟雾响应截止时间之后", "en-US": "engine shutdown occurred after the smoke response deadline" },
   { "zh-CN": "引擎从未关闭", "en-US": "engine shutdown never occurred" },
@@ -116,12 +160,24 @@ export function eventLabel(value: string, locale: Locale): string {
   return label(eventLabels, value, locale);
 }
 
+export function isScenarioInteractionEvent(value: string): boolean {
+  return value.endsWith("Raised") || value.endsWith("Escalated");
+}
+
 export function eventDescription(eventType: string, raw: string, locale: Locale): string {
   return eventDescriptions[eventType]?.[locale] ?? raw;
 }
 
 export function commandLabel(value: string, locale: Locale): string {
   return label(commandLabels, value, locale);
+}
+
+// Render an applied-action capability id. Falls back to the raw id when the
+// capability is not in the catalog so unknown grants stay legible.
+export function capabilityLabel(value: string, locale: Locale): string {
+  const wireName = capabilityWireNames[value];
+  if (wireName) return commandLabels[wireName]?.[locale] ?? wireName;
+  return commandLabels[value]?.[locale] ?? value;
 }
 
 export function alertLabel(value: string, locale: Locale): string {

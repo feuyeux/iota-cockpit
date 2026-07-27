@@ -25,7 +25,7 @@ export const APP_CONFIG = {
   STORAGE_KEY_APPROVAL_MODE: "cockpit:approvalRequired",
 
   // UI
-  DEFAULT_SCENARIO_PATH: "scenarios/smoke-in-cockpit.yaml",
+  DEFAULT_SCENARIO_PATH: "scenarios/voice-privacy-conflict.yaml",
   AUTO_RUN_EVENT_POLL_INTERVAL_MS: 250,
 } as const;
 

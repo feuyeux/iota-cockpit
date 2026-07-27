@@ -1,9 +1,11 @@
 rubricId: adas-private
 version: "1"
 scenarioId: adas-takeover-construction
-language: en
+language: zh-CN
+objective: 在不发生安全拒绝的前提下，验证施工区接管动作是否按时恢复驾驶员的人工控制状态。
 rules:
   - id: adas-takeover-completed
+    successCriteria: 截止 tick 18 前必须出现由 adas-controller-1 产生、指向 driver-1 且值不低于 0.9 的 AdasTakeoverCompleted 证据；拒绝动作数必须为 0。
     deadlineTick: 18
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

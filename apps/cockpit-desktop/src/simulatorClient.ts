@@ -76,7 +76,8 @@ export const simulatorClient: SimulatorClient = {
         schemaVersion: 1,
         scenarioHash: "dev-preview",
         seed: 42,
-        agentId: "cockpit-agent"
+        agentId: "cockpit-agent",
+        maxTicks: 80
       };
     }
     return invokeSimulator("validate_scenario", { path });

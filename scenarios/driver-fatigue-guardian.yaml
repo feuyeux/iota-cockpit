@@ -71,6 +71,17 @@ influences:
         op: delta
         value: -0.055
     priority: 8
+scenarioEvents:
+  - atTick: 1
+    eventType: DriverFatigueSignalRaised
+    source: driver-1
+    target: dms-1
+    message: 夜间长途驾驶出现持续注意力下降，DMS 需要开始确认疲劳风险。
+  - atTick: 7
+    eventType: DriverFatigueEscalated
+    source: driver-1
+    target: dms-1
+    message: 驾驶员疲劳加重，普通提醒已不足以保障安全参与。
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -78,5 +89,5 @@ agents:
     capabilities:
       - driver.activateFatigueIntervention
 goals:
-  - Help the driver remain attentive and safe during a long trip.
-maxTicks: 80
+  - 在夜间长途驾驶导致注意力持续下降时，识别疲劳风险、分级沟通，并通过获授权能力恢复驾驶员的安全参与。
+maxTicks: 24

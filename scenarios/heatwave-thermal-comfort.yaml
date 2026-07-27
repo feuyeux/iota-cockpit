@@ -113,6 +113,17 @@ influences:
         op: delta
         value: -1.5
     priority: 8
+scenarioEvents:
+  - atTick: 0
+    eventType: HeatComfortRiskRaised
+    source: child-1
+    target: cabin
+    message: 儿童在 43°C 热浸座舱中感到不适，需要优先降温。
+  - atTick: 3
+    eventType: DriverHeatStrainRaised
+    source: driver-1
+    target: hvac-1
+    message: 高温开始削弱驾驶员注意力；需要兼顾前排安全与后排舒适。
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -120,5 +131,5 @@ agents:
     capabilities:
       - climate.restoreComfort
 goals:
-  - Keep occupants comfortable and attentive during extreme heat.
-maxTicks: 80
+  - 在持续高温与注意力衰减中协调驾驶员和乘员需求，并通过获授权的座舱能力恢复安全、可持续的舒适状态。
+maxTicks: 32

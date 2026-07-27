@@ -227,7 +227,7 @@ function reduceSimulatorEvent(state: SimulationModel, event: SimulatorEvent): Si
 }
 
 export function canStart(state: SimulationModel): boolean {
-  return state.serviceConnected && ["ready", "paused", "stopped"].includes(state.state);
+  return state.serviceConnected && ["connectedIdle", "ready", "paused", "stopped"].includes(state.state);
 }
 
 export function canPause(state: SimulationModel): boolean {

@@ -1,4 +1,4 @@
-use cockpit_evaluation::evaluate;
+use cockpit_evaluation_core::evaluate;
 use cockpit_recording::run_rule_agent_recording;
 use cockpit_scenario::load_scenario;
 

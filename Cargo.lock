@@ -507,6 +507,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
@@ -518,18 +519,20 @@ dependencies = [
 name = "cockpit-desktop"
 version = "0.1.0"
 dependencies = [
- "cockpit-evaluation",
+ "cockpit-evaluation-core",
  "cockpit-recording",
  "cockpit-simulator",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "uuid",
 ]
 
 [[package]]
-name = "cockpit-evaluation"
+name = "cockpit-evaluation-core"
 version = "0.1.0"
 dependencies = [
  "cockpit-recording",
@@ -546,7 +549,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "cockpit-evaluation",
+ "cockpit-evaluation-core",
  "cockpit-recording",
  "serde",
  "serde_json",
@@ -560,8 +563,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "cockpit-evaluation",
- "iota-sympantos-core",
+ "cockpit-agent",
+ "cockpit-evaluation-core",
  "serde",
  "serde_json",
  "tokio",
@@ -572,8 +575,10 @@ dependencies = [
 name = "cockpit-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-world",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1943,13 +1948,15 @@ dependencies = [
 name = "iota-cockpit"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cockpit-agent",
- "cockpit-evaluation",
+ "cockpit-evaluation-core",
  "cockpit-plugin",
  "cockpit-recording",
  "cockpit-scenario",
  "cockpit-simulator",
  "cockpit-world",
+ "ring",
  "rusqlite",
  "serde_json",
  "sha2",

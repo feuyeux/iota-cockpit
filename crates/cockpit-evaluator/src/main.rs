@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Context;
 use clap::Parser;
-use cockpit_evaluation::plane::{
+use cockpit_evaluation_core::plane::{
     DeterministicEvaluator, DualJudgeEvaluator, EvaluationInput, Evaluator, EvidenceVerdict,
     HiddenRubric, IndependentJudge, JudgeDecision, JudgeRequest, Verdict, schema_hash, stable_hash,
 };

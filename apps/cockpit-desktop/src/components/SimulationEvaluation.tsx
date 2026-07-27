@@ -2,7 +2,7 @@ import type * as React from "react";
 import { AlertCircle, Bot, CheckCircle2, CircleDot, Clock3, XCircle, Zap } from "lucide-react";
 import type { EvaluationReportRecord, SimulationModel } from "../types/simulation";
 import { useI18n } from "../i18n";
-import { evaluationExplanation, commandLabel, eventLabel, alertLabel, actionStatusLabel } from "../utils/domainPresentation";
+import { evaluationExplanation, capabilityLabel, commandLabel, eventLabel, alertLabel, actionStatusLabel } from "../utils/domainPresentation";
 import { BENCHMARK_SCENARIOS, localize } from "../config/scenarioCatalog";
 import { IndependentEvaluationPanel } from "./IndependentEvaluationPanel";
 
@@ -42,7 +42,7 @@ export function SimulationEvaluation({
     ? {
         process: "仿真过程与评测", risk: "风险感知", decision: "模型决策", action: "系统动作", proof: "评测证据",
         waitingRisk: "等待场景触发风险", waitingDecision: "等待人物后端完成决策", waitingAction: "等待已授权动作通过系统网关",
-        waitingProof: "尚未捕获能证明通过的事件", expected: "通过所需证据", deadline: "截止进度", guide: "如何观察",
+        waitingProof: "尚未捕获能证明通过的事件", expected: "预期证据类型", runHorizon: "仿真运行进度", guide: "如何观察",
         before: "先从左侧完成“选择 → 加载 → 一键运行”。", ready: "场景已就绪：推荐点击“一键运行”，再在此查看全过程。",
         running: "按顺序查看：风险出现 → 模型提出动作 → 系统执行 → 证据通过。", stopped: "本次运行已停止；重新加载后可再次运行。",
         evidence: "已捕获证据", detail: "原始证据 ID", trajectory: "轨迹指标", actionRequests: "动作请求", rejectedActions: "拒绝动作", riskExposure: "风险暴露", firstAction: "首次动作",
@@ -53,7 +53,7 @@ export function SimulationEvaluation({
     : {
         process: "Simulation process & evaluation", risk: "Risk sensing", decision: "Model decision", action: "System action", proof: "Evaluation evidence",
         waitingRisk: "Waiting for the scenario risk", waitingDecision: "Waiting for a human backend decision", waitingAction: "Waiting for an authorized action through the gateway",
-        waitingProof: "No passing evidence has been captured", expected: "Evidence required to pass", deadline: "Deadline progress", guide: "How to observe",
+        waitingProof: "No passing evidence has been captured", expected: "Expected evidence type", runHorizon: "Simulation progress", guide: "How to observe",
         before: "Complete Select → Load → Run scenario on the left.", ready: "The scenario is ready. Use Run scenario, then follow this process.",
         running: "Follow the order: risk → model decision → system action → passing evidence.", stopped: "This run stopped. Reload the scenario to run it again.",
         evidence: "Captured evidence", detail: "Raw evidence ID", trajectory: "Trajectory metrics", actionRequests: "Action requests", rejectedActions: "Rejected actions", riskExposure: "Risk exposure", firstAction: "First action",
@@ -75,7 +75,7 @@ export function SimulationEvaluation({
     ? decision.evidence.decision.actions.map((item) => `${commandLabel(item.command, locale)} → ${item.target}`).join("；")
     : text.waitingDecision;
   const actionDetail = action
-    ? `${commandLabel(action.request.command, locale)} · ${actionStatusLabel(action.status, locale)} · ${action.request.target}`
+    ? `${capabilityLabel(action.request.capabilityId, locale)} · ${actionStatusLabel(action.status, locale)} · ${action.request.target}`
     : text.waitingAction;
   const evidenceDetail = evidenceEvents.length > 0
     ? evidenceEvents.map(({ event, id }) => event ? `${eventLabel(event.eventType, locale)} · t${event.tick}` : id).join("；")
@@ -92,10 +92,11 @@ export function SimulationEvaluation({
         {scenario ? (
           <div className="border border-cyan-800/60 bg-cyan-950/20 p-2.5 text-xs">
             <div className="font-medium text-cyan-100">{localize(scenario.title, locale)}</div>
-            <div className="mt-1 text-cyan-100/70">{localize(scenario.objective, locale)}</div>
+            <div className="mt-1 text-cyan-100/70"><span className="text-zinc-500">{t("objective")}: </span>{localize(scenario.objective, locale)}</div>
+            <div className="mt-1 text-violet-200/80"><span className="text-zinc-500">{t("evaluationObjective")}: </span>{localize(scenario.evaluationObjective, locale)}</div>
             <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
               <div><span className="text-zinc-500">{text.expected}</span><div className="mt-0.5 text-violet-200">{eventLabel(scenario.evidenceEvent, locale)}</div></div>
-              <div><span className="text-zinc-500">{text.deadline}</span><div className="mt-0.5 text-amber-200">t{model.tick} / t{scenario.deadlineTick}</div></div>
+              <div><span className="text-zinc-500">{text.runHorizon}</span><div className="mt-0.5 text-amber-200">t{model.tick} / t{scenario.maxTicks}</div></div>
             </div>
           </div>
         ) : null}

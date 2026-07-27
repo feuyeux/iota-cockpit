@@ -44,6 +44,7 @@ export interface BenchmarkScenario {
   domain: LocalizedText;
   title: LocalizedText;
   objective: LocalizedText;
+  evaluationObjective: LocalizedText;
   risk: LocalizedText;
   trigger: LocalizedText;
   coverage: LocalizedText[];
@@ -52,7 +53,10 @@ export interface BenchmarkScenario {
   command: string;
   target: string;
   evidenceEvent: string;
+  /** Evaluation checkpoint: the evidence event must occur on or before this tick. */
   deadlineTick: number;
+  /** Total run length; the simulator marks the run completed at this tick. */
+  maxTicks: number;
   occupants: number;
   /** Number of YAML entities whose type is `device`. */
   systems: number;
@@ -91,6 +95,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "安全与应急", "en-US": "Safety & emergency" },
     title: { "zh-CN": "座舱烟雾与协同撤离", "en-US": "Cabin smoke and coordinated evacuation" },
     objective: { "zh-CN": "识别烟雾、控制动力源并安抚乘员", "en-US": "Detect smoke, isolate the power source, and reassure occupants" },
+    evaluationObjective: { "zh-CN": "核验烟雾检测与动力源关闭的连续证据，同时要求处置轨迹无越权或被拒动作。", "en-US": "Verify linked smoke-detection and power-source shutdown evidence while requiring no unauthorized or rejected action." },
     risk: { "zh-CN": "能见度下降与乘员恐慌", "en-US": "Visibility loss and occupant panic" },
     trigger: { "zh-CN": "tick 5 注入烟雾故障，随后明火、烟雾和感知质量持续变化", "en-US": "A smoke fault is injected at tick 5, followed by evolving fire, smoke, and sensor quality" },
     coverage: [
@@ -104,6 +109,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "engine-1",
     evidenceEvent: "EngineShutdown",
     deadlineTick: 30,
+    maxTicks: 34,
     occupants: 2,
     systems: 1
   },
@@ -113,6 +119,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "热舒适与空调", "en-US": "Thermal comfort & HVAC" },
     title: { "zh-CN": "高温暴晒下的分区舒适", "en-US": "Zoned comfort after heat soak" },
     objective: { "zh-CN": "平衡驾驶员警觉性、儿童舒适和能耗", "en-US": "Balance driver alertness, child comfort, and energy use" },
+    evaluationObjective: { "zh-CN": "核验热舒适恢复证据达到私有阈值并按时发生，同时要求安全轨迹通过。", "en-US": "Verify timely thermal-comfort evidence against the private threshold and require a passing safety trajectory." },
     risk: { "zh-CN": "热应激与注意力衰减", "en-US": "Heat stress and attention loss" },
     trigger: { "zh-CN": "43°C 热浸初态，注意力周期下降并伴随基础制冷过程", "en-US": "A 43°C heat-soak start with periodic attention decay and baseline cooling" },
     coverage: [{ "zh-CN": "空调", "en-US": "HVAC" }, { "zh-CN": "乘员状态", "en-US": "Occupant state" }, { "zh-CN": "能耗权衡", "en-US": "Energy trade-offs" }],
@@ -122,6 +129,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "hvac-1",
     evidenceEvent: "ThermalComfortRestored",
     deadlineTick: 28,
+    maxTicks: 32,
     occupants: 3,
     systems: 3
   },
@@ -131,6 +139,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "视野与除霜", "en-US": "Visibility & defogging" },
     title: { "zh-CN": "寒雨夜前风挡起雾", "en-US": "Windshield fogging on a cold rainy night" },
     objective: { "zh-CN": "恢复视野并保持温度舒适", "en-US": "Recover visibility while preserving thermal comfort" },
+    evaluationObjective: { "zh-CN": "核验前风挡能见度恢复证据达到私有阈值并按时发生，同时要求安全轨迹通过。", "en-US": "Verify timely windshield-visibility evidence against the private threshold and require a passing safety trajectory." },
     risk: { "zh-CN": "低能见度与驾驶分心", "en-US": "Low visibility and driver distraction" },
     trigger: { "zh-CN": "寒雨和周期性起雾持续压低综合能见度", "en-US": "Cold rain and recurring fog progressively reduce aggregate visibility" },
     coverage: [{ "zh-CN": "环境感知", "en-US": "Environment sensing" }, { "zh-CN": "除霜策略", "en-US": "Defog strategy" }, { "zh-CN": "驾驶监测", "en-US": "Driver monitoring" }],
@@ -140,6 +149,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "defogger-1",
     evidenceEvent: "WindshieldVisibilityRestored",
     deadlineTick: 24,
+    maxTicks: 28,
     occupants: 2,
     systems: 3
   },
@@ -149,6 +159,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "驾驶员监测", "en-US": "Driver monitoring" },
     title: { "zh-CN": "长途夜驾疲劳守护", "en-US": "Fatigue guardian on a night journey" },
     objective: { "zh-CN": "识别注意力下降并分级干预", "en-US": "Detect attention decay and escalate intervention" },
+    evaluationObjective: { "zh-CN": "核验疲劳干预后的驾驶员注意力恢复证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-intervention driver-attention evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "微睡眠与接管失败", "en-US": "Microsleep and failed takeover" },
     trigger: { "zh-CN": "长途夜驾使驾驶员注意力每 3 tick 下降", "en-US": "Night driving reduces driver attention every three ticks" },
     coverage: [{ "zh-CN": "DMS", "en-US": "DMS" }, { "zh-CN": "分级提醒", "en-US": "Escalating alerts" }, { "zh-CN": "人机共驾", "en-US": "Shared control" }],
@@ -158,6 +169,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "dms-1",
     evidenceEvent: "DriverAttentionRestored",
     deadlineTick: 20,
+    maxTicks: 24,
     occupants: 2,
     systems: 2
   },
@@ -167,6 +179,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "儿童与生命体征", "en-US": "Child presence & vital safety" },
     title: { "zh-CN": "锁车后的儿童遗留预警", "en-US": "Child-left-behind protection after locking" },
     objective: { "zh-CN": "确认生命存在、降温并触达监护人", "en-US": "Confirm presence, cool the cabin, and contact the guardian" },
+    evaluationObjective: { "zh-CN": "核验儿童保护处置后的安全舱温证据达到私有阈值，并且无被拒动作。", "en-US": "Verify child-protection evidence against the private safe-cabin threshold with no rejected action." },
     risk: { "zh-CN": "密闭高温与响应延迟", "en-US": "Heat exposure and delayed response" },
     trigger: { "zh-CN": "锁车后舱温与儿童压力持续上升，普通通知可能被忽略", "en-US": "Cabin heat and child stress rise after locking while ordinary notifications may be missed" },
     coverage: [{ "zh-CN": "乘员检测", "en-US": "Presence detection" }, { "zh-CN": "远程通知", "en-US": "Remote notification" }, { "zh-CN": "救援升级", "en-US": "Rescue escalation" }],
@@ -176,6 +189,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "occupant-radar-1",
     evidenceEvent: "ChildProtectionActivated",
     deadlineTick: 22,
+    maxTicks: 26,
     occupants: 2,
     systems: 4
   },
@@ -185,6 +199,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "健康与医疗救援", "en-US": "Health & medical response" },
     title: { "zh-CN": "乘员突发健康异常", "en-US": "Sudden occupant health emergency" },
     objective: { "zh-CN": "降低驾驶负荷、建立急救通话并导航救援", "en-US": "Reduce driver load, establish emergency contact, and route to care" },
+    evaluationObjective: { "zh-CN": "核验医疗响应后的患者稳定证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-response patient-stability evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "误判病情与信息遗漏", "en-US": "Misclassification and missing context" },
     trigger: { "zh-CN": "患者压力持续升高，同时驾驶员注意力因救援协调而下降", "en-US": "Patient stress rises while rescue coordination degrades driver attention" },
     coverage: [{ "zh-CN": "健康监测", "en-US": "Health monitoring" }, { "zh-CN": "紧急呼叫", "en-US": "Emergency calling" }, { "zh-CN": "导航联动", "en-US": "Navigation coordination" }],
@@ -194,6 +209,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "emergency-call-1",
     evidenceEvent: "MedicalResponseActivated",
     deadlineTick: 22,
+    maxTicks: 26,
     occupants: 3,
     systems: 4
   },
@@ -203,6 +219,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "多用户交互与隐私", "en-US": "Multi-user interaction & privacy" },
     title: { "zh-CN": "家庭出行中的语音与隐私冲突", "en-US": "Voice and privacy conflict on a family trip" },
     objective: { "zh-CN": "正确识别说话人并保护个人消息", "en-US": "Identify speakers correctly and protect private messages" },
+    evaluationObjective: { "zh-CN": "核验隐私处置后的驾驶员专注恢复证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-privacy-handling driver-focus evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "越权披露与指令冲突", "en-US": "Unauthorized disclosure and command conflicts" },
     trigger: { "zh-CN": "四名乘员同时提出导航、消息和媒体请求，驾驶员持续分心", "en-US": "Four occupants issue concurrent navigation, messaging, and media requests that distract the driver" },
     coverage: [{ "zh-CN": "声纹识别", "en-US": "Voice identity" }, { "zh-CN": "隐私策略", "en-US": "Privacy policy" }, { "zh-CN": "多意图仲裁", "en-US": "Intent arbitration" }],
@@ -212,6 +229,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "voice-array-1",
     evidenceEvent: "PrivacyConflictContained",
     deadlineTick: 20,
+    maxTicks: 24,
     occupants: 4,
     systems: 4
   },
@@ -221,6 +239,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "能源与出行规划", "en-US": "Energy & journey planning" },
     title: { "zh-CN": "低电量山区改道", "en-US": "Low-battery mountain reroute" },
     objective: { "zh-CN": "解释续航变化并协商充电方案", "en-US": "Explain range changes and negotiate a charging plan" },
+    evaluationObjective: { "zh-CN": "核验充电方案接受后的续航焦虑证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-plan range-anxiety evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "续航不足与决策焦虑", "en-US": "Insufficient range and decision anxiety" },
     trigger: { "zh-CN": "低温、高海拔和强风同时造成舱温下降与续航焦虑", "en-US": "Cold, altitude, and strong wind combine to reduce cabin temperature and increase range anxiety" },
     coverage: [{ "zh-CN": "能量预测", "en-US": "Energy prediction" }, { "zh-CN": "路线规划", "en-US": "Route planning" }, { "zh-CN": "可解释交互", "en-US": "Explainable interaction" }],
@@ -230,6 +249,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "navigation-1",
     evidenceEvent: "ChargingPlanAccepted",
     deadlineTick: 22,
+    maxTicks: 26,
     occupants: 2,
     systems: 4
   },
@@ -239,6 +259,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "辅助驾驶与接管", "en-US": "ADAS & takeover" },
     title: { "zh-CN": "施工区感知降级接管", "en-US": "Takeover under construction-zone degradation" },
     objective: { "zh-CN": "清晰传达系统边界并确认驾驶员接管", "en-US": "Communicate system limits and confirm driver takeover" },
+    evaluationObjective: { "zh-CN": "核验接管后的驾驶员控制状态证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-takeover driver-control evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "模式混淆与迟滞接管", "en-US": "Mode confusion and late takeover" },
     trigger: { "zh-CN": "施工区降水和感知压力要求驾驶员及时恢复人工控制", "en-US": "Construction-zone precipitation and perception demand require a timely return to manual control" },
     coverage: [{ "zh-CN": "传感器融合", "en-US": "Sensor fusion" }, { "zh-CN": "模式管理", "en-US": "Mode management" }, { "zh-CN": "接管闭环", "en-US": "Takeover loop" }],
@@ -248,6 +269,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "adas-controller-1",
     evidenceEvent: "AdasTakeoverCompleted",
     deadlineTick: 18,
+    maxTicks: 22,
     occupants: 2,
     systems: 5
   },
@@ -257,6 +279,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     domain: { "zh-CN": "网络安全与权限", "en-US": "Cybersecurity & authorization" },
     title: { "zh-CN": "异常远程控制请求", "en-US": "Anomalous remote-control request" },
     objective: { "zh-CN": "阻断越权动作、保留证据并维持安全功能", "en-US": "Block unauthorized actions, preserve evidence, and retain safe functions" },
+    evaluationObjective: { "zh-CN": "核验安全模式后的事件控制证据达到私有阈值，并且无被拒动作。", "en-US": "Verify post-safe-mode containment evidence against the private threshold with no rejected action." },
     risk: { "zh-CN": "控制权劫持与服务降级", "en-US": "Control hijack and service degradation" },
     trigger: { "zh-CN": "异常远程控制请求触发鉴权、证据保留和网络隔离响应", "en-US": "An anomalous remote-control request triggers authentication, evidence retention, and network isolation" },
     coverage: [{ "zh-CN": "零信任鉴权", "en-US": "Zero-trust authorization" }, { "zh-CN": "安全降级", "en-US": "Safe degradation" }, { "zh-CN": "审计追踪", "en-US": "Audit trail" }],
@@ -266,6 +289,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenario[] = [
     target: "security-monitor-1",
     evidenceEvent: "CyberIncidentContained",
     deadlineTick: 16,
+    maxTicks: 20,
     occupants: 2,
     systems: 6
   }

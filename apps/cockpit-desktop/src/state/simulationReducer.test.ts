@@ -60,7 +60,7 @@ describe("simulationReducer", () => {
       state: "failed",
       serviceConnected: true,
       approvalRequired: true,
-      scenario: { id: "old", path: "/old.yaml", schemaVersion: 1, scenarioHash: "old-hash", seed: 7, agentId: "old-agent" },
+      scenario: { id: "old", path: "/old.yaml", schemaVersion: 1, scenarioHash: "old-hash", seed: 7, agentId: "old-agent", maxTicks: 80 },
       runId: "old-run",
       backend: "iota-core-acp",
       tick: 12,
@@ -107,6 +107,7 @@ describe("simulationReducer", () => {
       scenarioHash: "abc123",
       seed: 42,
       agentId: "test-agent",
+      maxTicks: 80,
     };
     const action: SimulationAction = {
       type: "scenarioReady",
@@ -393,7 +394,10 @@ describe("simulationReducer", () => {
 });
 
 describe("state guards", () => {
-  it("canStart should return true for ready, paused, and stopped states", () => {
+  it("canStart should return true once connected, including before the first run is created", () => {
+    expect(
+      canStart({ ...initialSimulationModel, state: "connectedIdle", serviceConnected: true })
+    ).toBe(true);
     expect(
       canStart({ ...initialSimulationModel, state: "ready", serviceConnected: true })
     ).toBe(true);

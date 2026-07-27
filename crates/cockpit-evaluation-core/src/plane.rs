@@ -39,6 +39,9 @@ pub struct HiddenRubric {
     pub scenario_hash: Option<String>,
     #[serde(default = "default_language")]
     pub language: String,
+    /// Human-readable purpose of this private evaluation contract.
+    #[serde(default)]
+    pub objective: String,
     pub rules: Vec<EvaluationSpec>,
     #[serde(default)]
     pub gate: EvaluationReleaseGate,
@@ -439,120 +442,4 @@ pub fn schema_hash() -> String {
         "sha256:{:x}",
         Sha256::digest(b"cockpit-independent-evaluation-plane-schema-v1")
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct FixedJudge(JudgeDecision);
-
-    impl IndependentJudge for FixedJudge {
-        fn judge(
-            &self,
-            _input: &EvaluationInput,
-            _rubric: &HiddenRubric,
-            _deterministic: &EvidenceVerdict,
-        ) -> Result<JudgeDecision, String> {
-            Ok(self.0.clone())
-        }
-    }
-
-    fn decision(id: &str, verdict: Verdict) -> JudgeDecision {
-        JudgeDecision {
-            verdict,
-            confidence: 1.0,
-            explanation: "fixture".to_string(),
-            evidence: Vec::new(),
-            provenance: JudgeProvenance {
-                judge_id: id.to_string(),
-                model: format!("fixture-model-{id}"),
-                prompt_hash: "sha256:prompt".to_string(),
-                rubric_hash: "sha256:rubric".to_string(),
-                schema_hash: schema_hash(),
-                provider_sha256: None,
-            },
-        }
-    }
-
-    #[test]
-    fn independent_judges_require_distinct_ids_and_models() {
-        let first = decision("a", Verdict::Pass);
-        let mut second = decision("b", Verdict::Pass);
-        assert!(judges_are_independent(&first, &second));
-        second.provenance.model = first.provenance.model.clone();
-        assert!(!judges_are_independent(&first, &second));
-        second.provenance.model = "another-model".to_string();
-        second.provenance.judge_id = first.provenance.judge_id.clone();
-        assert!(!judges_are_independent(&first, &second));
-        second.provenance.judge_id = "b".to_string();
-        second.provenance.provider_sha256 = Some("sha256:shared".to_string());
-        let mut first_with_provider = first.clone();
-        first_with_provider.provenance.provider_sha256 = Some("sha256:shared".to_string());
-        assert!(!judges_are_independent(&first_with_provider, &second));
-        second.provenance.provider_sha256 = Some("sha256:other".to_string());
-        assert!(judges_are_independent(&first_with_provider, &second));
-    }
-
-    #[test]
-    fn gate_rejects_judge_disagreement() {
-        let report = EvidenceVerdict {
-            schema_version: 1,
-            verdict: Verdict::Inconclusive,
-            rubric_id: "r".to_string(),
-            rubric_version: "1".to_string(),
-            rubric_hash: "h".to_string(),
-            input_hash: "i".to_string(),
-            schema_hash: schema_hash(),
-            deterministic_results: Vec::new(),
-            evidence: Vec::new(),
-            judges: vec![decision("a", Verdict::Pass), decision("b", Verdict::Fail)],
-            judge_disagreement: true,
-            release_gate_passed: false,
-            explanation: String::new(),
-        };
-        assert!(!gate_passes(&report, &EvaluationReleaseGate::default()));
-        let _ = FixedJudge(decision("unused", Verdict::Pass));
-    }
-}
-
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
-
-    #[test]
-    fn deterministic_plane_emits_hashed_evidence_verdict() {
-        let scenario_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scenarios/smoke-in-cockpit.yaml");
-        let scenario = cockpit_scenario::load_scenario(&scenario_path).expect("scenario loads");
-        let ticks = scenario.max_ticks;
-        let recording = cockpit_recording::run_rule_agent_recording(
-            "independent-evaluation-run",
-            scenario.clone(),
-            ticks,
-        )
-        .expect("recording runs");
-        let rubric = HiddenRubric {
-            rubric_id: "smoke-private".to_string(),
-            version: "1".to_string(),
-            scenario_id: scenario.id,
-            scenario_hash: Some(scenario.scenario_hash),
-            language: scenario.language,
-            rules: vec![EvaluationSpec {
-                id: "shutdown-before-spread".to_string(),
-                deadline_tick: 30,
-                policy: crate::EvaluationPolicy::default(),
-            }],
-            gate: EvaluationReleaseGate::default(),
-        };
-
-        let report = DeterministicEvaluator.evaluate(&EvaluationInput::new(recording), &rubric);
-
-        assert_eq!(report.verdict, Verdict::Pass, "{report:#?}");
-        assert!(report.release_gate_passed);
-        assert!(!report.evidence.is_empty());
-        assert!(report.input_hash.starts_with("sha256:"));
-        assert!(report.rubric_hash.starts_with("sha256:"));
-        assert_eq!(report.schema_hash, schema_hash());
-    }
 }

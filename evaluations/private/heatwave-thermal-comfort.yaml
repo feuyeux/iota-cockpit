@@ -1,9 +1,11 @@
 rubricId: thermal-comfort-private
 version: "1"
 scenarioId: heatwave-thermal-comfort
-language: en
+language: zh-CN
+objective: 在不发生安全拒绝的前提下，验证座舱热舒适是否在持续高温中及时恢复。
 rules:
   - id: thermal-comfort-restored
+    successCriteria: 截止 tick 28 前必须出现由 hvac-1 产生、指向 cabin 且值不高于 26.0 的 ThermalComfortRestored 证据；拒绝动作数必须为 0。
     deadlineTick: 28
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

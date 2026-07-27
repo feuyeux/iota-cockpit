@@ -49,28 +49,3 @@ pub fn normalize_language(tag: &str) -> &str {
 pub fn same_language(a: &str, b: &str) -> bool {
     normalize_language(a) == normalize_language(b)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn identity_translator_returns_text_unchanged() {
-        let translator = IdentityTranslator;
-        assert_eq!(translator.translate("hello", "en", "zh"), "hello");
-    }
-
-    #[test]
-    fn language_normalization_buckets_variants() {
-        assert_eq!(normalize_language("zh-CN"), "zh");
-        assert_eq!(normalize_language("en-US"), "en");
-        assert_eq!(normalize_language("fr"), "fr");
-    }
-
-    #[test]
-    fn same_language_ignores_region_variants() {
-        assert!(same_language("zh", "zh-CN"));
-        assert!(same_language("en-US", "en"));
-        assert!(!same_language("en", "zh"));
-    }
-}

@@ -1,5 +1,5 @@
 use cockpit_agent::LiveTickMode;
-use cockpit_evaluation::{
+use cockpit_evaluation_core::{
     EvaluationPolicy, EvaluationSpec, evaluate_with_policy, mark_execution_failed,
     plane::{
         DeterministicEvaluator, EvaluationInput, EvaluationReleaseGate, Evaluator, HiddenRubric,
@@ -112,14 +112,17 @@ fn private_multi_rule_rubric_reports_every_rule_and_requires_all_to_pass() {
         scenario_id: scenario.id.clone(),
         scenario_hash: Some(scenario.scenario_hash.clone()),
         language: scenario.language.clone(),
+        objective: "Evaluate all required smoke-incident responses.".to_string(),
         rules: vec![
             EvaluationSpec {
                 id: "shutdown-before-spread".to_string(),
+                success_criteria: "The engine is shut down before smoke spreads.".to_string(),
                 deadline_tick: 30,
                 policy: EvaluationPolicy::default(),
             },
             EvaluationSpec {
                 id: "thermal-comfort-restored".to_string(),
+                success_criteria: "Cabin thermal comfort is restored.".to_string(),
                 deadline_tick: 30,
                 policy: EvaluationPolicy::default(),
             },
@@ -151,8 +154,10 @@ fn private_rubric_uses_its_own_language() {
         scenario_id: scenario.id,
         scenario_hash: Some(scenario.scenario_hash),
         language: "zh-CN".to_string(),
+        objective: "评估烟雾事件响应。".to_string(),
         rules: vec![EvaluationSpec {
             id: "shutdown-before-spread".to_string(),
+            success_criteria: "发动机在烟雾扩散前关闭。".to_string(),
             deadline_tick: 30,
             policy: EvaluationPolicy::default(),
         }],
@@ -246,7 +251,7 @@ fn scenario_parser_preserves_public_goals_without_evaluation_rules() {
     assert!(!source.contains("shutdown-before-spread"));
 
     let scenario = parse_scenario_bytes(source.as_bytes()).expect("public scenario parses");
-    assert_eq!(scenario.max_ticks, 80);
+    assert_eq!(scenario.max_ticks, 34);
     assert_eq!(scenario.public_goals.len(), 1);
-    assert!(scenario.public_goals[0].contains("safe"));
+    assert!(scenario.public_goals[0].contains("authorized cockpit actions"));
 }

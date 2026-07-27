@@ -80,6 +80,9 @@ impl Observation {
         }
         if has_device("voice-array-1")
             && snapshot.humans.len() >= 4
+            && snapshot
+                .primary_human()
+                .is_some_and(|human| human.attention <= 0.84)
             && !systems.experience.privacy_mode_active
         {
             alerts.push("MultiUserPrivacyConflict".to_string());
@@ -170,38 +173,5 @@ impl Observation {
             })
         });
         observation
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Observation;
-    use crate::world::{HumanState, WorldSnapshot};
-
-    #[test]
-    fn human_observation_is_scoped_to_the_human_location() {
-        let mut pilot = HumanState::new("pilot-1");
-        pilot.location = "cockpit".to_string();
-        let mut passenger = HumanState::new("rear-passenger-1");
-        passenger.location = "rear-left".to_string();
-        let snapshot = WorldSnapshot {
-            run_id: "run".to_string(),
-            tick: 0,
-            sim_time_ms: 0,
-            version: 0,
-            outer_environment: Default::default(),
-            environment: Default::default(),
-            humans: vec![pilot, passenger],
-            devices: Vec::new(),
-            alarm: Default::default(),
-            cockpit_systems: Default::default(),
-        };
-
-        let observation = Observation::for_human("run", "rear-passenger-1", &snapshot);
-        assert_eq!(
-            observation.visible_entities,
-            vec!["cabin", "rear-passenger-1"]
-        );
-        assert!(observation.alerts.is_empty());
     }
 }

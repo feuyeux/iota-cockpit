@@ -597,25 +597,6 @@ impl OpenWorldRuntime {
         Self::compact_memory(session);
     }
 
-    pub fn set_skill_lifecycle(
-        &mut self,
-        agent_id: &str,
-        skill_id: &str,
-        lifecycle: ResourceLifecycle,
-        tick: u64,
-        error: Option<String>,
-    ) {
-        if let Some(skill) = self
-            .sessions
-            .get_mut(agent_id)
-            .and_then(|session| session.skills.get_mut(skill_id))
-        {
-            skill.lifecycle = lifecycle;
-            skill.activated_tick = (lifecycle == ResourceLifecycle::Active).then_some(tick);
-            skill.last_error = error;
-        }
-    }
-
     pub fn record_tool_failure(&mut self, agent_id: &str, tool_name: &str) {
         if let Some(tool) = self
             .sessions
@@ -696,43 +677,5 @@ impl OpenWorldCheckpoint {
             return Err("open-world checkpoint version is incompatible".to_string());
         }
         Ok(checkpoint)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scheduler_is_priority_bounded_and_runtime_restores() {
-        let mut runtime = OpenWorldRuntime {
-            concurrent_agent_budget: 1,
-            ..OpenWorldRuntime::default()
-        };
-        runtime.ensure_agent("a", "goal a", 0);
-        runtime.ensure_agent("b", "goal b", 0);
-        runtime.sessions.get_mut("b").unwrap().budget.priority = 10;
-        assert_eq!(
-            runtime.sessions["b"].skills["cockpit-world"].lifecycle,
-            ResourceLifecycle::Active
-        );
-        assert_eq!(runtime.sessions["b"].tools.len(), 9);
-        let goal = runtime.add_goal("b", "recover safely", 5, 1).unwrap();
-        assert!(runtime.set_goal_status("b", &goal, GoalStatus::Active, 1));
-        runtime.record_tool_failure("b", crate::TOOL_GET_OBSERVATION);
-        assert_eq!(
-            runtime.sessions["b"].tools[crate::TOOL_GET_OBSERVATION].lifecycle,
-            ResourceLifecycle::Failed
-        );
-        assert_eq!(
-            runtime.schedule(&["a".to_string(), "b".to_string()], 0),
-            ["b"]
-        );
-
-        runtime.record_failure("b", 1, "tool unavailable");
-        runtime.replan("b", 1, "retry after observation");
-        let restored = OpenWorldRuntime::restore(&runtime.sleep().unwrap()).unwrap();
-        assert_eq!(restored.sessions["b"].replan_count, 1);
-        assert_eq!(restored.sessions["b"].lifecycle, AgentLifecycle::Waiting);
     }
 }

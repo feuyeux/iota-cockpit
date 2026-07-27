@@ -81,15 +81,6 @@ impl HumanAgentDriver {
         &mut self.open_world
     }
 
-    pub fn sleep_runtime(&self) -> Result<Vec<u8>, String> {
-        self.open_world.sleep().map_err(|error| error.to_string())
-    }
-
-    pub fn restore_runtime(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.open_world = OpenWorldRuntime::restore(bytes)?;
-        Ok(())
-    }
-
     /// Capture or restore a versioned world-plus-agent checkpoint.
     pub fn checkpoint(&self, simulation: &Simulation) -> crate::open_world::OpenWorldCheckpoint {
         crate::open_world::OpenWorldCheckpoint::capture(&simulation.snapshot, &self.open_world)

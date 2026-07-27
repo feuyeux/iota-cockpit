@@ -29,7 +29,8 @@ impl SimulatorHandler {
             "schemaVersion": scenario.schema_version,
             "scenarioHash": scenario.scenario_hash,
             "seed": scenario.seed,
-            "agentId": scenario.agent.agent_id
+            "agentId": scenario.agent.agent_id,
+            "maxTicks": scenario.max_ticks
         }))
     }
 

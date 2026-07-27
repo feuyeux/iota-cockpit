@@ -44,6 +44,7 @@ describe("storage utilities", () => {
       scenarioHash: "hash123",
       seed: 42,
       agentId: "agent-1",
+      maxTicks: 80,
     };
 
     persistScenario(scenario);
@@ -61,6 +62,7 @@ describe("storage utilities", () => {
       scenarioHash: "hash123",
       seed: 42,
       agentId: "agent-1",
+      maxTicks: 80,
     };
 
     persistScenario(scenario);
@@ -78,6 +80,7 @@ describe("storage utilities", () => {
       scenarioHash: "hash123",
       seed: 42,
       agentId: "agent-1",
+      maxTicks: 80,
     };
 
     persistScenario(scenario);
@@ -95,6 +98,7 @@ describe("storage utilities", () => {
       scenarioHash: "hash123",
       seed: 42,
       agentId: "agent-1",
+      maxTicks: 80,
     };
 
     persistScenario(scenario);

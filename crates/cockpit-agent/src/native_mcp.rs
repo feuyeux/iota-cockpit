@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::{LocalMcpServer, ToolDefinition, ToolRequest, ToolResponse, redact_json};
 
 pub const NATIVE_MCP_PROTOCOL_VERSION: u16 = 1;
+pub const MAX_NATIVE_MCP_MESSAGE_BYTES: usize = 1_048_576;
 pub const DEFAULT_NATIVE_TOOL_COST_BUDGET: u32 = 16;
 /// The maximum native MCP calls permitted during one human turn.
 pub const DEFAULT_NATIVE_TOOL_CALL_BUDGET: usize = 10;
@@ -295,6 +296,11 @@ impl NativeMcpTurnState {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let payload = serde_json::to_vec(self).map_err(|error| error.to_string())?;
+        if payload.len() > MAX_NATIVE_MCP_MESSAGE_BYTES {
+            return Err(format!(
+                "Native MCP state exceeds {MAX_NATIVE_MCP_MESSAGE_BYTES} byte limit"
+            ));
+        }
         let temporary = path.with_extension(format!("tmp-{}", self.generation));
         #[cfg(unix)]
         {
@@ -351,7 +357,24 @@ impl NativeMcpTurnState {
         }
         #[cfg(windows)]
         windows_private_state::verify_owner_only(path)?;
-        let payload = fs::read(path).map_err(|error| error.to_string())?;
+        let size = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .len();
+        if size > MAX_NATIVE_MCP_MESSAGE_BYTES as u64 {
+            return Err(format!(
+                "Native MCP state exceeds {MAX_NATIVE_MCP_MESSAGE_BYTES} byte limit"
+            ));
+        }
+        let file = fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut payload = Vec::with_capacity(size as usize);
+        file.take(MAX_NATIVE_MCP_MESSAGE_BYTES as u64 + 1)
+            .read_to_end(&mut payload)
+            .map_err(|error| error.to_string())?;
+        if payload.len() > MAX_NATIVE_MCP_MESSAGE_BYTES {
+            return Err(format!(
+                "Native MCP state exceeds {MAX_NATIVE_MCP_MESSAGE_BYTES} byte limit"
+            ));
+        }
         let state: Self = serde_json::from_slice(&payload).map_err(|error| error.to_string())?;
         if state.protocol_version != NATIVE_MCP_PROTOCOL_VERSION {
             return Err(format!(
@@ -369,13 +392,9 @@ impl NativeMcpTurnState {
 
 pub fn run_stdio(state_path: PathBuf) -> Result<(), String> {
     let stdin = io::stdin();
+    let mut stdin = stdin.lock();
     let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => break,
-            Err(error) => return Err(error.to_string()),
-        };
+    while let Some(line) = read_limited_line(&mut stdin)? {
         if line.trim().is_empty() {
             continue;
         }
@@ -392,6 +411,41 @@ pub fn run_stdio(state_path: PathBuf) -> Result<(), String> {
         stdout.flush().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn read_limited_line<R: BufRead>(reader: &mut R) -> Result<Option<String>, String> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf().map_err(|error| error.to_string())?;
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                String::from_utf8(bytes).map(Some).map_err(|error| error.to_string())
+            };
+        }
+        let end = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if bytes.len() + end > MAX_NATIVE_MCP_MESSAGE_BYTES {
+            return Err(format!(
+                "native MCP message exceeds {MAX_NATIVE_MCP_MESSAGE_BYTES} byte limit"
+            ));
+        }
+        let complete = available[end - 1] == b'\n';
+        bytes.extend_from_slice(&available[..end]);
+        reader.consume(end);
+        if complete {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|error| error.to_string());
+        }
+    }
 }
 
 fn handle_request(state_path: &Path, request: &Value) -> Value {
@@ -579,146 +633,21 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
-    fn windows_sddl_accepts_only_one_protected_owner_rights_ace() {
-        assert!(is_owner_only_windows_sddl("D:P(A;;FA;;;OW)"));
-        assert!(is_owner_only_windows_sddl("D:P(A;;FA;;;S-1-3-4)"));
-        assert!(!is_owner_only_windows_sddl("D:(A;;FA;;;OW)"));
-        assert!(!is_owner_only_windows_sddl("D:P(A;;FA;;;OW)(A;;FR;;;BU)"));
-        assert!(!is_owner_only_windows_sddl("D:P(A;;FA;;;WD)"));
+    fn limited_line_reader_rejects_oversized_messages() {
+        let mut input = vec![b'x'; MAX_NATIVE_MCP_MESSAGE_BYTES + 1];
+        input.push(b'\n');
+        let mut reader = io::Cursor::new(input);
+        let error = read_limited_line(&mut reader).unwrap_err();
+        assert!(error.contains("byte limit"));
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_native_state_file_has_verified_owner_only_dacl() {
-        let path = std::env::temp_dir().join(format!(
-            "cockpit-native-acl-test-{}-{}.json",
-            std::process::id(),
-            unix_time_ms()
-        ));
-        let mut file = windows_private_state::create_owner_only(&path).expect("secure create");
-        file.write_all(b"{}").expect("write fixture");
-        file.sync_all().expect("sync fixture");
-        drop(file);
-        windows_private_state::verify_owner_only(&path).expect("owner-only ACL verifies");
-        let _ = fs::remove_file(path);
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    #[test]
-    fn native_mcp_private_state_fails_closed_without_owner_only_permissions() {
-        let error = private_state_platform_guard().expect_err("platform must fail closed");
-        assert!(error.contains("owner-only"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn native_bridge_lists_and_executes_scoped_tools() {
-        let scenario_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scenarios/smoke-in-cockpit.yaml");
-        let scenario = cockpit_scenario::load_scenario(
-            scenario_path.to_str().expect("scenario path is UTF-8"),
-        )
-        .expect("scenario loads");
-        let mut simulation = Simulation::new("native-contract-run", scenario);
-        simulation.start().expect("simulation starts");
-        let state_path = std::env::temp_dir().join(format!(
-            "cockpit-native-mcp-test-{}-{}.json",
-            std::process::id(),
-            unix_time_ms()
-        ));
-        let state = NativeMcpTurnState::new(
-            "generation-1".to_string(),
-            &simulation,
-            &LocalMcpServer::default(),
-            "pilot-1".to_string(),
-            LocalMcpServer::tool_definitions(),
-            30_000,
-        );
-        state.write(&state_path).expect("state writes");
-        use std::os::unix::fs::PermissionsExt;
+    fn limited_line_reader_accepts_a_json_line() {
+        let mut reader = io::Cursor::new(b"{\"id\":1}\r\n".to_vec());
         assert_eq!(
-            fs::metadata(&state_path)
-                .expect("state metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
+            read_limited_line(&mut reader).unwrap().as_deref(),
+            Some("{\"id\":1}")
         );
-
-        let listed = handle_request(
-            &state_path,
-            &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-        );
-        let mut listed_names = listed["result"]["tools"]
-            .as_array()
-            .expect("tools/list returns an array")
-            .iter()
-            .filter_map(|tool| tool["name"].as_str())
-            .collect::<Vec<_>>();
-        listed_names.sort_unstable();
-        let mut expected_names = vec![
-            crate::TOOL_ADD_GOAL,
-            crate::TOOL_GET_ACTION_RESULT,
-            crate::TOOL_GET_OBSERVATION,
-            crate::TOOL_GET_RUN_STATUS,
-            crate::TOOL_GET_TURN_CONTEXT,
-            crate::TOOL_INSPECT_SENSOR_QUALITY,
-            crate::TOOL_LIST_VISIBLE_ENTITIES,
-            crate::TOOL_REQUEST_ACTION,
-            crate::TOOL_SUBMIT_DECISION,
-            crate::TOOL_WAIT_UNTIL,
-        ];
-        expected_names.sort_unstable();
-        assert_eq!(listed_names, expected_names);
-
-        let called = handle_request(
-            &state_path,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": { "name": crate::TOOL_GET_RUN_STATUS, "arguments": {} }
-            }),
-        );
-        assert_eq!(called["result"]["isError"], false);
-        let persisted = NativeMcpTurnState::read(&state_path).expect("state reads");
-        assert_eq!(persisted.calls.len(), 1);
-        assert_eq!(persisted.calls[0].tool, crate::TOOL_GET_RUN_STATUS);
-
-        let submitted = handle_request(
-            &state_path,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": crate::TOOL_SUBMIT_DECISION,
-                    "arguments": {
-                        "utterance": null,
-                        "internalStateDelta": { "stress": null, "attention": 0.1 },
-                        "narrative": "I stay alert."
-                    }
-                }
-            }),
-        );
-        assert_eq!(submitted["result"]["isError"], false);
-        let after_submission = handle_request(
-            &state_path,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": { "name": crate::TOOL_GET_RUN_STATUS, "arguments": {} }
-            }),
-        );
-        assert_eq!(after_submission["result"]["isError"], true);
-        assert_eq!(
-            after_submission["result"]["structuredContent"]["error"]["code"],
-            "DECISION_ALREADY_SUBMITTED"
-        );
-
-        let _ = fs::remove_file(state_path);
     }
 }

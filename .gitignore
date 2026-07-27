@@ -23,3 +23,5 @@
 
 # Local logs
 *.log
+dist/
+binaries/

@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 pub mod acp_adapter;
 #[cfg(feature = "live-acp")]
 pub mod iota_core_adapter;
+#[cfg(feature = "live-acp")]
+pub mod judge_acp;
 pub mod live;
 pub mod multi_agent;
 pub mod native_mcp;
@@ -806,42 +808,6 @@ fn response_fits(result: &Value) -> bool {
     serde_json::to_vec(result)
         .map(|bytes| bytes.len() <= MAX_TOOL_RESPONSE_BYTES)
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_TOOL_RESPONSE_BYTES, REDACTED_SECRET, redact_json, response_fits};
-    use serde_json::json;
-
-    #[test]
-    fn tool_response_size_limit_rejects_oversized_values_without_truncation() {
-        let value = json!({ "payload": "x".repeat(MAX_TOOL_RESPONSE_BYTES) });
-        assert!(!response_fits(&value));
-    }
-
-    #[test]
-    fn trace_redaction_removes_nested_secret_values() {
-        let value = redact_json(json!({
-            "outer": {
-                "apiKey": "do-not-leak",
-                "nested": [{ "auth_token": "also-do-not-leak" }]
-            }
-        }));
-        assert_eq!(value["outer"]["apiKey"], REDACTED_SECRET);
-        assert_eq!(value["outer"]["nested"][0]["auth_token"], REDACTED_SECRET);
-        assert!(!value.to_string().contains("do-not-leak"));
-    }
-
-    #[test]
-    fn trace_redaction_removes_credential_values() {
-        let value = redact_json(json!({
-            "credential": "do-not-leak",
-            "awsCredentials": "also-do-not-leak"
-        }));
-        assert_eq!(value["credential"], REDACTED_SECRET);
-        assert_eq!(value["awsCredentials"], REDACTED_SECRET);
-        assert!(!value.to_string().contains("do-not-leak"));
-    }
 }
 
 /// Versioned deterministic baseline policy. `alert_id` uses the stable

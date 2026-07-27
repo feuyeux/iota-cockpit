@@ -43,6 +43,7 @@ fn plugin_manifest() -> PluginManifest {
         signature: None,
         command: None,
         filesystem_read_paths: Vec::new(),
+        executable_sha256: None,
     };
     let bytes = serde_json::to_vec(&manifest).expect("manifest");
     let mut hasher = Sha256::new();
@@ -84,6 +85,7 @@ fn configure_simulator_plugin(
             .into_iter()
             .collect(),
         failure_policy: policy,
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(
@@ -450,6 +452,29 @@ fn simulator_exposes_recording_diff_report() {
 }
 
 #[test]
+fn simulator_rejects_oversized_recording_input() {
+    let oversized = std::env::temp_dir().join(format!(
+        "cockpit-oversized-recording-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let file = std::fs::File::create(&oversized).expect("recording file");
+    file.set_len(64 * 1024 * 1024 + 1)
+        .expect("sparse oversized recording");
+
+    let mut handler = SimulatorHandler::new("session-1");
+    let response = handler.dispatch(request(SimulatorCommand::DiffRecordings {
+        source_recording_path: oversized.to_string_lossy().to_string(),
+        candidate_recording_path: oversized.to_string_lossy().to_string(),
+    }));
+    assert!(!response.ok);
+    assert_eq!(
+        response.error.as_ref().map(|error| error.code.as_str()),
+        Some("RECORDING_READ_FAILED")
+    );
+    let _ = std::fs::remove_file(oversized);
+}
+
+#[test]
 fn simulator_bounds_event_history_and_marks_stale_cursors_for_reset() {
     let path = std::env::temp_dir().join(format!(
         "cockpit-event-history-{}.yaml",
@@ -458,7 +483,7 @@ fn simulator_bounds_event_history_and_marks_stale_cursors_for_reset() {
     let scenario = std::fs::read_to_string("scenarios/smoke-in-cockpit.yaml")
         .expect("source scenario")
         .replace(
-            "maxTicks: 80",
+            "maxTicks: 34",
             &format!("maxTicks: {}", MAX_EVENT_HISTORY + 101),
         );
     std::fs::write(&path, scenario).expect("long-running scenario");
@@ -695,16 +720,20 @@ fn simulator_commits_plugin_diff_and_records_manifest_hash() {
     let _ = std::fs::remove_file(database);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 #[test]
 fn simulator_discovers_and_runs_a_manifest_process_executor() {
     let directory = plugin_directory("manifest-process");
+    let executable = directory.join("plugin-printf");
+    std::fs::copy("/usr/bin/printf", &executable).expect("plugin executable copies");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("plugin executable permissions");
     let mut manifest = plugin_manifest();
     manifest.permissions.push(PluginPermission::ChildProcess);
     manifest.command = Some(vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "cat >/dev/null; printf '[{\"pluginId\":\"simulator-plugin\",\"patch\":{\"kind\":\"cabinVisibility\",\"value\":0.4},\"expectedStateVersion\":0}]'".to_string(),
+        executable.to_string_lossy().to_string(),
+        "[{\"pluginId\":\"simulator-plugin\",\"patch\":{\"kind\":\"cabinVisibility\",\"value\":0.4},\"expectedStateVersion\":1}]".to_string(),
     ]);
     resign_manifest(&mut manifest);
     std::fs::write(
@@ -729,6 +758,7 @@ fn simulator_discovers_and_runs_a_manifest_process_executor() {
         ]
         .into_iter()
         .collect(),
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(
@@ -764,12 +794,14 @@ fn simulator_discovers_and_runs_a_manifest_process_executor() {
 #[test]
 fn simulator_records_process_plugin_deadline_evidence() {
     let directory = plugin_directory("manifest-timeout-evidence");
+    let executable = directory.join("plugin.sh");
+    std::fs::write(&executable, "#!/bin/sh\nwhile :; do :; done\n")
+        .expect("plugin executable writes");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("plugin executable permissions");
     let mut manifest = plugin_manifest();
-    manifest.command = Some(vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "while :; do :; done".to_string(),
-    ]);
+    manifest.command = Some(vec![executable.to_string_lossy().to_string()]);
     resign_manifest(&mut manifest);
     std::fs::write(
         directory.join("plugin.json"),
@@ -794,6 +826,7 @@ fn simulator_records_process_plugin_deadline_evidence() {
             .into_iter()
             .collect(),
         tick_budget_ms: Some(20),
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(

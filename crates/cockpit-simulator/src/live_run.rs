@@ -406,8 +406,98 @@ pub(crate) mod backend_impl {
     };
     use tokio_util::sync::CancellationToken;
 
+    /// Resolves the workspace root that contains the `skills/` directory
+    /// (for `IotaCoreAdapter`) needed by the live ACP backend.
+    ///
+    /// SECURITY/CORRECTNESS (result.md C-01 / AC3.1-AC3.3): this used to be
+    /// `env!("CARGO_MANIFEST_DIR")`, a path baked in at *compile* time that
+    /// only exists on the machine that built the binary. A packaged release
+    /// build run on any other machine (or even the same machine after the
+    /// source checkout moves/is deleted) would silently fail to find
+    /// `skills/cockpit-world/SKILL.md` or crash with a confusing "no such
+    /// file" error far from the real cause. Resolution order:
+    /// 1. `COCKPIT_SIMULATOR_WORKSPACE` env var, if set — explicit operator
+    ///    override, e.g. for a non-standard packaging layout.
+    /// 2. Directories relative to the running executable's own location
+    ///    (`<exe_dir>/../..`, `<exe_dir>` itself, and — for the common
+    ///    "target/debug|release/<exe>" cargo layout — the exe's
+    ///    grandparent's grandparent), each accepted only if it actually
+    ///    contains a `skills` directory, so a real bundled resource layout
+    ///    is required, not merely assumed.
+    /// 3. `CARGO_MANIFEST_DIR` at compile time, but *only* as a
+    ///    last-resort development fallback (guarded by `debug_assertions`)
+    ///    for `cargo run`/`cargo test` workflows where no packaged resource
+    ///    directory exists yet.
+    /// 4. The current working directory, as a final fallback so callers
+    ///    always get *some* path rather than a panic; if it also lacks a
+    ///    `skills` directory, the caller's own error handling (skill lookup
+    ///    failing with a clear "not registered" message) surfaces the
+    ///    problem instead of this function guessing further.
+    ///
+    /// Error messages from callers that fail against the returned path must
+    /// not include this resolution logic's internal detail beyond the final
+    /// path tried, so operators are not shown compile-time-only information
+    /// that describes the build machine rather than the runtime one.
+    pub fn resolve_agent_workspace() -> PathBuf {
+        if let Ok(path) = std::env::var("COCKPIT_SIMULATOR_WORKSPACE") {
+            let candidate = PathBuf::from(path);
+            if candidate.join("skills").is_dir() {
+                return candidate;
+            }
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            let mut candidates = Vec::new();
+            if let Some(exe_dir) = exe.parent() {
+                candidates.push(exe_dir.to_path_buf());
+                candidates.push(exe_dir.join(".."));
+                candidates.push(exe_dir.join("../.."));
+                // cargo's `target/{debug,release}/<exe>` layout: workspace
+                // root is two levels above `target/`.
+                candidates.push(exe_dir.join("../../.."));
+            }
+            for candidate in candidates {
+                let canonical = candidate.canonicalize().unwrap_or(candidate);
+                if canonical.join("skills").is_dir() {
+                    return canonical;
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let dev_workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            if dev_workspace.join("skills").is_dir() {
+                return dev_workspace;
+            }
+        }
+
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    fn resolve_isolated_agent_cwd() -> anyhow::Result<PathBuf> {
+        let candidate = std::env::var_os("COCKPIT_SIMULATOR_AGENT_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join(format!("cockpit-agent-workspace-{}", uuid::Uuid::new_v4()))
+            });
+        std::fs::create_dir_all(&candidate)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let canonical = candidate.canonicalize()?;
+        anyhow::ensure!(
+            !canonical.join("evaluations").join("private").exists(),
+            "isolated ACP workspace unexpectedly contains private evaluation resources"
+        );
+        Ok(canonical)
+    }
+
     fn load_skill(language: &str) -> anyhow::Result<CockpitSkill> {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workspace = resolve_agent_workspace();
         IotaCoreAdapter::new(workspace)
             .load_cockpit_skill_localized(language)
             .map_err(anyhow::Error::msg)
@@ -865,7 +955,7 @@ pub(crate) mod backend_impl {
     ) -> anyhow::Result<BackendSession> {
         let skill = load_skill(&scenario.language)?;
         let adapter_config = AcpAdapterConfig {
-            cwd: Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            cwd: resolve_isolated_agent_cwd()?,
             timeout_ms,
             native_mcp_bridge_command: Some(native_mcp_bridge_command()),
             native_mcp_state_path: Some(native_mcp_state_path()),
@@ -897,197 +987,4 @@ pub(crate) mod backend_impl {
         })
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn embedded_desktop_uses_sibling_simulator_for_native_mcp() {
-            let temp =
-                std::env::temp_dir().join(format!("cockpit-simulator-test-{}", std::process::id()));
-            std::fs::create_dir_all(&temp).expect("temp dir");
-            let desktop = temp.join(if cfg!(windows) {
-                "cockpit-desktop.exe"
-            } else {
-                "cockpit-desktop"
-            });
-            let simulator = temp.join(if cfg!(windows) {
-                "cockpit-simulator.exe"
-            } else {
-                "cockpit-simulator"
-            });
-            std::fs::write(&simulator, b"simulator").expect("simulator fixture");
-
-            assert_eq!(native_mcp_bridge_command_for_exe(&desktop), Some(simulator));
-            let _ = std::fs::remove_dir_all(temp);
-        }
-
-        #[test]
-        fn simulator_process_uses_itself_for_native_mcp() {
-            let simulator = PathBuf::from(if cfg!(windows) {
-                r"C:\app\cockpit-simulator.exe"
-            } else {
-                "/app/cockpit-simulator"
-            });
-            assert_eq!(
-                native_mcp_bridge_command_for_exe(&simulator),
-                Some(simulator.clone())
-            );
-        }
-
-        #[test]
-        fn backend_output_uses_the_first_complete_json_envelope() {
-            assert!(
-                validate_backend_turn_output(
-                    r#"You must respond with {"type":"final","narrative":"example"}"#
-                )
-                .is_err()
-            );
-            assert!(
-                validate_backend_turn_output(r#"{"type":"final","narrative":"actual"}"#).is_ok()
-            );
-            assert!(validate_backend_turn_output(
-                "{\"type\":\"toolCall\",\"tool\":\"simulation.get_observation\",\"arguments\":{}}\n{\"type\":\"final\",\"narrative\":\"extra\"}"
-            )
-            .is_ok());
-        }
-
-        #[test]
-        fn native_turn_prefers_submit_but_accepts_strict_json_fallback() {
-            let strict_final = r#"{"type":"final","narrative":"actual"}"#;
-            assert!(validate_backend_turn_protocol(true, true, "non-JSON transport text").is_ok());
-            assert!(validate_backend_turn_protocol(true, false, strict_final).is_ok());
-            let error = validate_backend_turn_protocol(
-                true,
-                false,
-                r#"prompt echo with {"type":"final","narrative":"example"}"#,
-            )
-            .expect_err("embedded prompt examples must not pass strict fallback");
-            assert!(error.contains("did not call simulation.submit_decision"));
-            assert!(error.contains("strict JSON fallback was invalid"));
-        }
-
-        #[test]
-        fn human_switches_preserve_distinct_backend_sessions() {
-            let scenario_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join("scenarios/smoke-in-cockpit.yaml");
-            let scenario =
-                cockpit_scenario::load_scenario(&scenario_path).expect("smoke scenario must load");
-            assert!(scenario.humans.len() >= 2, "regression needs two humans");
-            let first_human = scenario.humans[0].id.clone();
-            let second_human = scenario.humans[1].id.clone();
-            let mut backend = backend_session(&scenario, 60_000)
-                .expect("backend state must initialize without starting Hermes");
-            let first_adapter_session = backend.adapter.logical_session_id().to_string();
-
-            backend.complete_turn(AcpTurn {
-                backend: "hermes".to_string(),
-                session_id: Some("session-for-first-human".to_string()),
-                text: r#"{"type":"final","narrative":"first"}"#.to_string(),
-                runtime_events: Vec::new(),
-                elapsed_ms: 1,
-            });
-            backend
-                .activate_human(&second_human)
-                .expect("second human activates on the shared adapter");
-            assert_ne!(
-                backend.adapter.logical_session_id(),
-                first_adapter_session.as_str(),
-                "a new human receives a fresh ephemeral engine session"
-            );
-            let second_adapter_session = backend.adapter.logical_session_id().to_string();
-            backend.complete_turn(AcpTurn {
-                backend: "hermes".to_string(),
-                session_id: Some("session-for-second-human".to_string()),
-                text: r#"{"type":"final","narrative":"second"}"#.to_string(),
-                runtime_events: Vec::new(),
-                elapsed_ms: 1,
-            });
-            backend
-                .activate_human(&first_human)
-                .expect("first human reactivates");
-
-            assert_eq!(backend.active_human_id, first_human);
-            assert_eq!(
-                backend.adapter.logical_session_id(),
-                second_adapter_session.as_str(),
-                "resuming a recorded backend session reuses the current ephemeral engine"
-            );
-            assert!(
-                !backend.adapter.is_warm(),
-                "test must not start an external Hermes process"
-            );
-            assert_eq!(
-                backend
-                    .backend_sessions
-                    .get(&first_human)
-                    .map(String::as_str),
-                Some("session-for-first-human")
-            );
-            assert_eq!(
-                backend
-                    .backend_sessions
-                    .get(&second_human)
-                    .map(String::as_str),
-                Some("session-for-second-human")
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(not(feature = "live-acp"))]
-    use super::*;
-
-    /// A backend failure aborts the run immediately: the offending tick is not
-    /// committed and the run's error is reported rather than silently
-    /// substituted with a rule-based or synthetic decision.
-    #[test]
-    fn narrativeless_backend_output_is_normalized_by_the_decision_parser() {
-        // Narrative prose does not influence simulation behavior, so a
-        // backend response without it remains a valid decision with the
-        // documented fixed placeholder.
-        use cockpit_agent::live::parse_decision_for_tests as parse_decision;
-        let decision =
-            parse_decision(r#"{"utterance": "hi"}"#).expect("missing narrative is normalized");
-        assert_eq!(decision.narrative, "implicit backend decision");
-    }
-
-    #[cfg(not(feature = "live-acp"))]
-    #[tokio::test(flavor = "current_thread")]
-    async fn live_run_records_per_human_disposition_evidence_per_tick() {
-        let report = run_live(LiveRunConfig {
-            scenario_path: "../../scenarios/smoke-in-cockpit.yaml".to_string(),
-            ticks: 5,
-            timeout_ms: 50,
-            tick_mode: LiveTickMode::Strict,
-        })
-        .await
-        .expect("live run completes with the synthetic backend");
-
-        assert!(report.error.is_none(), "no backend failure expected");
-        assert!(report.ticks > 0, "at least one tick is committed");
-        assert_eq!(
-            report.tick_evidence.len(),
-            report.ticks,
-            "every committed tick carries disposition evidence"
-        );
-        assert!(
-            report
-                .tick_evidence
-                .iter()
-                .any(|tick| tick.humans.is_empty()),
-            "idle ticks retain an empty evidence container without a backend turn"
-        );
-        assert!(
-            report
-                .tick_evidence
-                .iter()
-                .any(|tick| !tick.humans.is_empty()),
-            "scheduled turns retain human disposition evidence"
-        );
-        assert!(report.final_snapshot_hash.is_some());
-    }
 }

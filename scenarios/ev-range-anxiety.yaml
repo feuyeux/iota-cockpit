@@ -98,6 +98,17 @@ influences:
         op: delta
         value: 0.06
     priority: 7
+scenarioEvents:
+  - atTick: 0
+    eventType: EvRangeRiskRaised
+    source: driver-1
+    target: navigation-1
+    message: Cold weather, altitude, and wind are shrinking usable range; the driver needs a safe charging plan.
+  - atTick: 4
+    eventType: RangeComfortTradeoffRaised
+    source: passenger-1
+    target: battery-1
+    message: Cabin warmth and remaining range now conflict; explain the trade-off before choosing a route.
 agents:
   - id: cockpit-agent
     backend: scripted
@@ -105,5 +116,5 @@ agents:
     capabilities:
       - energy.acceptChargingPlan
 goals:
-  - Reduce range uncertainty and support a safe charging plan.
-maxTicks: 80
+  - Interpret the cold-weather range risk, reconcile occupant comfort with mobility needs, and use authorized controls to establish a safe charging plan.
+maxTicks: 26

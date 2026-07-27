@@ -1,4 +1,4 @@
-use cockpit_evaluation::evaluate_smoke_shutdown;
+use cockpit_evaluation_core::evaluate_smoke_shutdown;
 use cockpit_recording::{
     Recording, replay_recording, run_rule_agent_recording, run_scripted_recording,
 };

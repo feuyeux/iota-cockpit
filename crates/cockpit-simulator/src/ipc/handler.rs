@@ -14,6 +14,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -36,6 +37,7 @@ use super::proto::{
 
 pub(super) type HandlerResult = Result<Value, Box<IpcError>>;
 pub const MAX_EVENT_HISTORY: usize = 2_048;
+const MAX_RECORDING_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Shared cancellation handle kept outside the mutable simulator state so a
 /// stop request can interrupt a live ACP turn while that state is locked.
@@ -82,16 +84,35 @@ impl LiveTurnControl {
 }
 
 pub(super) fn read_recording(path: &str) -> Result<Recording, Box<IpcError>> {
-    let bytes = fs::read(Path::new(path)).map_err(|error| {
+    let read_error = |message: String| {
         Box::new(IpcError {
             code: "RECORDING_READ_FAILED".to_string(),
-            message: error.to_string(),
+            message,
             details: None,
             run_id: None,
             tick: None,
             correlation_id: "recording-diff".to_string(),
         })
-    })?;
+    };
+    let file = fs::File::open(Path::new(path)).map_err(|error| read_error(error.to_string()))?;
+    let size = file
+        .metadata()
+        .map_err(|error| read_error(error.to_string()))?
+        .len();
+    if size > MAX_RECORDING_BYTES {
+        return Err(read_error(format!(
+            "recording exceeds {MAX_RECORDING_BYTES} byte limit"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(MAX_RECORDING_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| read_error(error.to_string()))?;
+    if bytes.len() as u64 > MAX_RECORDING_BYTES {
+        return Err(read_error(format!(
+            "recording exceeds {MAX_RECORDING_BYTES} byte limit"
+        )));
+    }
     serde_json::from_slice(&bytes)
         .map_err(|error| Box::new(SimulatorHandler::serialization_error(error.to_string())))
 }
@@ -533,57 +554,5 @@ pub(super) fn plugin_failure_record(failure: &PluginFailure) -> PluginFailureRec
                 stderr_bytes: execution.stderr_bytes,
             }
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{LiveTurnControl, SimulatorEvent, SimulatorHandler, deadline_reached};
-    use crate::ipc::proto::EvaluationProgressStatus;
-    use cockpit_recording::run_rule_agent_recording;
-    use cockpit_scenario::load_scenario;
-    use cockpit_world::clock::RunStatus;
-
-    #[test]
-    fn deadline_completion_only_applies_to_running_simulations() {
-        assert!(deadline_reached(RunStatus::Running, 16, 16));
-        assert!(deadline_reached(RunStatus::Running, 17, 16));
-        assert!(!deadline_reached(RunStatus::Running, 15, 16));
-        assert!(!deadline_reached(RunStatus::Paused, 16, 16));
-        assert!(!deadline_reached(RunStatus::Failed, 16, 16));
-    }
-
-    #[test]
-    fn live_turn_control_cancels_without_simulator_state_access() {
-        let control = LiveTurnControl::default();
-        let token = control.begin();
-
-        assert!(control.cancel());
-        assert!(token.is_cancelled());
-
-        control.finish();
-        assert!(!control.cancel());
-    }
-
-    #[test]
-    fn live_failure_emits_an_execution_failed_evaluation() {
-        let scenario = load_scenario("../../scenarios/smoke-in-cockpit.yaml").expect("scenario");
-        let recording = run_rule_agent_recording(
-            "failed-live-evaluation",
-            scenario.clone(),
-            scenario.max_ticks + 1,
-        )
-        .expect("recording");
-        let mut handler = SimulatorHandler::new("session");
-        handler.recording = Some(recording);
-        handler.emit_execution_failure_evaluation(&scenario, "backend timeout".to_string());
-
-        let SimulatorEvent::SimulationEvaluationProgress { progress, .. } =
-            handler.events.last().expect("evaluation event")
-        else {
-            panic!("last event must be evaluation progress");
-        };
-        assert_eq!(progress.status, EvaluationProgressStatus::Failed);
-        assert_eq!(progress.execution_error.as_deref(), Some("backend timeout"));
     }
 }

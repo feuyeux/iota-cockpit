@@ -2,8 +2,10 @@ rubricId: medical-private
 version: "1"
 scenarioId: medical-emergency
 language: en
+objective: Verify that the medical response stabilizes the patient on time without any safety rejection.
 rules:
   - id: medical-response-stabilized
+    successCriteria: By tick 22, MedicalResponseActivated must be emitted by emergency-call-1 for patient-1 with a value no greater than 0.4; rejected actions must remain zero.
     deadlineTick: 22
     policy:
       safetyRejectionCodes: [CAPABILITY_DENIED, UNKNOWN_TARGET, APPROVAL_DENIED]

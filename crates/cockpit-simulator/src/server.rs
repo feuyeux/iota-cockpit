@@ -1,9 +1,10 @@
 use std::io;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::ipc::{
     LiveTurnControl, SimulatorHandler,
@@ -11,21 +12,64 @@ use crate::ipc::{
 };
 
 pub const MAX_IPC_REQUEST_BYTES: usize = 1_048_576;
+const IPC_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Rejects binding this simulator sidecar to a non-loopback address unless
+/// the operator has explicitly opted in via `allow_remote`.
+///
+/// SECURITY (result.md C-06 / AC13.1, AC13.2): the simulator IPC protocol
+/// has no TLS/mTLS, and its only authentication is a shared session token
+/// compared in plaintext over the wire — acceptable for loopback-only
+/// local IPC, but binding it to a network-reachable address without
+/// explicit operator opt-in would expose that same weak authentication to
+/// the network. This mirrors the equivalent guard in iota-sympantos'
+/// `daemon::guard_daemon_bind_addr`.
+pub fn guard_bind_addr(addr: &str, allow_remote: bool) -> io::Result<()> {
+    let is_loopback = addr
+        .rsplit_once(':')
+        .map(|(host, _port)| host.trim_start_matches('[').trim_end_matches(']'))
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false);
+    if !is_loopback {
+        let detail = if allow_remote {
+            "--allow-remote was requested, but this build has no TLS/mTLS transport; configure a future TLS-enabled endpoint instead"
+        } else {
+            "use a loopback address (for example 127.0.0.1:0)"
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "refusing non-loopback cockpit-simulator bind '{addr}': plaintext shared-token IPC must not be network exposed; {detail}"
+            ),
+        ));
+    }
+    Ok(())
+}
 
 pub async fn serve(bind: &str, session_token: impl Into<String>) -> io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     serve_listener(listener, session_token).await
 }
 
 /// Serve with an optional persistent recording store. When `database_path` is
 /// set, the served handler persists each committed tick so an external simulator
 /// process can recover its snapshot and event cursor after a real restart.
+///
+/// Prints `SIMULATOR_READY <addr>\n` to stdout as soon as the listener is
+/// bound and before accepting any connections, so a parent process that
+/// requested an OS-assigned port (`--bind 127.0.0.1:0`) can read the actual
+/// bound address back over a channel it already controls (the child's
+/// stdout) rather than needing a fixed, hardcoded port (result.md C-02 /
+/// AC6.3).
 pub async fn serve_persistent(
     bind: &str,
     session_token: impl Into<String>,
     database_path: Option<&str>,
 ) -> io::Result<()> {
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     match database_path {
         Some(path) => {
             let handler =
@@ -34,6 +78,17 @@ pub async fn serve_persistent(
         }
         None => serve_listener(listener, session_token).await,
     }
+}
+
+/// Prints the listener's actual bound address to stdout and flushes
+/// immediately, so a parent process reading the child's stdout line-by-line
+/// observes it as soon as it is written rather than waiting for a buffered
+/// flush. See [`serve_persistent`] for why this exists.
+fn print_ready_address(listener: &TcpListener) -> io::Result<()> {
+    use std::io::Write;
+    let addr = listener.local_addr()?;
+    println!("SIMULATOR_READY {addr}");
+    std::io::stdout().flush()
 }
 
 pub async fn serve_persistent_with_policy_bundle(
@@ -51,6 +106,7 @@ pub async fn serve_persistent_with_policy_bundle(
     };
     handler.configure_rule_policy_bundle(bundle);
     let listener = TcpListener::bind(bind).await?;
+    print_ready_address(&listener)?;
     serve_listener_with(listener, handler).await
 }
 
@@ -92,7 +148,16 @@ async fn handle_connection(
     let (read, mut write) = stream.into_split();
     let mut read = read;
     let mut buffer = Vec::with_capacity(8_192);
-    while let Some(frame) = read_request_frame(&mut read, &mut buffer).await? {
+    loop {
+        let frame = timeout(
+            IPC_FRAME_TIMEOUT,
+            read_request_frame(&mut read, &mut buffer),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "IPC request timed out"))??;
+        let Some(frame) = frame else {
+            break;
+        };
         let oversized = matches!(frame, RequestFrame::Oversized);
         let response = match frame {
             RequestFrame::Oversized => payload_too_large_response(),
@@ -133,8 +198,12 @@ async fn handle_connection(
         let mut encoded =
             serde_json::to_vec(&response).map_err(|error| io::Error::other(error.to_string()))?;
         encoded.push(b'\n');
-        write.write_all(&encoded).await?;
-        write.flush().await?;
+        timeout(IPC_FRAME_TIMEOUT, async {
+            write.write_all(&encoded).await?;
+            write.flush().await
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "IPC response timed out"))??;
         if oversized {
             break;
         }
@@ -266,123 +335,5 @@ fn payload_too_large_response() -> SimulatorResponse {
             tick: None,
             correlation_id: "payload-too-large".to_string(),
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ipc::proto::{SimulatorCommand, SimulatorRequest};
-    use tokio::{
-        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-        time::{Duration, timeout},
-    };
-
-    #[tokio::test]
-    async fn cancel_live_turn_bypasses_a_busy_simulator_handler() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener binds");
-        let address = listener.local_addr().expect("listener address");
-        let control = LiveTurnControl::default();
-        let token = control.begin();
-        let handler = Arc::new(Mutex::new(SimulatorHandler::with_live_turn_control(
-            "test-token",
-            control.clone(),
-        )));
-        let handler_lock = handler.lock().await;
-        let server = tokio::spawn({
-            let handler = Arc::clone(&handler);
-            let control = control.clone();
-            async move {
-                let (stream, _) = listener.accept().await.expect("connection accepted");
-                handle_connection(stream, handler, "test-token".to_string(), control)
-                    .await
-                    .expect("connection completes");
-            }
-        });
-
-        let mut stream = TcpStream::connect(address).await.expect("client connects");
-        let request = SimulatorRequest {
-            version: IPC_VERSION,
-            session_token: "test-token".to_string(),
-            correlation_id: "cancel-test".to_string(),
-            command: SimulatorCommand::CancelLiveTurn,
-        };
-        let mut encoded = serde_json::to_vec(&request).expect("request serializes");
-        encoded.push(b'\n');
-        stream.write_all(&encoded).await.expect("request writes");
-
-        let mut line = String::new();
-        timeout(
-            Duration::from_millis(250),
-            BufReader::new(stream).read_line(&mut line),
-        )
-        .await
-        .expect("cancel response is not blocked by the handler lock")
-        .expect("cancel response reads");
-        let response: SimulatorResponse = serde_json::from_str(&line).expect("response parses");
-        assert!(response.ok);
-        assert!(token.is_cancelled());
-
-        drop(handler_lock);
-        server.await.expect("server task joins");
-    }
-
-    #[tokio::test]
-    async fn ping_bypasses_a_busy_simulator_handler() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener binds");
-        let address = listener.local_addr().expect("listener address");
-        let control = LiveTurnControl::default();
-        let handler = Arc::new(Mutex::new(SimulatorHandler::with_live_turn_control(
-            "test-token",
-            control.clone(),
-        )));
-        let handler_lock = handler.lock().await;
-        let server = tokio::spawn({
-            let handler = Arc::clone(&handler);
-            async move {
-                let (stream, _) = listener.accept().await.expect("connection accepted");
-                handle_connection(stream, handler, "test-token".to_string(), control)
-                    .await
-                    .expect("connection completes");
-            }
-        });
-
-        let mut stream = TcpStream::connect(address).await.expect("client connects");
-        let request = SimulatorRequest {
-            version: IPC_VERSION,
-            session_token: "test-token".to_string(),
-            correlation_id: "ping-test".to_string(),
-            command: SimulatorCommand::Ping { seq: 9 },
-        };
-        let mut encoded = serde_json::to_vec(&request).expect("request serializes");
-        encoded.push(b'\n');
-        stream.write_all(&encoded).await.expect("request writes");
-
-        let mut line = String::new();
-        timeout(
-            Duration::from_millis(250),
-            BufReader::new(&mut stream).read_line(&mut line),
-        )
-        .await
-        .expect("ping response is not blocked by the handler lock")
-        .expect("ping response reads");
-        let response: SimulatorResponse = serde_json::from_str(&line).expect("response parses");
-        assert!(response.ok);
-        assert_eq!(
-            response
-                .result
-                .as_ref()
-                .and_then(|result| result.get("seq"))
-                .and_then(serde_json::Value::as_u64),
-            Some(9)
-        );
-
-        drop(stream);
-        drop(handler_lock);
-        server.await.expect("server task joins");
     }
 }

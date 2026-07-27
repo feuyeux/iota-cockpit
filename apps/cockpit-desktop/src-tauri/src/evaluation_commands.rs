@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cockpit_evaluation::plane::EvidenceVerdict;
+use cockpit_evaluation_core::plane::EvidenceVerdict;
 use cockpit_recording::Recording;
 use serde::{Deserialize, Serialize};
 
@@ -268,8 +268,11 @@ fn evaluator_binary(workspace_root: &Path) -> OsString {
     if let Some(binary) = std::env::var_os("COCKPIT_EVALUATOR_BIN") {
         return binary;
     }
-    if !cfg!(debug_assertions)
-        && let Ok(current_exe) = std::env::current_exe()
+    // In both development and packaged builds, the sidecar is staged beside
+    // the desktop executable. Checking this first prevents a dev build whose
+    // resource directory contains scenarios from incorrectly falling back to
+    // a bare PATH lookup for `cockpit-evaluator`.
+    if let Ok(current_exe) = std::env::current_exe()
         && let Some(path) = bundled_evaluator_path(&current_exe)
         && path.is_file()
     {

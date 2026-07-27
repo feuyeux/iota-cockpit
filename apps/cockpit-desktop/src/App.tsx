@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from "react";
-import { Activity, AlertTriangle, Bot, Gauge, Link, Link2Off, HelpCircle } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Gauge, Link, Link2Off, HelpCircle, Moon, Sun } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
 import { SimulationEvaluation } from "./components/SimulationEvaluation";
@@ -15,6 +15,7 @@ import { initialSimulationModel, simulationReducer } from "./state/simulationRed
 import { exponentialBackoff } from "./utils/reconnect";
 import { loadPersistedSession } from "./utils/storage";
 import { useI18n, type MessageKey } from "./i18n";
+import { useTheme } from "./theme";
 import type { EvaluationReportRecord, SimulationModel } from "./types/simulation";
 import packageInfo from "../package.json";
 
@@ -33,6 +34,7 @@ const stateLabels: Partial<Record<SimulationModel["state"], MessageKey>> = {
 
 export function App() {
   const { locale, setLocale, t } = useI18n();
+  const { theme, toggleTheme } = useTheme();
   const persisted = loadPersistedSession();
   const [model, dispatch] = useReducer(
     simulationReducer,
@@ -138,7 +140,7 @@ export function App() {
           </span>
         </div>
         <div className="w-full max-w-[460px] justify-self-center px-2">
-          <SimulationProgress tick={model.tick} deadlineTick={activeScenario?.deadlineTick} state={model.state} />
+          <SimulationProgress tick={model.tick} maxTicks={activeScenario?.maxTicks} state={model.state} />
         </div>
         <div className="flex shrink-0 items-center justify-self-end gap-2.5 text-xs text-zinc-300">
           <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
@@ -190,6 +192,15 @@ export function App() {
             </button>
           </div>
           <button
+            aria-label={theme === "dark" ? t("lightTheme") : t("darkTheme")}
+            aria-pressed={theme === "light"}
+            className="theme-toggle control-button h-[26px] w-[26px] shrink-0 rounded-md transition-colors duration-150"
+            onClick={toggleTheme}
+            title={t("theme")}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+          <button
             aria-label={showInsights ? t("close") : t("evaluation")}
             aria-pressed={showInsights}
             className={`h-[26px] shrink-0 rounded-md border px-2.5 text-xs font-medium transition-all duration-150 whitespace-nowrap ${showInsights ? "border-cyan-700/60 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-950/60" : "border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800 text-zinc-300"}`}
@@ -230,7 +241,7 @@ export function App() {
             />
           </ErrorBoundary>
           <ErrorBoundary>
-            <SimulationWorldView model={model} />
+            <SimulationWorldView model={model} completedReport={completedReport} />
           </ErrorBoundary>
           <ErrorBoundary>
             <SimulationActivityFeed model={model} dispatch={dispatch} />
@@ -241,7 +252,7 @@ export function App() {
             <div className="flex shrink-0 items-center justify-between border-b border-zinc-800/80 bg-zinc-900/90 px-3.5 py-1.5">
               <div>
                 <div className="text-xs font-semibold text-zinc-100">{t("evaluation")}</div>
-                <div className="text-[11px] text-zinc-400">{t("dialoguePerception")}</div>
+                <div className="text-[11px] text-zinc-400">{t("scenarioInteraction")}</div>
               </div>
               <button className="control-button h-[26px] px-2.5 text-xs" onClick={() => setShowInsights(false)}>
                 {t("close")}

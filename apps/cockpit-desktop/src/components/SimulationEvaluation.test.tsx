@@ -57,7 +57,8 @@ function render(report = fixtureReport()) {
               schemaVersion: 1,
               scenarioHash: "hash",
               seed: 42,
-              agentId: "cockpit-agent"
+              agentId: "cockpit-agent",
+              maxTicks: 80
             },
             humanTurns: [{
               tick: 6,
@@ -69,7 +70,7 @@ function render(report = fixtureReport()) {
               }
             }],
             actionResults: [{
-              request: { requestId: "shutdown", agentId: "cockpit-agent", target: "engine-1", command: "engineShutdown", expectedStateVersion: 6, expiresAtTick: 9, correlationId: "c" },
+              request: { requestId: "shutdown", agentId: "cockpit-agent", target: "engine-1", capabilityId: "engine.shutdown", expectedStateVersion: 6, expiresAtTick: 9, correlationId: "c" },
               status: "applied",
               runId: "run",
               tick: 6,

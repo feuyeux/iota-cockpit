@@ -7,6 +7,7 @@ use cockpit_plugin::{
 };
 use cockpit_scenario::load_scenario;
 use cockpit_world::{Simulation, StatePatch};
+use ring::signature::KeyPair;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -37,6 +38,7 @@ fn base_manifest(permissions: Vec<PluginPermission>) -> PluginManifest {
         signature: None,
         command: None,
         filesystem_read_paths: Vec::new(),
+        executable_sha256: None,
     }
 }
 
@@ -45,8 +47,169 @@ fn write_policy() -> PluginPolicy {
         allowed_permissions: [PluginPermission::WorldRead, PluginPermission::WorldWrite]
             .into_iter()
             .collect(),
+        // These fixtures write unsigned manifests and test permission/tick
+        // logic, not signature verification (which has its own dedicated
+        // tests) — opt out explicitly rather than relying on the insecure
+        // default ever being false.
+        require_signature: false,
         ..PluginPolicy::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// C-03 regression tests: plugin manifest signature must be cryptographically
+// verified against trust roots, not merely checked for non-emptiness.
+// ---------------------------------------------------------------------------
+
+fn ed25519_keypair() -> ring::signature::Ed25519KeyPair {
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).expect("keypair generates");
+    ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("keypair parses")
+}
+
+fn hash_manifest(manifest: &mut PluginManifest) {
+    manifest.hash.clear();
+    let canonical = serde_json::to_vec(manifest).expect("manifest serializes");
+    let mut hasher = Sha256::new();
+    hasher.update(canonical);
+    manifest.hash = format!("sha256:{:x}", hasher.finalize());
+}
+
+fn signed_manifest(
+    mut manifest: PluginManifest,
+    signer: &ring::signature::Ed25519KeyPair,
+) -> PluginManifest {
+    hash_manifest(&mut manifest);
+    let mut signed_bytes = manifest.hash.as_bytes().to_vec();
+    if let Some(executable_sha256) = &manifest.executable_sha256 {
+        signed_bytes.push(b':');
+        signed_bytes.extend_from_slice(executable_sha256.as_bytes());
+    }
+    let signature = signer.sign(&signed_bytes);
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    manifest.signature = Some(STANDARD.encode(signature.as_ref()));
+    manifest
+}
+
+fn signature_policy(trust_root: &[u8; 32]) -> PluginPolicy {
+    PluginPolicy {
+        allowed_permissions: [PluginPermission::WorldRead].into_iter().collect(),
+        require_signature: true,
+        trust_roots: vec![*trust_root],
+        ..PluginPolicy::default()
+    }
+}
+
+#[test]
+fn correctly_signed_manifest_is_accepted() {
+    let signer = ed25519_keypair();
+    let trust_root: [u8; 32] = signer
+        .public_key()
+        .as_ref()
+        .try_into()
+        .expect("ed25519 public key is 32 bytes");
+    let manifest = signed_manifest(base_manifest(vec![]), &signer);
+
+    let directory = plugin_dir("signed-ok");
+    fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+
+    let mut host = PluginHost::default();
+    let failures = host.discover(&directory, &signature_policy(&trust_root));
+    assert!(failures.is_empty(), "expected no failures: {failures:?}");
+    assert!(host.get("smoke-plugin").is_some());
+}
+
+#[test]
+fn manifest_signed_by_untrusted_key_is_rejected() {
+    let signer = ed25519_keypair();
+    let other_signer = ed25519_keypair();
+    let untrusted_trust_root: [u8; 32] = other_signer
+        .public_key()
+        .as_ref()
+        .try_into()
+        .expect("ed25519 public key is 32 bytes");
+    // Sign with `signer`, but the policy only trusts `other_signer`'s key.
+    let manifest = signed_manifest(base_manifest(vec![]), &signer);
+
+    let directory = plugin_dir("signed-untrusted");
+    fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+
+    let mut host = PluginHost::default();
+    let failures = host.discover(&directory, &signature_policy(&untrusted_trust_root));
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0].reason.contains("signature"),
+        "expected a signature failure: {:?}",
+        failures[0]
+    );
+    assert!(host.get("smoke-plugin").is_none());
+}
+
+#[test]
+fn manifest_with_empty_signature_is_rejected_when_required() {
+    let signer = ed25519_keypair();
+    let trust_root: [u8; 32] = signer
+        .public_key()
+        .as_ref()
+        .try_into()
+        .expect("ed25519 public key is 32 bytes");
+    // No signature at all, even though the policy requires one.
+    let manifest = {
+        let mut manifest = base_manifest(vec![]);
+        hash_manifest(&mut manifest);
+        manifest
+    };
+
+    let directory = plugin_dir("signed-missing");
+    fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+
+    let mut host = PluginHost::default();
+    let failures = host.discover(&directory, &signature_policy(&trust_root));
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0].reason.contains("signature"),
+        "expected a signature-required failure: {:?}",
+        failures[0]
+    );
+}
+
+#[test]
+fn tampered_manifest_content_invalidates_signature() {
+    let signer = ed25519_keypair();
+    let trust_root: [u8; 32] = signer
+        .public_key()
+        .as_ref()
+        .try_into()
+        .expect("ed25519 public key is 32 bytes");
+    let mut manifest = signed_manifest(base_manifest(vec![]), &signer);
+    // Tamper with a field after signing, without re-signing or fixing up
+    // `hash` — this must be caught by the hash check (or, if somehow past
+    // that, the signature check), never silently accepted.
+    manifest.version = "9.9.9-tampered".to_string();
+
+    let directory = plugin_dir("signed-tampered");
+    fs::write(
+        directory.join("plugin.json"),
+        serde_json::to_vec(&manifest).expect("manifest serializes"),
+    )
+    .expect("manifest writes");
+
+    let mut host = PluginHost::default();
+    let failures = host.discover(&directory, &signature_policy(&trust_root));
+    assert_eq!(failures.len(), 1);
+    assert!(host.get("smoke-plugin").is_none());
 }
 
 struct StaticExecutor {
@@ -196,6 +359,7 @@ fn plugin_tick_over_budget_fails_closed() {
             .into_iter()
             .collect(),
         tick_budget_ms: Some(5),
+        require_signature: false,
         ..PluginPolicy::default()
     };
     assert!(host.discover(&directory, &policy).is_empty());

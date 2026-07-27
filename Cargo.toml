@@ -10,7 +10,7 @@ members = [
   "crates/cockpit-world",
   "crates/cockpit-scenario",
   "crates/cockpit-recording",
-  "crates/cockpit-evaluation",
+  "crates/cockpit-evaluation-core",
   "crates/cockpit-evaluator",
   "crates/cockpit-judge",
   "crates/cockpit-agent",
@@ -43,7 +43,7 @@ ring = "0.17.14"
 cockpit-world = { path = "crates/cockpit-world" }
 cockpit-scenario = { path = "crates/cockpit-scenario" }
 cockpit-recording = { path = "crates/cockpit-recording" }
-cockpit-evaluation = { path = "crates/cockpit-evaluation" }
+cockpit-evaluation-core = { path = "crates/cockpit-evaluation-core" }
 cockpit-agent = { path = "crates/cockpit-agent" }
 cockpit-simulator = { path = "crates/cockpit-simulator" }
 cockpit-plugin = { path = "crates/cockpit-plugin" }
@@ -57,22 +57,22 @@ iota-core = { package = "iota-sympantos-core", version = "0.1.1", default-featur
 default = []
 live-acp = ["cockpit-simulator/live-acp"]
 
-[dependencies]
+[dev-dependencies]
 cockpit-world.workspace = true
 cockpit-scenario.workspace = true
 cockpit-recording.workspace = true
-cockpit-evaluation.workspace = true
+cockpit-evaluation-core.workspace = true
 cockpit-agent.workspace = true
 cockpit-simulator.workspace = true
 cockpit-plugin.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 rusqlite.workspace = true
+ring.workspace = true
+base64.workspace = true
 
 [[test]]
 name = "smoke_replay"
