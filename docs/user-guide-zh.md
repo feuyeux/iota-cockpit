@@ -22,72 +22,9 @@
 
 `iota-cockpit` 是一个专为智能座舱多智能体人机交互（HMI）、安全干预与自主系统测试设计的决定性仿真与独立评测引擎。系统采用**Ground Truth 仿真内核与独立评测平面彻底隔离**的设计范式。
 
-### 1.1 核心模块关系
-
-```mermaid
-flowchart TB
-    subgraph Entry[入口]
-        Desktop[cockpit-desktop]
-        Cli[CLI]
-        Scenario[cockpit-scenario]
-    end
-
-    subgraph AcpBoundary[外部 ACP 边界]
-        IotaCore[iota-core backend]
-    end
-
-    subgraph Runtime[仿真运行时]
-        Simulator[cockpit-simulator]
-        Agent[cockpit-agent]
-        Plugin[cockpit-plugin]
-        World["cockpit-world<br/>Ground Truth"]
-    end
-
-    subgraph Persistence[不可变录制]
-        Recording[cockpit-recording]
-        Storage[(SQLite / Payload)]
-    end
-
-    subgraph Evaluation[独立评测平面]
-        Evaluator[cockpit-evaluator]
-        Rules[cockpit-evaluation-core]
-        Judge[cockpit-judge]
-        Report[评测报告]
-    end
-
-    Desktop -->|IPC| Simulator
-    Cli --> Simulator
-    Scenario --> Simulator
-    IotaCore -->|ACP| Agent
-    Simulator --> Agent
-    Simulator --> Plugin
-    Simulator --> World
-    Agent -->|Typed Action| World
-    Plugin -->|已验证 StateDiff| World
-    World -->|事件与快照| Recording
-    Recording --> Storage
-    Recording -->|脱敏 Recording| Evaluator
-    Evaluator --> Rules
-    Evaluator --> Judge
-    Judge -.->|隔离 ACP 执行| Agent
-    Rules --> Report
-    Judge --> Report
-
-    classDef runtime fill:#eff6ff,stroke:#2563eb,color:#111827
-    classDef storage fill:#f0fdf4,stroke:#16a34a,color:#111827
-    classDef evaluation fill:#fff7ed,stroke:#ea580c,color:#111827
-    class Simulator,Agent,Plugin,World runtime
-    class Recording,Storage storage
-    class Evaluator,Rules,Judge,Report evaluation
-```
-
-`cockpit-simulator` 是运行时编排入口：它加载 `cockpit-scenario`，调度 `cockpit-agent`、`cockpit-plugin` 与 `cockpit-world`，并将不可变录制提交给 `cockpit-recording`。`iota-core backend` 仅由 `cockpit-agent` 直接集成；`cockpit-judge` 通过 Agent 的隔离 ACP 执行接口完成模型调用。`cockpit-evaluator` 仅在仿真结束后读取脱敏的 Recording；它调用 `cockpit-evaluation-core` 的规则库与隔离的 `cockpit-judge`，不参与仿真状态演化。
-
-这条单向关系保证私有 Rubric 和最终 Release Gate 不会回流到 Simulator、Agent 或 WebView，从而维持 Ground Truth 与独立评测平面的边界。
-
 ![架构总览海报](../img_result/architecture_overview.jpg)
 
-### 1.2 分层架构与组件依赖
+### 1.1 分层架构与组件依赖
 
 整个系统自上而下划分为 4 个严格约束依赖方向的层级：
 
